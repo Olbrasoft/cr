@@ -145,6 +145,28 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 - Use `sqlx::test` for database integration tests
 - Mock external services with trait implementations
 
+## Current Project Status
+
+**Phase 1 — Foundation** (in progress)
+
+### Completed
+- Cargo workspace scaffolded (cr-domain, cr-app, cr-infra, cr-web)
+- Domain entities implemented in `cr-domain/src/entities/`:
+  - `Region` (14 regions / kraje) — region_code, nuts_code
+  - `District` (77 districts / okresy) — district_code, FK → regions
+  - `Orp` (206 ORP) — orp_code, FK → districts
+  - `Municipality` (~6,258 municipalities / obce) — municipality_code, pou_code, FK → orp
+- All entities: `#[derive(Debug, Clone, Serialize, Deserialize)]`, all fields `pub`
+- No `sqlx::FromRow` in domain (belongs in cr-infra)
+- Documentation updated (CLAUDE.md, docs/BLUEPRINT.md) — English entity names
+
+### Next Steps
+- **Issue #1:** Add SQLx migrations for territorial hierarchy tables
+- Repository traits in cr-domain (planned)
+- SQLx implementations in cr-infra
+- CSV import from ČSÚ data
+- Basic Axum + Askama SSR
+
 ## Engineering Handbook
 
 General development standards are in `~/GitHub/Olbrasoft/engineering-handbook/`. This CLAUDE.md contains only project-specific instructions for Olbrasoft/cr.
