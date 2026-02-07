@@ -4,7 +4,7 @@ Instructions for Claude Code when working in this repository.
 
 ## What This Is
 
-**Olbrasoft/cr** — Modern SEO portal about the Czech Republic. Hierarchical territorial navigation: Kraje → Okresy → ORP → Obce, with AI features and high performance.
+**Olbrasoft/cr** — Modern SEO portal about the Czech Republic. Hierarchical territorial navigation: Regions → Districts → ORP → Municipalities, with AI features and high performance.
 
 **Language:** Rust (edition 2024)
 **Architecture:** Clean Architecture via Cargo Workspace
@@ -65,7 +65,7 @@ cr-infra ─────┘
 - **PostgreSQL** with **pgvector** extension for AI embeddings.
 - **SQLx** with compile-time query checking.
 - **Migrations:** SQL scripts managed via `sqlx-cli`.
-- **Separate tables** for each territorial level: `kraje`, `okresy`, `orp`, `obce` (NOT a single `regions` table with type enum).
+- **Separate tables** for each territorial level: `regions`, `districts`, `orp`, `municipalities` (NOT a single table with type enum).
 
 ### Web
 - **Axum** web framework (Tokio-based).
@@ -92,20 +92,20 @@ cr-infra ─────┘
 
 ### Database
 - `snake_case` for table names, column names
-- Plural table names: `kraje`, `okresy`, `orp`, `obce`
-- FK columns: `{table_singular}_id` (e.g., `kraj_id`, `okres_id`)
+- Plural table names: `regions`, `districts`, `orp`, `municipalities`
+- FK columns: `{table_singular}_id` (e.g., `region_id`, `district_id`)
 
 ## Entity Design
 
 Separate structs for each territorial level (composition, not inheritance):
 
 ```rust
-pub struct Kraj {
+pub struct Region {
     pub id: i32,
     pub name: String,
     pub slug: String,
-    pub kraj_kod: String,
-    pub nuts_kod: String,
+    pub region_code: String,
+    pub nuts_code: String,
     pub created_by: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -113,7 +113,7 @@ pub struct Kraj {
 
 Each entity has: `id` (i32), `name`, `slug` (unique, SEO), ČSÚ code(s), audit fields.
 
-Hierarchical FK chain: `obec.orp_id → orp.okres_id → okres.kraj_id → kraj.id`
+Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.region_id → region.id`
 
 ## Tech Stack
 

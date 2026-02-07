@@ -1,6 +1,6 @@
 # Project Blueprint: Olbrasoft/cr
 
-Modern SEO portal about the Czech Republic (Kraje → Okresy/ORP → Obce) with AI features and high performance.
+Modern SEO portal about the Czech Republic (Regions → Districts/ORP → Municipalities) with AI features and high performance.
 
 ---
 
@@ -54,27 +54,27 @@ cr-infra ─────┘
 
 ### Table Structure
 
-Separate tables for each territorial level (not a single `regions` table with type enum):
+Separate tables for each territorial level (not a single table with type enum):
 
 ```sql
--- 1. Kraje (14 regions)
-CREATE TABLE kraje (
+-- 1. Regions (14 regions / kraje)
+CREATE TABLE regions (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
     slug VARCHAR(250) NOT NULL UNIQUE,
-    kraj_kod VARCHAR(10) NOT NULL,
-    nuts_kod VARCHAR(10) NOT NULL,
+    region_code VARCHAR(10) NOT NULL,
+    nuts_code VARCHAR(10) NOT NULL,
     created_by INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2. Okresy (77 districts)
-CREATE TABLE okresy (
+-- 2. Districts (77 districts / okresy)
+CREATE TABLE districts (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
     slug VARCHAR(250) NOT NULL UNIQUE,
-    okres_kod VARCHAR(10) NOT NULL,
-    kraj_id INT NOT NULL REFERENCES kraje(id) ON DELETE RESTRICT,
+    district_code VARCHAR(10) NOT NULL,
+    region_id INT NOT NULL REFERENCES regions(id) ON DELETE RESTRICT,
     created_by INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -84,19 +84,19 @@ CREATE TABLE orp (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
     slug VARCHAR(250) NOT NULL UNIQUE,
-    orp_kod VARCHAR(10) NOT NULL,
-    okres_id INT NOT NULL REFERENCES okresy(id) ON DELETE RESTRICT,
+    orp_code VARCHAR(10) NOT NULL,
+    district_id INT NOT NULL REFERENCES districts(id) ON DELETE RESTRICT,
     created_by INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 4. Obce (~6,258 municipalities)
-CREATE TABLE obce (
+-- 4. Municipalities (~6,258 municipalities / obce)
+CREATE TABLE municipalities (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
     slug VARCHAR(250) NOT NULL UNIQUE,
-    obec_kod VARCHAR(10) NOT NULL,
-    pou_kod VARCHAR(10) NOT NULL,
+    municipality_code VARCHAR(10) NOT NULL,
+    pou_code VARCHAR(10) NOT NULL,
     orp_id INT NOT NULL REFERENCES orp(id) ON DELETE RESTRICT,
     created_by INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -106,9 +106,9 @@ CREATE TABLE obce (
 ### Indexes
 
 ```sql
-CREATE INDEX idx_okresy_kraj_id ON okresy(kraj_id);
-CREATE INDEX idx_orp_okres_id ON orp(okres_id);
-CREATE INDEX idx_obce_orp_id ON obce(orp_id);
+CREATE INDEX idx_districts_region_id ON districts(region_id);
+CREATE INDEX idx_orp_district_id ON orp(district_id);
+CREATE INDEX idx_municipalities_orp_id ON municipalities(orp_id);
 ```
 
 Slug columns already have UNIQUE constraint which creates an implicit index.
@@ -147,16 +147,16 @@ Code organization:
 
 ```
 cr-app/src/
-├── queries/        # Read operations (SELECT)
-│   ├── kraj.rs     # get_kraj_by_slug, list_kraje, etc.
-│   ├── okres.rs
+├── queries/            # Read operations (SELECT)
+│   ├── region.rs       # get_region_by_slug, list_regions, etc.
+│   ├── district.rs
 │   ├── orp.rs
-│   └── obec.rs
-├── commands/       # Write operations (INSERT/UPDATE/DELETE)
-│   └── import.rs   # import_regions_from_csv
-└── dto/            # Data Transfer Objects
-    ├── kraj.rs
-    ├── okres.rs
+│   └── municipality.rs
+├── commands/           # Write operations (INSERT/UPDATE/DELETE)
+│   └── import.rs       # import_regions_from_csv
+└── dto/                # Data Transfer Objects
+    ├── region.rs
+    ├── district.rs
     └── breadcrumb.rs
 ```
 
@@ -171,23 +171,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Kraj {
+pub struct Region {
     pub id: i32,
     pub name: String,
     pub slug: String,
-    pub kraj_kod: String,
-    pub nuts_kod: String,
+    pub region_code: String,
+    pub nuts_code: String,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Okres {
+pub struct District {
     pub id: i32,
     pub name: String,
     pub slug: String,
-    pub okres_kod: String,
-    pub kraj_id: i32,
+    pub district_code: String,
+    pub region_id: i32,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }
@@ -197,19 +197,19 @@ pub struct Orp {
     pub id: i32,
     pub name: String,
     pub slug: String,
-    pub orp_kod: String,
-    pub okres_id: i32,
+    pub orp_code: String,
+    pub district_id: i32,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Obec {
+pub struct Municipality {
     pub id: i32,
     pub name: String,
     pub slug: String,
-    pub obec_kod: String,
-    pub pou_kod: String,
+    pub municipality_code: String,
+    pub pou_code: String,
     pub orp_id: i32,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
@@ -257,10 +257,10 @@ cargo run -p cr-web
 
 | Element | Convention | Example |
 |---------|-----------|---------|
-| Functions, variables | `snake_case` | `get_kraj_by_slug` |
-| Structs, enums, traits | `PascalCase` | `Kraj`, `RegionType` |
+| Functions, variables | `snake_case` | `get_region_by_slug` |
+| Structs, enums, traits | `PascalCase` | `Region`, `District` |
 | Constants | `SCREAMING_SNAKE_CASE` | `MAX_PAGE_SIZE` |
-| Modules, files | `snake_case` | `queries/kraj.rs` |
+| Modules, files | `snake_case` | `queries/region.rs` |
 | Crate names | `kebab-case` | `cr-domain` |
 
 ### Architecture
@@ -291,7 +291,7 @@ cargo run -p cr-web
 
 ### Phase 1 — Foundation (Current)
 - Repository setup, Cargo workspace
-- Domain entities (Kraj, Okres, Orp, Obec)
+- Domain entities (Region, District, Orp, Municipality)
 - SQLx migrations, CSV import
 - Basic Axum + Askama SSR (homepage, region pages)
 - SEO-friendly URLs, breadcrumbs

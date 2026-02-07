@@ -5,8 +5,10 @@
 //! Contains pure entities (structs), enums, and traits
 //! with zero external framework dependencies.
 //!
-//! ## Modules (planned)
+//! ## Modules
 //!
-//! - `entities` - Kraj, Okres, Orp, Obec structs
-//! - `traits` - Repository and service abstractions
-//! - `error` - Domain-specific error types
+//! - `entities` - Region, District, Orp, Municipality structs
+//! - `traits` - Repository and service abstractions (planned)
+//! - `error` - Domain-specific error types (planned)
+
+pub mod entities;
