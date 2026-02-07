@@ -1,0 +1,12 @@
+[package]
+name = "cr-domain"
+description = "Domain layer: entities, traits, and business logic with zero external dependencies"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "cr-app"
+description = "Application layer: use-cases, queries, commands, and DTOs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+cr-domain = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }

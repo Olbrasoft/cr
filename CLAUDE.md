@@ -1,0 +1,150 @@
+# CLAUDE.md
+
+Instructions for Claude Code when working in this repository.
+
+## What This Is
+
+**Olbrasoft/cr** — Modern SEO portal about the Czech Republic. Hierarchical territorial navigation: Kraje → Okresy → ORP → Obce, with AI features and high performance.
+
+**Language:** Rust (edition 2024)
+**Architecture:** Clean Architecture via Cargo Workspace
+
+## Build & Test
+
+```bash
+# Build all crates
+cargo build
+
+# Run tests
+cargo test
+
+# Run web server (when implemented)
+cargo run -p cr-web
+
+# Check without building
+cargo check
+
+# Lint
+cargo clippy -- -D warnings
+
+# Format
+cargo fmt --check
+```
+
+## Architecture — Cargo Workspace
+
+```
+cr/
+├── cr-domain/   # Entities, traits, error types. ZERO framework deps.
+├── cr-app/      # Use-cases, queries, commands, DTOs. Depends on cr-domain.
+├── cr-infra/    # SQLx, CSV import, external APIs. Depends on cr-domain + cr-app.
+└── cr-web/      # Axum server, Askama templates. Depends on all above.
+```
+
+### Dependency Flow (Clean Architecture)
+
+```
+cr-web ──→ cr-app ──→ cr-domain
+              ↑
+cr-infra ─────┘
+```
+
+**cr-domain** has NO dependency on cr-app, cr-infra, or cr-web.
+
+## Key Design Decisions
+
+### Primary Keys
+- **i32 everywhere** (PostgreSQL SERIAL). No UUID, no i64. Consistent across all tables and FKs.
+
+### CQRS
+- **Direct function calls**, no mediator pattern.
+- Organize code into `queries/` (SELECT) and `commands/` (INSERT/UPDATE/DELETE) modules.
+- Axum handler → service function → SQLx query. No magic, no runtime dispatch.
+
+### Database
+- **PostgreSQL** with **pgvector** extension for AI embeddings.
+- **SQLx** with compile-time query checking.
+- **Migrations:** SQL scripts managed via `sqlx-cli`.
+- **Separate tables** for each territorial level: `kraje`, `okresy`, `orp`, `obce` (NOT a single `regions` table with type enum).
+
+### Web
+- **Axum** web framework (Tokio-based).
+- **Askama** templates (compile-time, SEO-friendly SSR).
+- **Server-Side Rendering** for all main content (no client-side JS API for SEO pages).
+
+### Error Handling
+- `thiserror` in cr-domain and cr-infra for typed errors.
+- `anyhow` in cr-web for convenience.
+
+### Logging
+- `tracing` + `tracing-subscriber` (structured logging).
+
+## Naming Conventions
+
+### Rust Code
+- `snake_case` for functions, variables, modules, file names
+- `PascalCase` for structs, enums, traits
+- `SCREAMING_SNAKE_CASE` for constants
+
+### Crate Names
+- Lowercase with hyphens: `cr-domain`, `cr-app`
+- In code referenced with underscores: `cr_domain`, `cr_app`
+
+### Database
+- `snake_case` for table names, column names
+- Plural table names: `kraje`, `okresy`, `orp`, `obce`
+- FK columns: `{table_singular}_id` (e.g., `kraj_id`, `okres_id`)
+
+## Entity Design
+
+Separate structs for each territorial level (composition, not inheritance):
+
+```rust
+pub struct Kraj {
+    pub id: i32,
+    pub name: String,
+    pub slug: String,
+    pub kraj_kod: String,
+    pub nuts_kod: String,
+    pub created_by: i32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+Each entity has: `id` (i32), `name`, `slug` (unique, SEO), ČSÚ code(s), audit fields.
+
+Hierarchical FK chain: `obec.orp_id → orp.okres_id → okres.kraj_id → kraj.id`
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Rust (edition 2024, Tokio async runtime) |
+| Web Framework | Axum |
+| Templates | Askama (compile-time SSR) |
+| Database | PostgreSQL + pgvector |
+| DB Access | SQLx (compile-time checked queries) |
+| Auth | argon2 + tower-sessions |
+| AI | rig or aws-sdk-bedrock |
+| Images | Cloudflare R2 (S3 compatible) |
+| Logging | tracing |
+| Error Handling | thiserror + anyhow |
+| Serialization | serde + serde_json |
+| CSV Import | csv crate |
+
+## Data Sources
+
+- **ČSÚ territorial structure CSV:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/struktura_uzemi_cr_2025.csv`
+- **GeoJSON boundaries:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/GeoJSON/`
+- **RÚIAN address points:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/CSV/`
+
+## Testing
+
+- Unit tests at bottom of each source file (`#[cfg(test)]`)
+- Integration tests in `tests/` directory
+- Use `sqlx::test` for database integration tests
+- Mock external services with trait implementations
+
+## Engineering Handbook
+
+General development standards are in `~/GitHub/Olbrasoft/engineering-handbook/`. This CLAUDE.md contains only project-specific instructions for Olbrasoft/cr.

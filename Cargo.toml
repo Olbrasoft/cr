@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "cr-domain",
+    "cr-app",
+    "cr-infra",
+    "cr-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Olbrasoft"]
+license = "MIT"
+repository = "https://github.com/Olbrasoft/cr"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace"] }
+
+# Templates
+askama = "0.12"
+askama_axum = "0.4"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# CSV import
+csv = "1"
+
+# Configuration
+dotenvy = "0.15"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Testing
+tokio-test = "0.4"
+
+# Internal crates
+cr-domain = { path = "cr-domain" }
+cr-app = { path = "cr-app" }
+cr-infra = { path = "cr-infra" }
+cr-web = { path = "cr-web" }
