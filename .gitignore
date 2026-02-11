@@ -25,3 +25,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# AI agent skills
+.agents/
+.agent/
+.claude/
+.cline/
+.goose/
