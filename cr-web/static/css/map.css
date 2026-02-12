@@ -1,0 +1,18 @@
+/* --- MAP STYLES --- */
+#svgmapy {
+    width: 100%;
+    height: 100%;
+}
+
+.kraj {
+    stroke: #FFF;
+    fill: #CCCCCC;
+    transition: all 0.3s;
+    cursor: pointer;
+}
+
+.kraj:hover {
+    fill: var(--color-blue);
+    /* Default Blue hover as per user request */
+    filter: drop-shadow(0 0 5px rgba(17, 69, 126, 0.4));
+}

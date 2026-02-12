@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cr
+      POSTGRES_USER: cr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cr_secret_2026}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cr -d cr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:3000"
+    environment:
+      DATABASE_URL: postgres://cr:${POSTGRES_PASSWORD:-cr_secret_2026}@db:5432/cr
+      RUST_LOG: info
+      STATIC_DIR: /app/static
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

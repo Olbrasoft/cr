@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}{{ municipality.name }} | {{ orp.name }} | {{ region.name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
+    <a href="/{{ region.slug }}/{{ orp.slug }}/">{{ orp.name }}</a> &raquo;
+    <span>{{ municipality.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="info-hub">
+    <div class="content-left">
+        <h2 class="section-title">{{ municipality.name }}</h2>
+        <p class="lead-text">Obec {{ municipality.name }} patří do správního obvodu ORP {{ orp.name }}, {{ region.name }}.</p>
+    </div>
+    <aside class="content-right">
+        <div class="premium-infobox">
+            <div class="infobox-top">
+                <div class="infobox-title">{{ municipality.name }}</div>
+                <div class="infobox-subtitle">{{ region.name }}</div>
+            </div>
+            <div class="infobox-table">
+                <div class="row-data">
+                    <span class="label-data">Kód obce</span>
+                    <span class="value-data">{{ municipality.municipality_code }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">Kód POU</span>
+                    <span class="value-data">{{ municipality.pou_code }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">ORP</span>
+                    <span class="value-data">{{ orp.name }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">Kraj</span>
+                    <span class="value-data">{{ region.name }}</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+</section>
+{% endblock %}

@@ -1,0 +1,41 @@
+{
+  "@context": ["http://www.w3.org/ns/csvw",{"@language": "cs"}],
+  "url": "struktura_uzemi_cr.csv",
+  "tableSchema": {
+    "columns": [
+      {"name":"platnost_datum", "titles":"platnost_datum", "dc:description":"datum platnosti záznamu", "required":true, "datatype":"date" },
+      {"name":"obec_text", "titles":"obec_text", "dc:description":"název obce", "required":true, "datatype":"string" },
+      {"name":"obec_kod", "titles":"obec_kod", "dc:description":"kód obce", "required":true, "datatype":"string" },
+      {"name":"obec_typ", "titles":"obec_typ", "dc:description":"typ obce", "required":true, "datatype":"string" },
+      {"name":"pou_text", "titles":"pou_text", "dc:description":"název POU", "required":true, "datatype":"string" },
+      {"name":"pou_csu_cis61_kod", "titles":"pou_csu_cis61_kod", "dc:description":"kód POU z číselníku 61 ČSÚ", "required":true, "datatype":"string" },
+      {"name":"pou_ruian_kod", "titles":"pou_ruian_kod", "dc:description":"kód POU z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"pou_sidlo_obec_kod", "titles":"pou_sidlo_obec_kod", "dc:description":"kód obce, která je sídlem POU", "required":true, "datatype":"string" },
+	  {"name":"orp_text", "titles":"orp_text", "dc:description":"název ORP", "required":true, "datatype":"string" },
+      {"name":"orp_csu_cis65_kod", "titles":"orp_csu_cis65_kod", "dc:description":"kód ORP z číselníku 65 ČSÚ", "required":true, "datatype":"string" },
+      {"name":"orp_ruian_kod", "titles":"orp_ruian_kod", "dc:description":"kód POU z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"orp_sidlo_obec_kod", "titles":"orp_sidlo_obec_kod", "dc:description":"kód obce, která je sídlem SO ORP", "required":true, "datatype":"string" },
+      {"name":"okres_text", "titles":"okres_text", "dc:description":"název okresu", "required":true, "datatype":"string" },
+      {"name":"okres_csu_cis101_lau_kod", "titles":"okres_csu_cis101_lau_kod", "dc:description":"kód okresu z číselníku 101 (LAU) ČSÚ", "required":true, "datatype":"string" },
+      {"name":"okres_csu_cis109_nuts_kod", "titles":"okres_csu_cis109_nuts_kod", "dc:description":"kód okresu z číselníku 109 (NUTS) ČSÚ", "required":true, "datatype":"string" },
+      {"name":"okres_ruian_kod", "titles":"okres_ruian_kod", "dc:description":"kód okresu z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"kraj_text", "titles":"kraj_text", "dc:description":"název kraje", "required":true, "datatype":"string" },
+      {"name":"kraj_zkratka", "titles":"kraj_zkratka", "dc:description":"zkratka kraje", "required":true, "datatype":"string" },
+      {"name":"kraj_csu_cis100_kod", "titles":"kraj_csu_cis100_kod", "dc:description":"kód kraje z číselníku 100 ČSÚ", "required":true, "datatype":"string" },
+      {"name":"kraj_csu_cis108_nuts_kod", "titles":"kraj_csu_cis108_nuts_kod", "dc:description":"kód kraje z číselníku 108 (NUTS) ČSÚ", "required":true, "datatype":"string" },
+      {"name":"kraj_ruian_vusc_kod", "titles":"kraj_ruian_vusc_kod", "dc:description":"kód kraje (VÚSC) z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"region_text", "titles":"region_text", "dc:description":"název regionu soudržnosti", "required":true, "datatype":"string" },
+      {"name":"region_csu_cis99_kod", "titles":"region_csu_cis99_kod", "dc:description":"kód regionu soudržnosti z číselníku 99 ČSÚ", "required":true, "datatype":"string" },
+      {"name":"region_csu_cis107_nuts_kod", "titles":"region_csu_cis107_nuts_kod", "dc:description":"kód regionu soudržnosti z čísleníku 107 (NUTS) ČSÚ", "required":true, "datatype":"string" },
+      {"name":"region_ruian_kod", "titles":"region_ruian_kod", "dc:description":"kód regionu soudržnosti z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"stat_text", "titles":"stat_text", "dc:description":"název státu", "required":true, "datatype":"string" },
+      {"name":"stat_csu_cis97_kod", "titles":"stat_csu_cis97_kod", "dc:description":"kód státu z číselníku 97 ČSÚ", "required":true, "datatype":"string" },
+      {"name":"stat_csu_cis105_nuts_kod", "titles":"stat_csu_cis105_nuts_kod", "dc:description":"kód státu z číselníku 105 (NUTS) ČSÚ", "required":true, "datatype":"string" },
+      {"name":"stat_ruian_kod", "titles":"stat_ruian_kod", "dc:description":"kód státu z RÚIAN", "required":true, "datatype":"string" },
+      {"name":"odkaz_SMS", "titles":"odkaz_SMS", "dc:description":"odkaz na informace o obci ve Statistickém metainformačním systému (SMS)", "required":true, "datatype":"string" },
+      {"name":"odkaz_RSO", "titles":"odkaz_RSO", "dc:description":"odkaz na informace o obci v Registru sčítacích obvodů a budov (RSO)", "required":true, "datatype":"string" }
+    ],
+    "primaryKey": "obec_kod"
+  }
+}
+    

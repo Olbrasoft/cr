@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}{{ orp.name }} | {{ region.name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
+    <span>{{ orp.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="info-hub">
+    <div class="content-left">
+        <h2 class="section-title">{{ main_municipality.name }}</h2>
+        <p class="lead-text">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
+    </div>
+    <aside class="content-right">
+        <div class="premium-infobox">
+            <div class="infobox-top">
+                <div class="infobox-title">{{ main_municipality.name }}</div>
+                <div class="infobox-subtitle">{{ region.name }}</div>
+            </div>
+            <div class="infobox-table">
+                <div class="row-data">
+                    <span class="label-data">Kód obce</span>
+                    <span class="value-data">{{ main_municipality.municipality_code }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">Kód POU</span>
+                    <span class="value-data">{{ main_municipality.pou_code }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">Kraj</span>
+                    <span class="value-data">{{ region.name }}</span>
+                </div>
+                <div class="row-data">
+                    <span class="label-data">Počet obcí v ORP</span>
+                    <span class="value-data">{{ other_municipalities.len() + 1 }}</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+</section>
+
+{% if !other_municipalities.is_empty() %}
+<section class="active-hub" style="padding-top: 0;">
+    <div class="active-left">
+        <h3 class="section-title" style="font-size: 1.3rem;">Další obce v ORP {{ orp.name }}</h3>
+        <div class="grid-cols-3">
+            {% let third = (other_municipalities.len() + 2) / 3 %}
+            <div>
+                {% for m in other_municipalities %}
+                {% if loop.index0 < third %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+            <div>
+                {% for m in other_municipalities %}
+                {% if loop.index0 >= third && loop.index0 < third * 2 %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+            <div>
+                {% for m in other_municipalities %}
+                {% if loop.index0 >= third * 2 %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

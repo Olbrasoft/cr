@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="cs">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Středočeský kraj | Česká republika</title>
+    <link rel="stylesheet" href="index.css">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+
+<body>
+    <header class="site-header-compact">
+        <div class="container header-flex">
+            <div class="logo-group">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/b/bf/CZE_Kraj_%C5%9Arodkowoczeski_COA.svg"
+                    alt="Znak Středočeského kraje" class="header-emblem">
+                <h1>Středočeský kraj</h1>
+            </div>
+            <div class="search-container">
+                <input type="text" class="search-input" placeholder="Hledat obec, ORP, památku v kraji...">
+                <button class="search-btn">Hledat</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+            <a href="index.html">Česká republika</a> &raquo; <span>Středočeský kraj</span>
+        </nav>
+
+        <main>
+            <!-- AKTIVNÍ HUB: ORP Index + Reálná Mapa -->
+            <section class="active-hub">
+                <div class="active-left">
+                    <p class="lead-text">Portál správních obvodů obcí s rozšířenou působností (ORP) v největším českém
+                        regionu.</p>
+                    <div class="grid-cols-3">
+                        <div>
+                            <a href="#" class="nav-link"><span>Benešov</span></a>
+                            <a href="#" class="nav-link"><span>Beroun</span></a>
+                            <a href="#" class="nav-link"><span>Brandýs n. L.</span></a>
+                            <a href="#" class="nav-link"><span>Čáslav</span></a>
+                            <a href="#" class="nav-link"><span>Černošice</span></a>
+                            <a href="#" class="nav-link"><span>Český Brod</span></a>
+                            <a href="#" class="nav-link"><span>Dobříš</span></a>
+                            <a href="#" class="nav-link"><span>Hořovice</span></a>
+                            <a href="#" class="nav-link"><span>Kladno</span></a>
+                        </div>
+                        <div>
+                            <a href="#" class="nav-link"><span>Kolín</span></a>
+                            <a href="#" class="nav-link"><span>Kralupy n. V.</span></a>
+                            <a href="#" class="nav-link"><span>Kutná Hora</span></a>
+                            <a href="#" class="nav-link"><span>Lysá n. L.</span></a>
+                            <a href="#" class="nav-link"><span>Mělník</span></a>
+                            <a href="#" class="nav-link"><span>Mladá Boleslav</span></a>
+                            <a href="#" class="nav-link"><span>Mn. Hradiště</span></a>
+                            <a href="#" class="nav-link"><span>Neratovice</span></a>
+                            <a href="#" class="nav-link"><span>Nymburk</span></a>
+                        </div>
+                        <div>
+                            <a href="#" class="nav-link"><span>Poděbrady</span></a>
+                            <a href="#" class="nav-link"><span>Příbram</span></a>
+                            <a href="#" class="nav-link"><span>Rakovník</span></a>
+                            <a href="#" class="nav-link"><span>Říčany</span></a>
+                            <a href="#" class="nav-link"><span>Sedlčany</span></a>
+                            <a href="#" class="nav-link"><span>Slaný</span></a>
+                            <a href="#" class="nav-link"><span>Vlašim</span></a>
+                            <a href="#" class="nav-link"><span>Votice</span></a>
+                        </div>
+                    </div>
+                </div>
+                <div class="map-card-premium">
+                    <div id="region-map-real"></div>
+                    <p style="text-align: center; margin-top: 1rem; color: #888; font-size: 0.8rem;">Interaktivní mapa
+                        zaměřená na Střední Čechy</p>
+                </div>
+            </section>
+
+            <!-- INFORMAČNÍ HUB: Texty + Prémiový Infobox -->
+            <section class="info-hub">
+                <div class="content-left">
+                    <h2 class="block-title">Kultura a geografie kraje</h2>
+                    <p class="lead-text">Středočeský kraj je unikátní svou polohou, kdy zcela obklopuje Prahu. Je to
+                        region hlubokých hvozdů, historických hraničních pevností a prudkého rozvoje.</p>
+
+                    <p>Dominantou regionu je hrad <strong>Karlštejn</strong>, ale neméně významná je i chrám svaté
+                        Barbory v Kutné Hoře (UNESCO) nebo starobylý hrad Křivoklát. Kraj je rozdělen do 12 okresů a 26
+                        obcí s rozšířenou působností (ORP).</p>
+
+                    <div class="multimedia-card">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/Karl%C5%A1tejn_in_winter.jpg/1200px-Karl%C5%A1tejn_in_winter.jpg"
+                            alt="Hrad Karlštejn">
+                        <div class="multimedia-caption">
+                            Hrad Karlštejn – nejnavštěvovanější hrad ve Středočeském kraji, v zimním hávu.
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="content-right">
+                    <div class="premium-infobox">
+                        <div class="infobox-top">
+                            <div class="infobox-title">Středočeský kraj</div>
+                            <div class="infobox-subtitle">Kraj obklopující metropoli</div>
+                        </div>
+                        <div class="infobox-visuals">
+                            <div class="visual-item">
+                                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Vlajka_St%C5%99edo%C4%8Desk%C3%A9ho_kraje.svg/200px-Vlajka_St%C5%99edo%C4%8Desk%C3%A9ho_kraje.svg.png"
+                                    alt="Vlajka kraje">
+                                <span>Vlajka</span>
+                            </div>
+
+                        </div>
+                        <div class="infobox-table">
+                            <div class="row-data">
+                                <span class="label-data">Sídlo</span>
+                                <span class="value-data">Praha</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Hejtman</span>
+                                <span class="value-data">Petra Pecková</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Rozloha</span>
+                                <span class="value-data">11 015 km²</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Obyvatelstvo</span>
+                                <span class="value-data">~1,44 milionu</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Počet ORP</span>
+                                <span class="value-data">26</span>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+            </section>
+        </main>
+    </div>
+
+    <footer class="premium-footer">
+        <div class="container">
+            <div class="footer-main">
+                <div class="footer-brand">ceska-<span>republika</span>.info</div>
+                <a href="https://github.com/Olbrasoft/CzechRepublic" class="footer-github" target="_blank">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" alt="GitHub"
+                        class="github-icon" style="filter: invert(1);">
+                    <span>Projekt na GitHubu</span>
+                </a>
+            </div>
+            <div class="footer-legal">
+                &copy; 2026 <strong>ceska-republika.info</strong>. MIT License.
+            </div>
+        </div>
+    </footer>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+        // Inicializace mapy na souřadnice Prahy/Středních Čech
+        var map = L.map('region-map-real').setView([49.95, 14.5], 8);
+
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        // Marker na Prahu/Sídlo kraje
+        L.marker([50.08, 14.43]).addTo(map)
+            .bindPopup('Sídlo kraje: Praha')
+            .openPopup();
+    </script>
+</body>
+
+</html>

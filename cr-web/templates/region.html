@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}{{ region.name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>{{ region.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="active-hub">
+    <div class="active-left">
+        <p class="lead-text">Obce s rozšířenou působností (ORP) v kraji {{ region.name }}.</p>
+        <div class="grid-cols-3">
+            {% let third = (orps.len() + 2) / 3 %}
+            <div>
+                {% for orp in orps %}
+                {% if loop.index0 < third %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+            <div>
+                {% for orp in orps %}
+                {% if loop.index0 >= third && loop.index0 < third * 2 %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+            <div>
+                {% for orp in orps %}
+                {% if loop.index0 >= third * 2 %}
+                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    <aside class="content-right" style="padding-top: 1rem;">
+        <div class="premium-infobox">
+            <div class="infobox-top">
+                <div class="infobox-title">{{ region.name }}</div>
+            </div>
+            <div class="infobox-table">
+                <div class="row-data">
+                    <span class="label-data">Počet ORP</span>
+                    <span class="value-data">{{ orps.len() }}</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+</section>
+{% endblock %}

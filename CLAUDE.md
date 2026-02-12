@@ -134,9 +134,10 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 ## Data Sources
 
-- **ČSÚ territorial structure CSV:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/struktura_uzemi_cr_2025.csv`
-- **GeoJSON boundaries:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/GeoJSON/`
-- **RÚIAN address points:** `~/Dokumenty/ProofOfConcepts/CzechRepublic/CSV/`
+- **ČSÚ territorial structure CSV:** `data/csu/struktura_uzemi_cr_2025.csv` (local copy, 6,258 municipalities)
+- **ČSÚ metadata:** `data/csu/struktura_uzemi_cr_metadata.json`
+- **GeoJSON boundaries:** TODO — copy from `~/Dokumenty/ProofOfConcepts/CzechRepublic/GeoJSON/` when needed
+- **RÚIAN address points:** TODO — copy from `~/Dokumenty/ProofOfConcepts/CzechRepublic/CSV/` when needed
 
 ## Testing
 

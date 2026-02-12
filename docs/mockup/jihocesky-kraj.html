@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="cs">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jihočeský kraj | Česká republika</title>
+    <link rel="stylesheet" href="index.css">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+
+<body>
+    <header class="site-header-compact">
+        <div class="container header-flex">
+            <div class="logo-group">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/South_Bohemian_Region_CoA_CZ.svg"
+                    alt="Znak Jihočeského kraje" class="header-emblem">
+                <h1>Jihočeský kraj</h1>
+            </div>
+            <div class="search-container">
+                <input type="text" class="search-input" placeholder="Hledat obec, ORP, památku v kraji...">
+                <button class="search-btn">Hledat</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+            <a href="index.html">Česká republika</a> &raquo; <span>Jihočeský kraj</span>
+        </nav>
+
+        <main>
+            <!-- AKTIVNÍ HUB: ORP Index + Reálná Mapa -->
+            <section class="active-hub">
+                <div class="active-left">
+                    <p class="lead-text">Portál správních obvodů obcí s rozšířenou působností (ORP) v kraji rybníků,
+                        lesů a historických měst.</p>
+                    <div class="grid-cols-3">
+                        <div>
+                            <a href="#" class="nav-link"><span>Blatná</span></a>
+                            <a href="#" class="nav-link"><span>Č. Budějovice</span></a>
+                            <a href="#" class="nav-link"><span>Český Krumlov</span></a>
+                            <a href="#" class="nav-link"><span>Dačice</span></a>
+                            <a href="#" class="nav-link"><span>Jindř. Hradec</span></a>
+                            <a href="#" class="nav-link"><span>Kaplice</span></a>
+                        </div>
+                        <div>
+                            <a href="#" class="nav-link"><span>Milevsko</span></a>
+                            <a href="#" class="nav-link"><span>Písek</span></a>
+                            <a href="#" class="nav-link"><span>Prachatice</span></a>
+                            <a href="#" class="nav-link"><span>Soběslav</span></a>
+                            <a href="#" class="nav-link"><span>Strakonice</span></a>
+                            <a href="#" class="nav-link"><span>Tábor</span></a>
+                        </div>
+                        <div>
+                            <a href="#" class="nav-link"><span>Trhové Sviny</span></a>
+                            <a href="#" class="nav-link"><span>Třeboň</span></a>
+                            <a href="#" class="nav-link"><span>Týn n. Vlt.</span></a>
+                            <a href="#" class="nav-link"><span>Vimperk</span></a>
+                            <a href="#" class="nav-link"><span>Vodňany</span></a>
+                        </div>
+                    </div>
+                </div>
+                <div class="map-card-premium">
+                    <div id="region-map-real"></div>
+                    <p style="text-align: center; margin-top: 1rem; color: #888; font-size: 0.8rem;">Interaktivní mapa
+                        zaměřená na Jižní Čechy</p>
+                </div>
+            </section>
+
+            <!-- INFORMAČNÍ HUB: Texty + Prémiový Infobox -->
+            <section class="info-hub">
+                <div class="content-left">
+                    <h2 class="block-title">Krajina rybníků a památek UNESCO</h2>
+                    <p class="lead-text">Jihočeský kraj je proslulý svou zachovalou přírodou, stovkami rybníků a
+                        bohatou historií. Je domovem dvou památek UNESCO a
+                        Národního parku Šumava.</p>
+
+                    <p>Klenotem regionu je město <strong>Český Krumlov</strong> se svým jedinečným historickým
+                        centrem a zámkem. K dalším významným památkám patří zámek Hluboká nad Vltavou v novogotickém
+                        stylu nebo vesnice Holašovice se selským barokem.</p>
+
+                    <div class="multimedia-card">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/b/b4/%C4%8Cesk%C3%BD_Krumlov_-_Lazebnick%C3%BD_most_-_View_NW_on_Z%C3%A1mek_-_Castle.jpg"
+                            alt="Český Krumlov">
+                        <div class="multimedia-caption">
+                            Zámek Český Krumlov – druhá největší zámecká budova v České republice po Pražském hradě.
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="content-right">
+                    <div class="premium-infobox">
+                        <div class="infobox-top">
+                            <div class="infobox-title">Jihočeský kraj</div>
+                            <div class="infobox-subtitle">Kraj růže</div>
+                        </div>
+                        <div class="infobox-visuals">
+                            <div class="visual-item">
+                                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Flag_of_South_Bohemian_Region.svg/200px-Flag_of_South_Bohemian_Region.svg.png"
+                                    alt="Vlajka kraje">
+                                <span>Vlajka</span>
+                            </div>
+
+                        </div>
+                        <div class="infobox-table">
+                            <div class="row-data">
+                                <span class="label-data">Sídlo</span>
+                                <span class="value-data">České Budějovice</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Hejtman</span>
+                                <span class="value-data">Martin Kuba</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Rozloha</span>
+                                <span class="value-data">10 058 km²</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Obyvatelstvo</span>
+                                <span class="value-data">~653 tisíc</span>
+                            </div>
+                            <div class="row-data">
+                                <span class="label-data">Počet ORP</span>
+                                <span class="value-data">17</span>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+            </section>
+        </main>
+    </div>
+
+    <footer class="premium-footer">
+        <div class="container">
+            <div class="footer-main">
+                <div class="footer-brand">ceska-<span>republika</span>.info</div>
+                <a href="https://github.com/Olbrasoft/CzechRepublic" class="footer-github" target="_blank">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" alt="GitHub"
+                        class="github-icon" style="filter: invert(1);">
+                    <span>Projekt na GitHubu</span>
+                </a>
+            </div>
+            <div class="footer-legal">
+                &copy; 2026 <strong>ceska-republika.info</strong>. MIT License.
+            </div>
+        </div>
+    </footer>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+        // Inicializace mapy na souřadnice Jižních Čech
+        var map = L.map('region-map-real').setView([49.0, 14.5], 9);
+
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        // Marker na Č. Budějovice
+        L.marker([48.974, 14.474]).addTo(map)
+            .bindPopup('Sídlo kraje: České Budějovice')
+            .openPopup();
+    </script>
+</body>
+
+</html>

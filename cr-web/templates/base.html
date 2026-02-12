@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Česká republika{% endblock %} | ceska-republika.info</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/map.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header class="site-header-compact">
+        <div class="container header-flex">
+            <div class="logo-group">
+                <a href="/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/e/ed/Coat_of_arms_of_the_Czech_Republic.svg"
+                        alt="Státní znak ČR" class="header-emblem">
+                    <h1><span class="text-blue">Česká</span> <span class="text-red">republika</span></h1>
+                </a>
+            </div>
+            <div class="search-container">
+                <input type="text" class="search-input" placeholder="Hledat obec, kraj, památku...">
+                <button class="search-btn">Hledat</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        {% block breadcrumb %}{% endblock %}
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <footer class="premium-footer">
+        <div class="container">
+            <div class="footer-main">
+                <div class="footer-brand">ceska-<span>republika</span>.info</div>
+                <a href="https://github.com/Olbrasoft/cr" class="footer-github" target="_blank">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" alt="GitHub"
+                        class="github-icon" style="filter: invert(1);">
+                    <span>Projekt na GitHubu</span>
+                </a>
+            </div>
+            <div class="footer-legal">
+                &copy; 2026 <strong>ceska-republika.info</strong>. MIT License.
+            </div>
+        </div>
+    </footer>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
