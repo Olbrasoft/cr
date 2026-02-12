@@ -26,6 +26,12 @@ Thumbs.db
 # Logs
 *.log
 
+# Node
+node_modules/
+
+# Wrangler local state
+.wrangler/
+
 # AI agent skills
 .agents/
 .agent/
