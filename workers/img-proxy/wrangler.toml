@@ -1,0 +1,11 @@
+name = "cr-img-proxy"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "ceskarepublika.wiki/img/*", zone_name = "ceskarepublika.wiki" }
+]
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "cr-images"

@@ -91,6 +91,15 @@ body {
     width: auto;
 }
 
+.context-emblem {
+    flex-shrink: 0;
+}
+
+.context-emblem-img {
+    height: 42px;
+    width: auto;
+}
+
 .search-container {
     display: flex;
     border: 2px solid var(--color-gray-border);
