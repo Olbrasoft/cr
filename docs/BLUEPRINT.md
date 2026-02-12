@@ -290,11 +290,16 @@ cargo run -p cr-web
 ## 9. Roadmap
 
 ### Phase 1 — Foundation (Current)
-- Repository setup, Cargo workspace
-- Domain entities (Region, District, Orp, Municipality)
-- SQLx migrations, CSV import
-- Basic Axum + Askama SSR (homepage, region pages)
-- SEO-friendly URLs, breadcrumbs
+- [x] Repository setup, Cargo workspace
+- [x] Domain entities (Region, District, Orp, Municipality)
+- [x] SQLx migrations, CSV import (6,258 municipalities loaded)
+- [x] Basic Axum + Askama SSR (homepage, region, ORP, municipality pages)
+- [x] SEO-friendly URLs (`/kraj/orp/obec/`)
+- [x] Docker Compose deployment (Rust + Postgres on Hetzner CAX11)
+- [x] Domain registered: `ceskarepublika.wiki`
+- [x] DNS A records → 46.225.101.253
+- [ ] Cloudflare setup (DNS proxy, SSL/TLS, CDN, Email Routing)
+- [ ] Email: `info@ceskarepublika.wiki` via Cloudflare Email Routing
 
 ### Phase 2 — Content
 - Monuments module (historic landmarks catalog)
@@ -304,16 +309,18 @@ cargo run -p cr-web
 ### Phase 3 — Extensions
 - Additional business modules (accommodation, businesses, real estate)
 - User authentication (argon2 + tower-sessions)
+- Previo.cz API integration
 
 ### Phase 4 — Scale
 - GeoJSON polygon boundaries on interactive maps
 - GPS coordinates from RÚIAN
 - Caching strategy
-- Production deployment (Hetzner)
+- GitHub Actions CI/CD pipeline
 
 ---
 
 **Created:** 2026-02-07
 **Author:** Olbrasoft + Claude Code
-**Version:** 0.1.0 (Planning)
+**Version:** 0.2.0 (Phase 1 — deployed)
 **License:** MIT
+**Last updated:** 2026-02-12
