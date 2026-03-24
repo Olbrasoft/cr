@@ -38,6 +38,13 @@ struct MunicipalityRow {
     pou_code: String,
     latitude: Option<f64>,
     longitude: Option<f64>,
+    wikipedia_url: Option<String>,
+    official_website: Option<String>,
+    #[allow(dead_code)]
+    coat_of_arms_url: Option<String>,
+    population: Option<i32>,
+    #[allow(dead_code)]
+    elevation: Option<f64>,
 }
 
 // --- Templates ---
@@ -176,7 +183,8 @@ async fn render_orp(
     };
 
     let all_municipalities = sqlx::query_as::<_, MunicipalityRow>(
-        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude \
+        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
+         wikipedia_url, official_website, coat_of_arms_url, population, elevation \
          FROM municipalities WHERE orp_id = $1 ORDER BY name",
     )
     .bind(orp.id)
@@ -242,7 +250,8 @@ async fn render_municipality(
     };
 
     let municipality = sqlx::query_as::<_, MunicipalityRow>(
-        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude \
+        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
+         wikipedia_url, official_website, coat_of_arms_url, population, elevation \
          FROM municipalities WHERE orp_id = $1 AND slug = $2",
     )
     .bind(orp.id)
