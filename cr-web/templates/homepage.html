@@ -39,46 +39,28 @@
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
     }).addTo(map);
 
-    // Czech coat of arms heraldic colors
-    var heraldic = [
-        '#D7141A', // red (Bohemian lion background, Silesian eagle background)
-        '#11457E', // blue (Moravian eagle shield)
-        '#FFD700', // gold/yellow (Silesian eagle background, crowns, claws)
-        '#FFFFFF', // white (Bohemian lion, Moravian eagle)
-        '#1A1A1A'  // black (Silesian eagle)
-    ];
-
-    // Pre-assign colors to regions so they never change.
-    // Order ensures neighboring regions get different colors.
-    var regionColors = {};
-    var colorIndex = 0;
+    // Same blue as link color and Czech coat of arms
+    var blue = '#11457E';
 
     fetch('/static/geojson/kraje.geojson')
         .then(function(r){return r.json();})
         .then(function(data){
-            // Assign color to each feature by index
-            data.features.forEach(function(f, i) {
-                regionColors[f.properties.kod_kraj] = heraldic[i % heraldic.length];
-            });
-
             var layer = L.geoJSON(data, {
-                style: function(feature) {
-                    var c = regionColors[feature.properties.kod_kraj];
-                    return {color: c, weight: 2, fillColor: c, fillOpacity: 0.15};
+                style: function() {
+                    return {color: blue, weight: 2, fillColor: blue, fillOpacity: 0.08};
                 },
                 onEachFeature: function(feature, lyr) {
                     var name = feature.properties.naz_kraj;
                     var slug = feature.properties.slug;
-                    var c = regionColors[feature.properties.kod_kraj];
                     lyr.bindTooltip(name, {sticky: true});
                     lyr.on('click', function() {
                         window.location.href = '/' + slug + '/';
                     });
                     lyr.on('mouseover', function() {
-                        lyr.setStyle({fillOpacity: 0.4, weight: 3, color: c});
+                        lyr.setStyle({fillOpacity: 0.3, weight: 3});
                     });
                     lyr.on('mouseout', function() {
-                        lyr.setStyle({fillOpacity: 0.15, weight: 2, color: c});
+                        lyr.setStyle({fillOpacity: 0.08, weight: 2});
                     });
                 }
             }).addTo(map);
