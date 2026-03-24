@@ -10,6 +10,8 @@ pub struct Region {
     pub nuts_code: String,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    pub coat_of_arms_ext: Option<String>,
+    pub flag_ext: Option<String>,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }

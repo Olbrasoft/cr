@@ -5,9 +5,9 @@
 {% block header_left %}
 <div class="logo-group">
     <div style="display:flex;align-items:center;gap:0.5rem;">
-        {% match main_municipality.coat_of_arms_url %}
-        {% when Some with (url) %}
-        <img src="{{ img }}{{ url }}" alt="Znak {{ orp.name }}" class="header-emblem">
+        {% match main_municipality.coat_of_arms_ext %}
+        {% when Some with (ext) %}
+        <img src="{{ img }}/img/municipalities/{{ main_municipality.municipality_code }}/coat-of-arms.{{ ext }}" alt="Znak {{ orp.name }}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         <h1>{{ orp.name }}</h1>
@@ -18,13 +18,13 @@
 {% block search_placeholder %}Hledat v {{ orp.name }}...{% endblock %}
 
 {% block header_right %}
+{% match main_municipality.flag_ext %}
+{% when Some with (ext) %}
 <div class="context-emblem">
-    {% match main_municipality.flag_url %}
-    {% when Some with (url) %}
-    <img src="{{ img }}{{ url }}" alt="Vlajka {{ orp.name }}" class="context-emblem-img">
-    {% when None %}
-    {% endmatch %}
+    <img src="{{ img }}/img/municipalities/{{ main_municipality.municipality_code }}/flag.{{ ext }}" alt="Vlajka {{ orp.name }}" class="context-emblem-img">
 </div>
+{% when None %}
+{% endmatch %}
 {% endblock %}
 
 {% block breadcrumb %}

@@ -5,9 +5,9 @@
 {% block header_left %}
 <div class="logo-group">
     <div style="display:flex;align-items:center;gap:0.5rem;">
-        {% match region.coat_of_arms_url %}
-        {% when Some with (url) %}
-        <img src="{{ img }}{{ url }}" alt="Znak {{ region.name }}" class="header-emblem">
+        {% match region.coat_of_arms_ext %}
+        {% when Some with (ext) %}
+        <img src="{{ img }}/img/regions/{{ region.region_code }}/coat-of-arms.{{ ext }}" alt="Znak {{ region.name }}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         <h1>{{ region.name }}</h1>
@@ -18,13 +18,13 @@
 {% block search_placeholder %}Hledat v {{ region.name }}...{% endblock %}
 
 {% block header_right %}
+{% match region.flag_ext %}
+{% when Some with (ext) %}
 <div class="context-emblem">
-    {% match region.flag_url %}
-    {% when Some with (url) %}
-    <img src="{{ img }}{{ url }}" alt="Vlajka {{ region.name }}" class="context-emblem-img">
-    {% when None %}
-    {% endmatch %}
+    <img src="{{ img }}/img/regions/{{ region.region_code }}/flag.{{ ext }}" alt="Vlajka {{ region.name }}" class="context-emblem-img">
 </div>
+{% when None %}
+{% endmatch %}
 {% endblock %}
 
 {% block breadcrumb %}

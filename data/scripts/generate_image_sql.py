@@ -31,12 +31,12 @@ def scan_directory(base_dir, entity_type, code_column, table_name):
                 continue
 
             name, ext = os.path.splitext(filename)
-            r2_path = f"/img/{entity_type}/{code}/{filename}"
+            ext = ext.lstrip(".")  # remove leading dot
 
             if name == "coat-of-arms":
-                sets.append(f"coat_of_arms_url = '{r2_path}'")
+                sets.append(f"coat_of_arms_ext = '{ext}'")
             elif name == "flag":
-                sets.append(f"flag_url = '{r2_path}'")
+                sets.append(f"flag_ext = '{ext}'")
 
         if sets:
             lines.append(
