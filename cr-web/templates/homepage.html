@@ -47,7 +47,7 @@
         .then(function(data){
             var layer = L.geoJSON(data, {
                 style: function() {
-                    return {color: blue, weight: 2, fillColor: blue, fillOpacity: 0.08};
+                    return {color: blue, weight: 2, fillColor: blue, fillOpacity: 0};
                 },
                 onEachFeature: function(feature, lyr) {
                     var name = feature.properties.naz_kraj;
@@ -60,7 +60,7 @@
                         lyr.setStyle({fillOpacity: 0.3, weight: 3});
                     });
                     lyr.on('mouseout', function() {
-                        lyr.setStyle({fillOpacity: 0.08, weight: 2});
+                        lyr.setStyle({fillOpacity: 0, weight: 2});
                     });
                 }
             }).addTo(map);
