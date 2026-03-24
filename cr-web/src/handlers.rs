@@ -41,16 +41,21 @@ struct MunicipalityRow {
 }
 
 // --- Templates ---
+// All templates receive `img` — the image base URL prefix.
+// Production: "" (images via Cloudflare Worker at /img/)
+// Dev: "https://ceskarepublika.wiki" (images fetched from production)
 
 #[derive(Template)]
 #[template(path = "homepage.html")]
 struct HomepageTemplate {
+    img: String,
     regions: Vec<RegionRow>,
 }
 
 #[derive(Template)]
 #[template(path = "region.html")]
 struct RegionTemplate {
+    img: String,
     region: RegionRow,
     orps: Vec<OrpRow>,
 }
@@ -58,6 +63,7 @@ struct RegionTemplate {
 #[derive(Template)]
 #[template(path = "orp.html")]
 struct OrpTemplate {
+    img: String,
     region: RegionRow,
     orp: OrpRow,
     main_municipality: MunicipalityRow,
@@ -67,6 +73,7 @@ struct OrpTemplate {
 #[derive(Template)]
 #[template(path = "municipality.html")]
 struct MunicipalityTemplate {
+    img: String,
     region: RegionRow,
     orp: OrpRow,
     municipality: MunicipalityRow,
@@ -74,7 +81,9 @@ struct MunicipalityTemplate {
 
 #[derive(Template)]
 #[template(path = "404.html")]
-struct NotFoundTemplate;
+struct NotFoundTemplate {
+    img: String,
+}
 
 // --- Handlers ---
 
@@ -88,7 +97,7 @@ pub async fn homepage(State(state): State<AppState>) -> impl IntoResponse {
         .await
         .unwrap_or_default();
 
-    let tmpl = HomepageTemplate { regions };
+    let tmpl = HomepageTemplate { img: state.image_base_url.clone(), regions };
     Html(tmpl.render().unwrap_or_default())
 }
 
@@ -103,7 +112,7 @@ pub async fn resolve_path(
         1 => render_region(&state, segments[0]).await,
         2 => render_orp(&state, segments[0], segments[1]).await,
         3 => render_municipality(&state, segments[0], segments[1], segments[2]).await,
-        _ => not_found(),
+        _ => not_found(&state.image_base_url),
     }
 }
 
@@ -117,7 +126,7 @@ async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html
     .unwrap_or(None);
 
     let Some(region) = region else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let orps = sqlx::query_as::<_, OrpRow>(
@@ -130,7 +139,7 @@ async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html
     .await
     .unwrap_or_default();
 
-    let tmpl = RegionTemplate { region, orps };
+    let tmpl = RegionTemplate { img: state.image_base_url.clone(), region, orps };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }
 
@@ -148,7 +157,7 @@ async fn render_orp(
     .unwrap_or(None);
 
     let Some(region) = region else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let orp = sqlx::query_as::<_, OrpRow>(
@@ -163,7 +172,7 @@ async fn render_orp(
     .unwrap_or(None);
 
     let Some(orp) = orp else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let all_municipalities = sqlx::query_as::<_, MunicipalityRow>(
@@ -186,10 +195,11 @@ async fn render_orp(
     }
 
     let Some(main_municipality) = main_municipality else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let tmpl = OrpTemplate {
+        img: state.image_base_url.clone(),
         region,
         orp,
         main_municipality,
@@ -213,7 +223,7 @@ async fn render_municipality(
     .unwrap_or(None);
 
     let Some(region) = region else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let orp = sqlx::query_as::<_, OrpRow>(
@@ -228,7 +238,7 @@ async fn render_municipality(
     .unwrap_or(None);
 
     let Some(orp) = orp else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let municipality = sqlx::query_as::<_, MunicipalityRow>(
@@ -242,10 +252,11 @@ async fn render_municipality(
     .unwrap_or(None);
 
     let Some(municipality) = municipality else {
-        return not_found();
+        return not_found(&state.image_base_url);
     };
 
     let tmpl = MunicipalityTemplate {
+        img: state.image_base_url.clone(),
         region,
         orp,
         municipality,
@@ -253,8 +264,8 @@ async fn render_municipality(
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }
 
-fn not_found() -> (StatusCode, Html<String>) {
-    let tmpl = NotFoundTemplate;
+fn not_found(image_base_url: &str) -> (StatusCode, Html<String>) {
+    let tmpl = NotFoundTemplate { img: image_base_url.to_string() };
     (
         StatusCode::NOT_FOUND,
         Html(tmpl.render().unwrap_or_default()),

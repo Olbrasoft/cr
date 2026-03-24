@@ -35,17 +35,26 @@ cargo run -p cr-web
 
 Use `http://dev.localhost:3000` for local development.
 
-`dev.localhost` resolves to `127.0.0.1` automatically (RFC 6761) — no DNS configuration needed, no `/etc/hosts` editing. Any `*.localhost` subdomain works out of the box on Linux, macOS, and Windows.
+`dev.localhost` resolves to `127.0.0.1` automatically (RFC 6761) — no DNS or `/etc/hosts` configuration needed.
 
-This keeps the local environment clearly separated from production `ceskarepublika.wiki`.
+### Environment Variables (.env)
+
+```bash
+DATABASE_URL=postgres://jirka@localhost/cr_dev
+IMAGE_BASE_URL=https://ceskarepublika.wiki
+```
+
+| Variable | Dev | Production | Purpose |
+|----------|-----|-----------|---------|
+| `DATABASE_URL` | `postgres://jirka@localhost/cr_dev` | `postgres://cr:***@db:5432/cr` | Database connection |
+| `IMAGE_BASE_URL` | `https://ceskarepublika.wiki` | *(empty)* | Image URL prefix. In dev, images load from production. In production, empty = served via Cloudflare Worker at `/img/` |
+| `GEOJSON_DATA_DIR` | `data/geojson` (default) | `/app/data/geojson` (Docker) | GeoJSON polygon data directory |
+| `STATIC_DIR` | `cr-web/static` (default) | `/app/static` (Docker) | Static assets directory |
+| `RUST_LOG` | `info` | `info` | Log level |
 
 ### Database
 
 Local database: `cr_dev` on localhost PostgreSQL.
-
-```
-DATABASE_URL=postgres://jirka@localhost/cr_dev
-```
 
 The database is small (~9 MB) and can be fully recreated from:
 1. Migrations in `cr-infra/migrations/`

@@ -7,6 +7,9 @@ use sqlx::PgPool;
 pub struct AppState {
     pub db: PgPool,
     pub geojson_index: Arc<GeoJsonIndex>,
+    /// Base URL prefix for images. Empty string in production (served via Cloudflare Worker),
+    /// "https://ceskarepublika.wiki" in dev (images fetched from production).
+    pub image_base_url: String,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.

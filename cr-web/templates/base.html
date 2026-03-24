@@ -19,7 +19,7 @@
         <div class="container header-flex">
             <div class="logo-group">
                 <a href="/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
-                    <img src="/img/velky-statni-znak.svg"
+                    <img src="{{ img }}/img/velky-statni-znak.svg"
                         alt="Státní znak ČR" class="header-emblem">
                     <h1><span class="text-blue">Česká</span> <span class="text-red">republika</span></h1>
                 </a>
@@ -30,7 +30,7 @@
             </div>
             {% block context_emblem %}
             <div class="context-emblem">
-                <img src="/img/maly-statni-znak.svg" alt="Malý státní znak ČR" class="context-emblem-img">
+                <img src="{{ img }}/img/maly-statni-znak.svg" alt="Malý státní znak ČR" class="context-emblem-img">
             </div>
             {% endblock %}
         </div>
@@ -48,7 +48,7 @@
             <div class="footer-main">
                 <div class="footer-brand">info@<span>ceskarepublika</span>.wiki</div>
                 <a href="https://github.com/Olbrasoft/cr" class="footer-github" target="_blank">
-                    <img src="/img/github-mark.svg" alt="GitHub"
+                    <img src="{{ img }}/img/github-mark.svg" alt="GitHub"
                         class="github-icon" style="filter: invert(1);">
                     <span>Projekt na GitHubu</span>
                 </a>

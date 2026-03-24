@@ -38,9 +38,16 @@ async fn main() -> Result<()> {
     let geojson_index = GeoJsonIndex::load(&geojson_dir)
         .context("Failed to load GeoJSON index")?;
 
+    // IMAGE_BASE_URL: empty in production, "https://ceskarepublika.wiki" in dev
+    let image_base_url = std::env::var("IMAGE_BASE_URL").unwrap_or_default();
+    if !image_base_url.is_empty() {
+        tracing::info!("Dev mode: images proxied from {image_base_url}");
+    }
+
     let state = AppState {
         db: pool,
         geojson_index: Arc::new(geojson_index),
+        image_base_url,
     };
 
     let app = Router::new()
