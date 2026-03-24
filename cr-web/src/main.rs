@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -8,7 +9,7 @@ use tower_http::services::ServeDir;
 mod handlers;
 mod state;
 
-use state::AppState;
+use state::{AppState, GeoJsonIndex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,11 +32,22 @@ async fn main() -> Result<()> {
         .context("Failed to run database migrations")?;
     tracing::info!("Database migrations applied");
 
-    let state = AppState { db: pool };
+    // Load GeoJSON index into memory for API endpoints
+    let geojson_dir = std::env::var("GEOJSON_DATA_DIR")
+        .unwrap_or_else(|_| "data/geojson".to_string());
+    let geojson_index = GeoJsonIndex::load(&geojson_dir)
+        .context("Failed to load GeoJSON index")?;
+
+    let state = AppState {
+        db: pool,
+        geojson_index: Arc::new(geojson_index),
+    };
 
     let app = Router::new()
         .route("/", axum::routing::get(handlers::homepage))
         .route("/health", axum::routing::get(handlers::health))
+        .route("/api/geojson/municipality/{code}", axum::routing::get(handlers::geojson_municipality))
+        .route("/api/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
         .nest_service("/static", ServeDir::new(
             std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string())
         ))

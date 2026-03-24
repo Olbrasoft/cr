@@ -32,6 +32,14 @@ node_modules/
 # Wrangler local state
 .wrangler/
 
+# GeoJSON source data (large files, generated from CSU data)
+data/geojson/*_wgs84.geojson
+data/geojson/*_simple.geojson
+
+# Playwright screenshots
+.playwright-mcp/
+*.png
+
 # AI agent skills
 .agents/
 .agent/

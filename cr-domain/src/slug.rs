@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn only_diacritics() {
-        assert_eq!(slug_from_name("Řčšžťďňě"), "rcszttdne");
+        assert_eq!(slug_from_name("Řčšžťďňě"), "rcsztdne");
     }
 
     #[test]

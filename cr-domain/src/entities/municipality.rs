@@ -9,6 +9,8 @@ pub struct Municipality {
     pub municipality_code: String,
     pub pou_code: String,
     pub orp_id: i32,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }

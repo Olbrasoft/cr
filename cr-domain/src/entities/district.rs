@@ -8,6 +8,8 @@ pub struct District {
     pub slug: String,
     pub district_code: String,
     pub region_id: i32,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }

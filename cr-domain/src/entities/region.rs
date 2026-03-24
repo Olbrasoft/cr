@@ -8,6 +8,8 @@ pub struct Region {
     pub slug: String,
     pub region_code: String,
     pub nuts_code: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub created_by: i32,
     pub created_at: DateTime<Utc>,
 }

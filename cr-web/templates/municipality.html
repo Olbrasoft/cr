@@ -18,6 +18,7 @@
         <p class="lead-text">Obec {{ municipality.name }} patří do správního obvodu ORP {{ orp.name }}, {{ region.name }}.</p>
     </div>
     <aside class="content-right">
+        <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
         <div class="premium-infobox">
             <div class="infobox-top">
                 <div class="infobox-title">{{ municipality.name }}</div>
@@ -44,4 +45,29 @@
         </div>
     </aside>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+    var lat = {{ municipality.latitude.unwrap_or(49.8) }};
+    var lon = {{ municipality.longitude.unwrap_or(15.5) }};
+    var muniCode = '{{ municipality.municipality_code }}';
+
+    var map = L.map('map', {scrollWheelZoom: false}).setView([lat, lon], 13);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+    }).addTo(map);
+
+    fetch('/api/geojson/municipality/' + muniCode)
+        .then(function(r){return r.json();})
+        .then(function(data){
+            var layer = L.geoJSON(data, {
+                style: {color: '#d62728', weight: 2.5, fillColor: '#d62728', fillOpacity: 0.12}
+            }).addTo(map);
+            map.fitBounds(layer.getBounds());
+        });
+})();
+</script>
 {% endblock %}

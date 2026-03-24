@@ -289,38 +289,161 @@ cargo run -p cr-web
 
 ## 9. Roadmap
 
-### Phase 1 — Foundation (Current)
-- [x] Repository setup, Cargo workspace
+> Detailed deliverables per phase. See also [MODULES.md](MODULES.md), [DATA_MODEL.md](DATA_MODEL.md), [BUSINESS_MODEL.md](BUSINESS_MODEL.md).
+
+### Phase 1 — Foundation (MVP)
+
+**Goal:** Functional website with complete territorial hierarchy, SEO indexing, first visitors from search engines.
+
+- [x] Cargo workspace scaffolded (cr-domain, cr-app, cr-infra, cr-web)
 - [x] Domain entities (Region, District, Orp, Municipality)
-- [x] SQLx migrations, CSV import (6,258 municipalities loaded)
+- [x] SQLx migrations for all 4 territorial tables
+- [x] CSV import from CSU data (14 regions, 77 districts, 206 ORP, 6,258 municipalities)
 - [x] Basic Axum + Askama SSR (homepage, region, ORP, municipality pages)
-- [x] SEO-friendly URLs (`/kraj/orp/obec/`)
-- [x] Docker Compose deployment (Rust + Postgres on Hetzner CAX11)
+- [x] SEO-friendly URL structure (`/kraj/orp/obec/`)
+- [x] Breadcrumb navigation
+- [x] Docker Compose deployment (Rust + PostgreSQL on Hetzner CAX11)
 - [x] Domain registered: `ceskarepublika.wiki`
-- [x] DNS A records → 46.225.101.253
-- [ ] Cloudflare setup (DNS proxy, SSL/TLS, CDN, Email Routing)
+- [x] DNS A records → Hetzner VPS
+- [ ] Cloudflare setup (DNS proxy, SSL/TLS, CDN, DDoS protection)
 - [ ] Email: `info@ceskarepublika.wiki` via Cloudflare Email Routing
+- [ ] XML sitemap (generated from database / routing table)
+- [ ] robots.txt
+- [ ] Routing table in database (single source of truth for all URLs)
+- [ ] Meta tags (`<title>`, `<meta description>`) per page from routing table
 
-### Phase 2 — Content
-- Monuments module (historic landmarks catalog)
-- AI embeddings for semantic search (pgvector)
-- Image management (Cloudflare R2)
+**Outcome:** Web at www.ceskarepublika.wiki displaying complete territorial hierarchy. Robots index pages, site appears in search engines.
 
-### Phase 3 — Extensions
-- Additional business modules (accommodation, businesses, real estate)
-- User authentication (argon2 + tower-sessions)
-- Previo.cz API integration
+---
 
-### Phase 4 — Scale
-- GeoJSON polygon boundaries on interactive maps
-- GPS coordinates from RÚIAN
-- Caching strategy
-- GitHub Actions CI/CD pipeline
+### Phase 2 — Monuments
+
+**Goal:** Monument catalog linked to territorial hierarchy. Content expansion to attract visitors.
+
+- [ ] Data model for monuments (name, description, GPS, type, photos) — see [DATA_MODEL.md](DATA_MODEL.md)
+- [ ] Import initial monument data (from hrady.cz and other sources)
+- [ ] Monument detail pages with photo gallery
+- [ ] Listing pages: `/pamatky-{city}/`, `/hrady-{city}/`, `/zamky-{city}/`, `/rozhledny-{city}/`
+- [ ] Monument display on municipality pages
+- [ ] Image storage on Cloudflare R2
+- [ ] Image proxy (`/img/...` -> R2 bucket via Cloudflare Transform Rule)
+- [ ] Interactive map with monuments (GPS points, Leaflet + OpenStreetMap)
+- [ ] User ratings for monuments (1-5 stars)
+- [ ] Comments on monuments
+
+**Outcome:** Portal contains a catalog of Czech Republic monuments. Visitors arrive via search engines looking for castles, chateaux, and other monuments.
+
+---
+
+### Phase 3 — Search
+
+**Goal:** Smart search across the entire portal.
+
+- [ ] Fulltext search with Czech language support (PostgreSQL tsvector + Czech hunspell)
+- [ ] Vector (semantic) search using embeddings (pgvector)
+  - Generate embeddings for monument and municipality descriptions
+  - Store in PostgreSQL with pgvector extension
+  - Search by meaning, not just word matching
+- [ ] Autocomplete / suggestions while typing
+- [ ] Search results page (`/hledani/?q=...`)
+- [ ] Result filtering by type (municipalities, monuments, accommodation)
+
+**Outcome:** User can search anything on the portal. Semantic search finds relevant results even with imprecise queries (e.g., "romantic place for a weekend").
+
+---
+
+### Phase 4 — Accommodation
+
+**Goal:** Previo.cz reservation system integration. Launch of primary monetization channel.
+
+- [ ] Data model for accommodation facilities — see [DATA_MODEL.md](DATA_MODEL.md)
+- [ ] Previo.cz API integration
+  - Availability queries
+  - Price queries
+  - Reservation submission
+- [ ] Listing pages: `/ubytovani-{city}/`, `/hotely-{city}/`, `/penziony-{city}/`, `/kempy-{city}/`
+- [ ] Accommodation detail page with photos
+- [ ] Reservation form on detail page
+- [ ] Accommodation display on municipality pages and near monuments
+- [ ] Pagination + infinite scrolling (with user toggle) — see [UI_WIREFRAMES.md](UI_WIREFRAMES.md)
+- [ ] Filtering (type, price, rating)
+- [ ] Owner takeover process for accommodation operators
+
+**Outcome:** Accommodation can be reserved on the portal. Commissions from reservations form first revenue.
+
+---
+
+### Phase 5 — Real Estate
+
+**Goal:** Real estate listings in the context of municipalities. Revenue diversification.
+
+- [ ] Data model for real estate listings — see [DATA_MODEL.md](DATA_MODEL.md)
+- [ ] Integration with real estate source (Digi-reality or similar)
+- [ ] Regular automatic import of listings
+- [ ] Listing pages: `/reality-{city}/`
+- [ ] Real estate display on municipality pages
+- [ ] Filtering (sale/rent, property type, price)
+- [ ] Click-through to source (real estate agency)
+- [ ] Lead generation for real estate agencies
+
+**Outcome:** Municipality pages display current real estate listings. Lead generation for real estate agencies.
+
+---
+
+### Phase 6 — Administration and Wiki
+
+**Goal:** Web interface for content management. Wiki character of the portal.
+
+- [ ] User authentication (argon2 + tower-sessions)
+- [ ] Registration, login, role assignment
+- [ ] Admin web interface for data management
+- [ ] Content editing via web (not just import scripts)
+- [ ] Wiki-style editing for registered users
+- [ ] Change history and rollback capability
+- [ ] Moderation and approval workflow
+- [ ] Role system (admin, editor, operator, user) — see [DATA_MODEL.md](DATA_MODEL.md)
+
+**Outcome:** Portal functions as a wiki — content can be supplemented by registered users. Administrators have full control.
+
+---
+
+### Phase 7 — Scaling and Extensions
+
+**Goal:** Performance increase, additional modules, growth.
+
+- [ ] GeoJSON boundary polygons on interactive maps
+- [ ] GPS coordinates of all municipalities from RUIAN
+- [ ] Cache layer for frequent queries
+- [ ] Parts of municipalities as additional hierarchy level
+- [ ] Module: Restaurants
+- [ ] Module: Businesses and companies
+- [ ] Module: Events
+- [ ] Blog / articles (SEO content)
+- [ ] English language mutation (`/en/` subdirectory)
+- [ ] GitHub Actions CI/CD pipeline
+
+**Outcome:** Portal is a complete informational and commercial platform about the Czech Republic.
+
+---
+
+### Phase Summary
+
+| Phase | Name | Dependencies | Monetization |
+|-------|------|-------------|-------------|
+| 1 | Foundation (MVP) | None | No |
+| 2 | Monuments | Phase 1 | No (content building) |
+| 3 | Search | Phase 1 | No (UX improvement) |
+| 4 | Accommodation | Phase 1, ideally 2 | Yes (Previo commissions) |
+| 5 | Real Estate | Phase 1 | Yes (leads, commissions) |
+| 6 | Administration | Phases 1-5 | No (management efficiency) |
+| 7 | Scaling | All | Yes (more modules, more revenue) |
+
+> **Note:** Phase 4 (Accommodation) and Phase 5 (Real Estate) can run in parallel. Phase 3 (Search) can start any time after Phase 1.
 
 ---
 
 **Created:** 2026-02-07
 **Author:** Olbrasoft + Claude Code
-**Version:** 0.2.0 (Phase 1 — deployed)
+**Version:** 0.3.0 (Phase 1 — deployed)
 **License:** MIT
-**Last updated:** 2026-02-12
+**Last updated:** 2026-03-24
