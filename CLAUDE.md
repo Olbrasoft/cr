@@ -146,27 +146,49 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 - Use `sqlx::test` for database integration tests
 - Mock external services with trait implementations
 
+## Development Workflow
+
+**IMPORTANT: Do NOT deploy every change to production immediately.**
+
+1. Develop and test locally at `http://dev.localhost:3000`
+2. Run `cargo check`, `cargo test`, `cargo clippy -- -D warnings`
+3. Test in browser (use Playwright for verification)
+4. Commit changes (multiple iterations OK)
+5. Deploy to production only when a feature is complete and tested
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full deployment procedure.
+
+### Local Setup
+```bash
+# Database: postgres://jirka@localhost/cr_dev
+cargo run -p cr-web    # Listens on port 3000
+# Open http://dev.localhost:3000
+```
+
+### Deploy to Production
+```bash
+git push origin main
+rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '*.png' --exclude '.env' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
+ssh -p 2222 root@46.225.101.253 "cd /opt/cr && docker compose build web && docker compose up -d web"
+```
+
 ## Current Project Status
 
-**Phase 1 — Foundation** (in progress)
+**Phase 1 — Foundation** (deployed, live at ceskarepublika.wiki)
 
 ### Completed
-- Cargo workspace scaffolded (cr-domain, cr-app, cr-infra, cr-web)
-- Domain entities implemented in `cr-domain/src/entities/`:
-  - `Region` (14 regions / kraje) — region_code, nuts_code
-  - `District` (77 districts / okresy) — district_code, FK → regions
-  - `Orp` (206 ORP) — orp_code, FK → districts
-  - `Municipality` (~6,258 municipalities / obce) — municipality_code, pou_code, FK → orp
-- All entities: `#[derive(Debug, Clone, Serialize, Deserialize)]`, all fields `pub`
-- No `sqlx::FromRow` in domain (belongs in cr-infra)
-- Documentation updated (CLAUDE.md, docs/BLUEPRINT.md) — English entity names
+- Cargo workspace (cr-domain, cr-app, cr-infra, cr-web)
+- Domain entities: Region, District, Orp, Municipality (with latitude/longitude)
+- SQLx migrations, CSV import (6,258 municipalities)
+- Axum + Askama SSR (homepage, region, ORP, municipality pages)
+- SEO-friendly URLs (`/kraj/orp/obec/`)
+- Interactive Leaflet maps with GeoJSON polygons on all pages
+- GeoJSON API endpoints (`/api/geojson/municipality/{code}`, `/api/geojson/orp/{code}`)
+- Docker Compose deployment on Hetzner CAX11
+- Domain `ceskarepublika.wiki` with Cloudflare CDN/SSL
+- Image serving via Cloudflare R2
 
-### Next Steps
-- **Issue #1:** Add SQLx migrations for territorial hierarchy tables
-- Repository traits in cr-domain (planned)
-- SQLx implementations in cr-infra
-- CSV import from ČSÚ data
-- Basic Axum + Askama SSR
+### Phase 2+ tracked in GitHub Issues
 
 ## Engineering Handbook
 

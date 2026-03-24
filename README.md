@@ -90,6 +90,7 @@ cargo test
 
 ## Documentation
 
+- [Development Workflow](docs/DEVELOPMENT.md) — local setup, testing, deployment procedure
 - [Project Blueprint](docs/BLUEPRINT.md) — architecture, tech stack, database model, conventions, roadmap
 - [Vision](docs/VISION.md) — identity, infrastructure, deployment, email strategy
 - [URL Structure](docs/URL_STRUCTURE.md) — routing table, territorial vs commercial URLs, slug rules
