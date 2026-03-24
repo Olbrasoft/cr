@@ -47,3 +47,4 @@ data/geojson/*_simple.geojson
 .cline/
 .goose/
 data/wikidata_municipalities.json
+data/images/

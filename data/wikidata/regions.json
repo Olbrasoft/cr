@@ -1,0 +1,498 @@
+{
+  "head" : {
+    "vars" : [ "item", "itemLabel", "nutsCode", "article", "officialWebsite", "coatOfArms", "flag", "population" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q1085"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Praha"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ010"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://praha.eu/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Coat%20of%20arms%20of%20Prague.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Prague.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "1397880"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Praha"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q46070"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Plze%C5%88sk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ032"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.plzensky-kraj.cz/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Plzen%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Plzen%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "614640"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Plzeňský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q188373"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Jiho%C4%8Desk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ031"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.kraj-jihocesky.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/South%20Bohemian%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20South%20Bohemian%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "653227"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Jihočeský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q188399"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/St%C5%99edo%C4%8Desk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ020"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://stredoceskykraj.cz/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/CZE%20Kraj%20%C5%9Arodkowoczeski%20COA.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Vlajka%20St%C5%99edo%C4%8Desk%C3%A9ho%20kraje.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "1455940"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Středočeský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q190550"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Moravskoslezsk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ080"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.msk.cz/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Moravian-Silesian%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Moravian-Silesian%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "1189204"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Moravskoslezský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q190930"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Kraj_Vyso%C4%8Dina"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ063"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.kr-vysocina.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Vysocina%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Vysocina%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "517647"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Kraj Vysočina"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q191091"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Karlovarsk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ041"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.kr-karlovarsky.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Karlovy%20Vary%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Karlovy%20Vary%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "293195"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Karlovarský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q192536"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Zl%C3%ADnsk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ072"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://zlinskykraj.cz/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Zlin%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Zlin%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "578998"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Zlínský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q192697"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Jihomoravsk%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ064"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.jmk.cz/"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/South%20Moravian%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20South%20Moravian%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "1229343"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Jihomoravský kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q192702"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/%C3%9Asteck%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ042"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.kr-ustecky.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Usti%20nad%20Labem%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Usti%20nad%20Labem%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "808356"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Ústecký kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q193266"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Libereck%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ051"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.kraj-lbc.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Liberec%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Liberec%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "449494"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Liberecký kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q193295"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Kr%C3%A1lov%C3%A9hradeck%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ052"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.khk.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Hradec%20Kralove%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Hradec%20Kralove%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "555923"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Královéhradecký kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q193307"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Olomouck%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ071"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.olkraj.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Olomouc%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Olomouc%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "631500"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Olomoucký kraj"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q193317"
+      },
+      "article" : {
+        "type" : "uri",
+        "value" : "https://cs.wikipedia.org/wiki/Pardubick%C3%BD_kraj"
+      },
+      "nutsCode" : {
+        "type" : "literal",
+        "value" : "CZ053"
+      },
+      "officialWebsite" : {
+        "type" : "uri",
+        "value" : "https://www.pardubickykraj.cz"
+      },
+      "coatOfArms" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Pardubice%20Region%20CoA%20CZ.svg"
+      },
+      "flag" : {
+        "type" : "uri",
+        "value" : "http://commons.wikimedia.org/wiki/Special:FilePath/Flag%20of%20Pardubice%20Region.svg"
+      },
+      "population" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "530469"
+      },
+      "itemLabel" : {
+        "xml:lang" : "cs",
+        "type" : "literal",
+        "value" : "Pardubický kraj"
+      }
+    } ]
+  }
+}
