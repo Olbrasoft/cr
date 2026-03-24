@@ -19,6 +19,7 @@
 <body>
     <header class="site-header-compact">
         <div class="container header-flex">
+            {% block header_left %}
             <div class="logo-group">
                 <a href="/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
                     <img src="{{ img }}/img/velky-statni-znak.svg"
@@ -26,13 +27,14 @@
                     <h1><span class="text-blue">Česká</span> <span class="text-red">republika</span></h1>
                 </a>
             </div>
+            {% endblock %}
             <div class="search-container">
-                <input type="text" class="search-input" placeholder="Hledat obec, kraj, památku...">
+                <input type="text" class="search-input" placeholder="{% block search_placeholder %}Hledat obec, kraj, památku...{% endblock %}">
                 <button class="search-btn">Hledat</button>
             </div>
-            {% block context_emblem %}
+            {% block header_right %}
             <div class="context-emblem">
-                <img src="{{ img }}/img/maly-statni-znak.svg" alt="Malý státní znak ČR" class="context-emblem-img">
+                <img src="{{ img }}/img/vlajka-cr.svg" alt="Vlajka ČR" class="context-emblem-img">
             </div>
             {% endblock %}
         </div>

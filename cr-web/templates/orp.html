@@ -2,6 +2,31 @@
 
 {% block title %}{{ orp.name }} | {{ region.name }}{% endblock %}
 
+{% block header_left %}
+<div class="logo-group">
+    <div style="display:flex;align-items:center;gap:0.5rem;">
+        {% match main_municipality.coat_of_arms_url %}
+        {% when Some with (url) %}
+        <img src="{{ img }}{{ url }}" alt="Znak {{ orp.name }}" class="header-emblem">
+        {% when None %}
+        {% endmatch %}
+        <h1>{{ orp.name }}</h1>
+    </div>
+</div>
+{% endblock %}
+
+{% block search_placeholder %}Hledat v {{ orp.name }}...{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem">
+    {% match main_municipality.flag_url %}
+    {% when Some with (url) %}
+    <img src="{{ img }}{{ url }}" alt="Vlajka {{ orp.name }}" class="context-emblem-img">
+    {% when None %}
+    {% endmatch %}
+</div>
+{% endblock %}
+
 {% block breadcrumb %}
 <nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
     <a href="/">Česká republika</a> &raquo;
@@ -13,7 +38,6 @@
 {% block content %}
 <section class="info-hub">
     <div class="content-left">
-        <h2 class="section-title">{{ main_municipality.name }}</h2>
         <p class="lead-text">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
     </div>
     <aside class="content-right">

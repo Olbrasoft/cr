@@ -16,6 +16,8 @@ struct RegionRow {
     region_code: String,
     latitude: Option<f64>,
     longitude: Option<f64>,
+    coat_of_arms_url: Option<String>,
+    flag_url: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -40,8 +42,8 @@ struct MunicipalityRow {
     longitude: Option<f64>,
     wikipedia_url: Option<String>,
     official_website: Option<String>,
-    #[allow(dead_code)]
     coat_of_arms_url: Option<String>,
+    flag_url: Option<String>,
     population: Option<i32>,
     #[allow(dead_code)]
     elevation: Option<f64>,
@@ -99,7 +101,7 @@ pub async fn health() -> &'static str {
 }
 
 pub async fn homepage(State(state): State<AppState>) -> impl IntoResponse {
-    let regions = sqlx::query_as::<_, RegionRow>("SELECT id, name, slug, region_code, latitude, longitude FROM regions ORDER BY name")
+    let regions = sqlx::query_as::<_, RegionRow>("SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_url, flag_url FROM regions ORDER BY name")
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -125,7 +127,7 @@ pub async fn resolve_path(
 
 async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_url, flag_url FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)
@@ -156,7 +158,7 @@ async fn render_orp(
     orp_slug: &str,
 ) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_url, flag_url FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)
@@ -184,7 +186,7 @@ async fn render_orp(
 
     let all_municipalities = sqlx::query_as::<_, MunicipalityRow>(
         "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-         wikipedia_url, official_website, coat_of_arms_url, population, elevation \
+         wikipedia_url, official_website, coat_of_arms_url, flag_url, population, elevation \
          FROM municipalities WHERE orp_id = $1 ORDER BY name",
     )
     .bind(orp.id)
@@ -223,7 +225,7 @@ async fn render_municipality(
     municipality_slug: &str,
 ) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_url, flag_url FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)
@@ -251,7 +253,7 @@ async fn render_municipality(
 
     let municipality = sqlx::query_as::<_, MunicipalityRow>(
         "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-         wikipedia_url, official_website, coat_of_arms_url, population, elevation \
+         wikipedia_url, official_website, coat_of_arms_url, flag_url, population, elevation \
          FROM municipalities WHERE orp_id = $1 AND slug = $2",
     )
     .bind(orp.id)
