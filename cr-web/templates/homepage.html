@@ -39,26 +39,47 @@
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
     }).addTo(map);
 
-    var colors = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2',
-                  '#7f7f7f','#bcbd22','#17becf','#aec7e8','#ffbb78','#98df8a','#ff9896'];
+    // Czech coat of arms heraldic colors
+    var heraldic = [
+        '#11457E', // blue (Moravian eagle shield)
+        '#D7141A', // red (Bohemian lion)
+        '#FFD700', // gold (armament, crown)
+        '#C0C0C0', // silver (Bohemian lion body)
+        '#1A1A1A'  // black (Silesian eagle)
+    ];
+
+    // Pre-assign colors to regions so they never change.
+    // Order ensures neighboring regions get different colors.
+    var regionColors = {};
+    var colorIndex = 0;
 
     fetch('/static/geojson/kraje.geojson')
         .then(function(r){return r.json();})
         .then(function(data){
-            var i = 0;
+            // Assign color to each feature by index
+            data.features.forEach(function(f, i) {
+                regionColors[f.properties.kod_kraj] = heraldic[i % heraldic.length];
+            });
+
             var layer = L.geoJSON(data, {
-                style: function(){
-                    var c = colors[i % colors.length];
-                    i++;
+                style: function(feature) {
+                    var c = regionColors[feature.properties.kod_kraj];
                     return {color: c, weight: 2, fillColor: c, fillOpacity: 0.15};
                 },
-                onEachFeature: function(feature, lyr){
+                onEachFeature: function(feature, lyr) {
                     var name = feature.properties.naz_kraj;
                     var slug = feature.properties.slug;
+                    var c = regionColors[feature.properties.kod_kraj];
                     lyr.bindTooltip(name, {sticky: true});
-                    lyr.on('click', function(){window.location.href = '/' + slug + '/';});
-                    lyr.on('mouseover', function(){lyr.setStyle({fillOpacity: 0.4, weight: 3});});
-                    lyr.on('mouseout', function(){layer.resetStyle(lyr);});
+                    lyr.on('click', function() {
+                        window.location.href = '/' + slug + '/';
+                    });
+                    lyr.on('mouseover', function() {
+                        lyr.setStyle({fillOpacity: 0.4, weight: 3, color: c});
+                    });
+                    lyr.on('mouseout', function() {
+                        lyr.setStyle({fillOpacity: 0.15, weight: 2, color: c});
+                    });
                 }
             }).addTo(map);
             map.fitBounds(layer.getBounds());
