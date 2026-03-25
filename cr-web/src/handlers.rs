@@ -18,6 +18,7 @@ struct RegionRow {
     longitude: Option<f64>,
     coat_of_arms_ext: Option<String>,
     flag_ext: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -101,7 +102,7 @@ pub async fn health() -> &'static str {
 }
 
 pub async fn homepage(State(state): State<AppState>) -> impl IntoResponse {
-    let regions = sqlx::query_as::<_, RegionRow>("SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext FROM regions ORDER BY name")
+    let regions = sqlx::query_as::<_, RegionRow>("SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions ORDER BY name")
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -127,7 +128,7 @@ pub async fn resolve_path(
 
 async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)
@@ -158,7 +159,7 @@ async fn render_orp(
     orp_slug: &str,
 ) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)
@@ -225,7 +226,7 @@ async fn render_municipality(
     municipality_slug: &str,
 ) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext FROM regions WHERE slug = $1",
+        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
     )
     .bind(region_slug)
     .fetch_optional(&state.db)

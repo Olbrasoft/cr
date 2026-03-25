@@ -36,7 +36,17 @@
 {% block content %}
 <section class="active-hub">
     <div class="active-left">
+        {% match region.description %}
+        {% when Some with (desc) %}
+        <div class="description" style="line-height: 1.7; color: #333; margin-bottom: 1.5rem;">
+            {% for paragraph in desc.split("\n\n") %}
+            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endfor %}
+        </div>
+        {% when None %}
         <p class="lead-text">Obce s rozšířenou působností (ORP) v kraji {{ region.name }}.</p>
+        {% endmatch %}
+        <h3 style="font-size: 1.2rem; margin-bottom: 0.8rem;">Obce s rozšířenou působností</h3>
         <div class="grid-cols-3">
             {% let third = (orps.len() + 2) / 3 %}
             <div>

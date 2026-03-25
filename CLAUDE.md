@@ -146,6 +146,17 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 - Use `sqlx::test` for database integration tests
 - Mock external services with trait implementations
 
+## Database Safety Rules
+
+**CRITICAL: NEVER use `dropdb`, `DROP DATABASE`, or any destructive database operation.**
+
+- NEVER drop or recreate `cr_dev` or `cr_staging` databases
+- NEVER truncate tables with imported data
+- To fix migration issues: fix the `_sqlx_migrations` table rows, NOT the database
+- Use `cr_dev_user` (restricted, cannot DROP DATABASE) — configured in `.env`
+- Staging DB (`cr_staging`) stores downloaded source data (Wikipedia texts, etc.) — NEVER modify or delete
+- If migrations fail: delete the problematic row from `_sqlx_migrations`, NOT the database
+
 ## Development Workflow
 
 **IMPORTANT: Do NOT deploy every change to production immediately.**
