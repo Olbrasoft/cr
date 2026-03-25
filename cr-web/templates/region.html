@@ -38,11 +38,21 @@
     <div class="active-left">
         {% match region.description %}
         {% when Some with (desc) %}
-        <div class="description" style="line-height: 1.7; color: #333; margin-bottom: 1.5rem;">
+        <div class="description" style="line-height: 1.7; color: #333; margin-bottom: 1rem;">
             {% for paragraph in desc.split("\n\n") %}
+            {% if loop.index0 == 0 %}
             <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endif %}
             {% endfor %}
         </div>
+        <div id="desc-full" style="display:none; line-height: 1.7; color: #333; margin-bottom: 1rem;">
+            {% for paragraph in desc.split("\n\n") %}
+            {% if loop.index0 > 0 %}
+            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endif %}
+            {% endfor %}
+        </div>
+        <a href="javascript:void(0)" id="desc-toggle" onclick="var f=document.getElementById('desc-full');var t=document.getElementById('desc-toggle');if(f.style.display==='none'){f.style.display='block';t.textContent='Zobrazit méně';}else{f.style.display='none';t.textContent='Zobrazit více';}" style="color: var(--color-link); font-size: 0.9rem; cursor: pointer; display: inline-block; margin-bottom: 1.5rem;">Zobrazit více</a>
         {% when None %}
         <p class="lead-text">Obce s rozšířenou působností (ORP) v kraji {{ region.name }}.</p>
         {% endmatch %}
