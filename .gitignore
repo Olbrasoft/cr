@@ -48,3 +48,4 @@ data/geojson/*_simple.geojson
 .goose/
 data/wikidata_municipalities.json
 data/images/
+data/scripts/__pycache__/
