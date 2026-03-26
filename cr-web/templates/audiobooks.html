@@ -218,7 +218,10 @@
 <div class="audiobook-list">
 {% for book in audiobooks %}
     <div class="audiobook-card" data-archive-id="{{ book.archive_id }}" data-cover="{{ book.cover_filename }}">
-        <div class="audiobook-header" onclick="togglePlayer('{{ book.archive_id }}')">
+        <div class="audiobook-header" role="button" tabindex="0"
+             aria-expanded="false" aria-controls="player-{{ book.archive_id }}"
+             onclick="togglePlayer('{{ book.archive_id }}')"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePlayer('{{ book.archive_id }}');}">
             <img class="audiobook-cover"
                  src="https://archive.org/download/{{ book.archive_id }}/{{ book.cover_filename }}"
                  alt="{{ book.title }}"
@@ -253,14 +256,25 @@
         var panel = document.getElementById('player-' + archiveId);
         var isOpen = panel.classList.contains('open');
 
-        // Close all panels
+        // Close all panels and stop any playing audio
         document.querySelectorAll('.audiobook-player').forEach(function(p) {
             p.classList.remove('open');
+            p.querySelectorAll('audio').forEach(function(a) {
+                a.pause();
+                a.removeAttribute('src');
+                a.load();
+            });
+        });
+
+        // Reset aria-expanded on all headers
+        document.querySelectorAll('.audiobook-header').forEach(function(h) {
+            h.setAttribute('aria-expanded', 'false');
         });
 
         if (isOpen) return;
 
         panel.classList.add('open');
+        panel.previousElementSibling.setAttribute('aria-expanded', 'true');
 
         if (cache[archiveId]) {
             renderPlayer(archiveId, cache[archiveId], true);
@@ -295,7 +309,8 @@
 
         for (var i = 0; i < tracks.length; i++) {
             var t = tracks[i];
-            var title = t.title || t.name.replace('.m4a', '');
+            var title = t.title || t.name.replace(/\.[^/.]+$/, '');
+            var safeTitle = title.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
             var secs = parseFloat(t.length) || 0;
             var mm = Math.floor(secs / 60);
             var ss = Math.floor(secs % 60);
@@ -303,7 +318,7 @@
 
             html += '<li data-idx="' + i + '" onclick="playTrack(\'' + archiveId + '\',' + i + ')">' +
                 '<span class="chapter-num">' + (i + 1) + '</span>' +
-                '<span class="chapter-title">' + title + '</span>' +
+                '<span class="chapter-title">' + safeTitle + '</span>' +
                 '<span class="chapter-duration">' + dur + '</span>' +
                 '</li>';
         }
@@ -336,7 +351,7 @@
         var track = tracks[idx];
         var url = 'https://archive.org/download/' + archiveId + '/' + encodeURIComponent(track.name);
         var audio = audioElements[archiveId];
-        var title = track.title || track.name.replace('.m4a', '');
+        var title = track.title || track.name.replace(/\.[^/.]+$/, '');
 
         audio.src = url;
         audio.dataset.idx = idx;
