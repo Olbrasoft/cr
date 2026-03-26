@@ -61,7 +61,17 @@
     border-radius: 8px;
     object-fit: cover;
     flex-shrink: 0;
+    background: linear-gradient(110deg, #e8e8e8 30%, #f5f5f5 50%, #e8e8e8 70%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+}
+.audiobook-cover.loaded {
+    animation: none;
     background: #eee;
+}
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
 }
 .audiobook-info {
     flex: 1;
@@ -212,7 +222,8 @@
             <img class="audiobook-cover"
                  src="https://archive.org/download/{{ book.archive_id }}/{{ book.cover_filename }}"
                  alt="{{ book.title }}"
-                 loading="lazy">
+                 loading="lazy"
+                 onload="this.classList.add('loaded')">
             <div class="audiobook-info">
                 <h3>{{ book.title }}</h3>
                 <div class="audiobook-meta">
@@ -259,7 +270,7 @@
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     var tracks = data.files
-                        .filter(function(f) { return f.source === 'original' && f.name.endsWith('.m4a'); })
+                        .filter(function(f) { return f.source === 'original' && (f.name.endsWith('.m4a') || f.name.endsWith('.mp3')); })
                         .sort(function(a, b) { return a.name.localeCompare(b.name); });
                     cache[archiveId] = { tracks: tracks };
                     renderPlayer(archiveId, cache[archiveId], true);
