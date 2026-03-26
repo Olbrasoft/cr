@@ -55,6 +55,8 @@ async fn main() -> Result<()> {
         .route("/health", axum::routing::get(handlers::health))
         .route("/api/geojson/municipality/{code}", axum::routing::get(handlers::geojson_municipality))
         .route("/api/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
+        .route("/audioknihy", axum::routing::get(handlers::audiobooks))
+        .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
         .nest_service("/static", ServeDir::new(
             std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string())
         ))

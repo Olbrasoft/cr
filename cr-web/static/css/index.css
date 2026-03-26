@@ -355,6 +355,41 @@ body {
     max-width: 800px;
 }
 
+/* --- PORTAL CATEGORIES NAV --- */
+.portal-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 1.25rem 0 0.5rem;
+    border-bottom: 1px solid var(--color-gray-border);
+    margin-bottom: 0;
+}
+
+.portal-category-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 1rem;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: var(--color-blue);
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid var(--color-gray-border);
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.portal-category-link:hover {
+    background: var(--color-blue);
+    color: white;
+    border-color: var(--color-blue);
+}
+
+.portal-category-icon {
+    font-size: 1rem;
+}
+
 .multimedia-card {
     margin: 3rem 0;
     border-radius: 12px;

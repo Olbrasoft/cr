@@ -95,6 +95,26 @@ struct NotFoundTemplate {
     img: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct AudiobookRow {
+    #[allow(dead_code)]
+    id: i32,
+    title: String,
+    author: String,
+    narrator: String,
+    year: i16,
+    duration: String,
+    archive_id: String,
+    cover_filename: String,
+}
+
+#[derive(Template)]
+#[template(path = "audiobooks.html")]
+struct AudiobooksTemplate {
+    img: String,
+    audiobooks: Vec<AudiobookRow>,
+}
+
 // --- Handlers ---
 
 pub async fn health() -> &'static str {
@@ -108,6 +128,19 @@ pub async fn homepage(State(state): State<AppState>) -> impl IntoResponse {
         .unwrap_or_default();
 
     let tmpl = HomepageTemplate { img: state.image_base_url.clone(), regions };
+    Html(tmpl.render().unwrap_or_default())
+}
+
+pub async fn audiobooks(State(state): State<AppState>) -> impl IntoResponse {
+    let audiobooks = sqlx::query_as::<_, AudiobookRow>(
+        "SELECT id, title, author, narrator, year, duration, archive_id, cover_filename \
+         FROM audiobooks ORDER BY year, title",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let tmpl = AudiobooksTemplate { img: state.image_base_url.clone(), audiobooks };
     Html(tmpl.render().unwrap_or_default())
 }
 
