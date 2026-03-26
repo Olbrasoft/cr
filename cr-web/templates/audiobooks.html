@@ -1,0 +1,365 @@
+{% extends "base.html" %}
+
+{% block title %}Audioknihy{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/audioknihy/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <img src="/static/img/audioknihy.webp"
+            alt="Audioknihy" class="header-emblem">
+        <h1>Audioknihy</h1>
+    </a>
+</div>
+{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem"></div>
+{% endblock %}
+
+{% block head %}
+<style>
+.audiobooks-hero {
+    text-align: center;
+    padding: 2rem 0 1rem;
+}
+.audiobooks-hero h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-blue);
+}
+.audiobooks-hero p {
+    color: #555;
+    margin-top: 0.5rem;
+    font-size: 1.05rem;
+}
+.audiobook-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    padding: 1.5rem 0 3rem;
+}
+.audiobook-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    overflow: hidden;
+    border: 1px solid var(--color-gray-border);
+}
+.audiobook-header {
+    display: flex;
+    gap: 1.5rem;
+    padding: 1.5rem;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.audiobook-header:hover {
+    background: #f8fafc;
+}
+.audiobook-cover {
+    width: 140px;
+    height: 140px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: #eee;
+}
+.audiobook-info {
+    flex: 1;
+    min-width: 0;
+}
+.audiobook-info h3 {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--color-black);
+    margin-bottom: 0.25rem;
+}
+.audiobook-meta {
+    color: #666;
+    font-size: 0.9rem;
+    line-height: 1.8;
+}
+.audiobook-meta strong {
+    color: var(--color-black);
+}
+.audiobook-expand-hint {
+    font-size: 0.85rem;
+    color: var(--color-blue);
+    margin-top: 0.5rem;
+    font-weight: 500;
+}
+/* Player section */
+.audiobook-player {
+    display: none;
+    border-top: 1px solid var(--color-gray-border);
+    padding: 1.5rem;
+    background: #fafbfc;
+}
+.audiobook-player.open {
+    display: block;
+}
+.player-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+.player-nav-btn {
+    background: var(--color-blue);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+.player-nav-btn:hover {
+    background: #0d3a6a;
+}
+.player-nav-btn:disabled {
+    background: #ccc;
+    cursor: default;
+}
+.now-playing {
+    font-size: 0.9rem;
+    color: var(--color-blue);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+.chapter-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.chapter-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    color: #333;
+    transition: background 0.15s;
+}
+.chapter-list li:hover {
+    background: #eef2f7;
+}
+.chapter-list li.active {
+    background: var(--color-blue);
+    color: white;
+    font-weight: 600;
+}
+.chapter-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--color-gray-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: #555;
+}
+.chapter-list li.active .chapter-num {
+    background: rgba(255,255,255,0.2);
+    color: white;
+}
+.chapter-duration {
+    margin-left: auto;
+    font-size: 0.8rem;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+.loading-chapters {
+    text-align: center;
+    padding: 2rem;
+    color: #888;
+}
+@media (max-width: 600px) {
+    .audiobook-header { flex-direction: column; align-items: center; text-align: center; }
+    .audiobook-cover { width: 120px; height: 120px; }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Audioknihy</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="audiobooks-hero">
+    <p>Poslouchejte audioknihy zdarma přímo v prohlížeči</p>
+</section>
+
+<div class="audiobook-list">
+{% for book in audiobooks %}
+    <div class="audiobook-card" data-archive-id="{{ book.archive_id }}" data-cover="{{ book.cover_filename }}">
+        <div class="audiobook-header" onclick="togglePlayer('{{ book.archive_id }}')">
+            <img class="audiobook-cover"
+                 src="https://archive.org/download/{{ book.archive_id }}/{{ book.cover_filename }}"
+                 alt="{{ book.title }}"
+                 loading="lazy">
+            <div class="audiobook-info">
+                <h3>{{ book.title }}</h3>
+                <div class="audiobook-meta">
+                    <strong>Autor:</strong> {{ book.author }}<br>
+                    <strong>Interpret:</strong> {{ book.narrator }}<br>
+                    <strong>Rok:</strong> {{ book.year }} &middot;
+                    <strong>Délka:</strong> {{ book.duration }}
+                </div>
+                <div class="audiobook-expand-hint">&#9654; Klikněte pro přehrávání</div>
+            </div>
+        </div>
+        <div class="audiobook-player" id="player-{{ book.archive_id }}">
+            <div class="loading-chapters">Načítám kapitoly…</div>
+        </div>
+    </div>
+{% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    var cache = {};
+    var audioElements = {};
+
+    window.togglePlayer = function(archiveId) {
+        var panel = document.getElementById('player-' + archiveId);
+        var isOpen = panel.classList.contains('open');
+
+        // Close all panels
+        document.querySelectorAll('.audiobook-player').forEach(function(p) {
+            p.classList.remove('open');
+        });
+
+        if (isOpen) return;
+
+        panel.classList.add('open');
+
+        if (cache[archiveId]) {
+            renderPlayer(archiveId, cache[archiveId], true);
+        } else {
+            panel.innerHTML = '<div class="loading-chapters">Načítám kapitoly…</div>';
+            fetch('https://archive.org/metadata/' + archiveId)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tracks = data.files
+                        .filter(function(f) { return f.source === 'original' && f.name.endsWith('.m4a'); })
+                        .sort(function(a, b) { return a.name.localeCompare(b.name); });
+                    cache[archiveId] = { tracks: tracks };
+                    renderPlayer(archiveId, cache[archiveId], true);
+                })
+                .catch(function() {
+                    panel.innerHTML = '<div class="loading-chapters">Nepodařilo se načíst kapitoly.</div>';
+                });
+        }
+    };
+
+    function renderPlayer(archiveId, data, autoPlayFirst) {
+        var panel = document.getElementById('player-' + archiveId);
+        var tracks = data.tracks;
+
+        var html = '<div class="player-controls">' +
+            '<button class="player-nav-btn" id="btn-prev-' + archiveId + '" onclick="navTrack(\'' + archiveId + '\',-1)" disabled>&#9664; Předchozí</button>' +
+            '<div class="now-playing" id="now-' + archiveId + '">Načítám…</div>' +
+            '<button class="player-nav-btn" id="btn-next-' + archiveId + '" onclick="navTrack(\'' + archiveId + '\',1)">Další &#9654;</button>' +
+            '</div>' +
+            '<audio id="audio-' + archiveId + '" controls style="width:100%;margin-bottom:1rem;"></audio>' +
+            '<ul class="chapter-list" id="chapters-' + archiveId + '">';
+
+        for (var i = 0; i < tracks.length; i++) {
+            var t = tracks[i];
+            var title = t.title || t.name.replace('.m4a', '');
+            var secs = parseFloat(t.length) || 0;
+            var mm = Math.floor(secs / 60);
+            var ss = Math.floor(secs % 60);
+            var dur = mm + ':' + (ss < 10 ? '0' : '') + ss;
+
+            html += '<li data-idx="' + i + '" onclick="playTrack(\'' + archiveId + '\',' + i + ')">' +
+                '<span class="chapter-num">' + (i + 1) + '</span>' +
+                '<span class="chapter-title">' + title + '</span>' +
+                '<span class="chapter-duration">' + dur + '</span>' +
+                '</li>';
+        }
+
+        html += '</ul>';
+        panel.innerHTML = html;
+
+        var audio = document.getElementById('audio-' + archiveId);
+        audioElements[archiveId] = audio;
+
+        // Auto-play next chapter when current ends
+        audio.addEventListener('ended', function() {
+            var currentIdx = parseInt(audio.dataset.idx || '0', 10);
+            if (currentIdx + 1 < tracks.length) {
+                playTrack(archiveId, currentIdx + 1);
+            }
+        });
+
+        // Auto-play first chapter on open
+        if (autoPlayFirst && tracks.length > 0) {
+            playTrack(archiveId, 0);
+        }
+    }
+
+    window.playTrack = function(archiveId, idx) {
+        var data = cache[archiveId];
+        if (!data) return;
+        var tracks = data.tracks;
+
+        var track = tracks[idx];
+        var url = 'https://archive.org/download/' + archiveId + '/' + encodeURIComponent(track.name);
+        var audio = audioElements[archiveId];
+        var title = track.title || track.name.replace('.m4a', '');
+
+        audio.src = url;
+        audio.dataset.idx = idx;
+        audio.play();
+
+        document.getElementById('now-' + archiveId).textContent =
+            'Kapitola ' + (idx + 1) + ' / ' + tracks.length + ': ' + title;
+
+        // Update prev/next buttons
+        var btnPrev = document.getElementById('btn-prev-' + archiveId);
+        var btnNext = document.getElementById('btn-next-' + archiveId);
+        if (btnPrev) btnPrev.disabled = (idx === 0);
+        if (btnNext) btnNext.disabled = (idx === tracks.length - 1);
+
+        // Highlight active chapter
+        var items = document.querySelectorAll('#chapters-' + archiveId + ' li');
+        items.forEach(function(li) { li.classList.remove('active'); });
+        if (items[idx]) {
+            items[idx].classList.add('active');
+            items[idx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    };
+
+    window.navTrack = function(archiveId, direction) {
+        var audio = audioElements[archiveId];
+        if (!audio) return;
+        var currentIdx = parseInt(audio.dataset.idx || '0', 10);
+        var data = cache[archiveId];
+        if (!data) return;
+        var newIdx = currentIdx + direction;
+        if (newIdx >= 0 && newIdx < data.tracks.length) {
+            playTrack(archiveId, newIdx);
+        }
+    };
+})();
+</script>
+{% endblock %}
