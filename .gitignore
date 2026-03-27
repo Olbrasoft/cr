@@ -49,3 +49,4 @@ data/geojson/*_simple.geojson
 data/wikidata_municipalities.json
 data/images/
 data/scripts/__pycache__/
+data/npu/*.csv

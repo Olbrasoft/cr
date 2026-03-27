@@ -1,0 +1,13 @@
+{
+    "@context": ["http://www.w3.org/ns/csvw", {
+        "@language": "cs"
+    }],
+    "dc:title": "Národní kulturní památky",
+    "dc:description": "Datová sada obsahuje aktuální seznam národních kulturních památek evidovaných v Ústředním seznamu kulturních památek České republiky na základě § 4 zákona 20/1987 Sb. o státní památkové péči, v platném znění. Sada obsahuje identifikátory záznamu, názvy, anotace a lokalizační údaje jednotlivých památek.",
+    "url": "https://pamatkovykatalog.cz/opendata/npu_opendata_NKP.csv",
+    "tableSchema": "https://pamatkovykatalog.cz/opendata/otevrenaDataUSKP.json",
+    "dc:license": {
+        "@id": " https://creativecommons.org/licenses/by/4.0/legalcode"
+    },
+    "dc:date": "2026-02-28T20:05:03Z"
+}

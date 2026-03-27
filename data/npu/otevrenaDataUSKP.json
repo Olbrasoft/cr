@@ -1,0 +1,97 @@
+{
+    "@context": ["http://www.w3.org/ns/csvw", {
+        "@language": "cs"
+    }],
+    "columns": [{
+        "name": "katalogové_číslo",
+        "titles": "katalogové_číslo",
+        "dc:description": "unikátní číslo prvku soupisu památek a památkových území v informačním systému Památkový katalog",
+        "required": true,
+        "datatype": "string"
+    }, {
+        "name": "název",
+        "titles": "název",
+        "dc:description": "název památky v soupise památek a památkových území, nemusí být totožný s názvem, pod kterým byl objekt prohlášen za kulturní památku nebo chráněné území",
+        "required": true,
+        "datatype": "string"
+    }, {
+        "name": "kategorie",
+        "titles": "kategorie",
+        "dc:description": "nabývá hodnot objekt/část objektu/areál/soubor/území, kde objekt je v případě nemovitosti samostatně funkčně, konstrukčně a prostorově vymezená věc, soubor tvoří nejméně 2 objekty, které mají z památkového hlediska vzájemnou vazbu, např. společnou dataci, autorství, umělecké ztvárnění, funkčnost, areál je souborem věcí na určitém území. Kategorie území je použita pro plošně chráněná území neb ochranná pásma",
+        "required": true,
+        "datatype": "string"
+    }, {
+        "name": "kraj",
+        "titles": "kraj",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "okres",
+        "titles": "okres",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "obec",
+        "titles": "obec",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "část_obce",
+        "titles": "část_obce",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "historická_lokalita",
+        "titles": "historická_lokalita",
+        "dc:description": "lokalizace dle historického členění území České republiky, viz CZ_RETRO https://geoportal.npu.cz/webappbuilder/apps/38/",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "katastrální_území",
+        "titles": "katastrální_území",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "adresa",
+        "titles": "adresa",
+        "dc:description": "lokalizační údaje dle administrativního členění České republiky",
+        "required": false,
+        "datatype": "string"
+    }, {
+        "name": "typ_památkové_ochrany",
+        "titles": "typ_památkové_ochrany",
+        "dc:description": "typ ochrany dle památkového zákona, nabývá hodnot kulturní památka, národní kulturní památka, památková rezervace, památková zóna, světové dědictví UNESCO, ochranné pásmo, nárazníková zóna světového dědictví UNESCO",
+        "required": true,
+        "datatype": "string"
+    }, {
+        "name": "rejstříkové_číslo_ÚSKP",
+        "titles": "rejstříkové_číslo_ÚSKP",
+        "dc:description": "unikátní číslo rejstříku Ústředního seznamu kulturních památek České republiky",
+        "required": true,
+        "datatype": "number"
+    }, {
+        "name": "PrStavId",
+        "titles": "PrStavId",
+        "dc:description": "unikátní interní identifikátor aktuálního záznamu památkové ochrany v Památkovém katalogu; umožňuje propojení s lokalizací v Památkovém geografickém informačním systému",
+        "required": true,
+        "datatype": "number"
+    }, {
+        "name": "AktStav_Id",
+        "titles": "AktStav_Id",
+        "dc:description": "unikátní interní identifikátor aktuálního záznamu právního aktu, kterým byla založena památková ochrana; umožňuje propojení s plošným vymezením rozsahu ochrany v Památkovém geografickém informačním systému",
+        "required": true,
+        "datatype": "number"
+    }, {
+        "name": "anotace",
+        "titles": "anotace",
+        "dc:description": "stručná charakteristika památky nebo území (254 znaků)",
+        "required": true,
+        "datatype": "string"
+    }],
+    "primaryKey": "katalogové_číslo"
+}
