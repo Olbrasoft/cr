@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}{{ type_name }} v České republice{% endblock %}
+
+{% block head %}
+{% if page > 1 %}
+<link rel="prev" href="?strana={{ page - 1 }}">
+{% endif %}
+{% if page < total_pages %}
+<link rel="next" href="?strana={{ page + 1 }}">
+{% endif %}
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/pamatky/">Památky</a> &raquo;
+    <span>{{ type_name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="active-hub">
+    <div class="active-left" style="width: 100%; max-width: 100%;">
+        <h2 class="section-title">{{ type_name }} ({{ total_count }})</h2>
+
+        <div id="landmarks-list">
+            {% for l in landmarks %}
+            <div class="landmark-card" style="display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--color-gray-border);">
+                <div style="flex: 1;">
+                    {% if l.region_slug.is_some() && l.orp_slug.is_some() %}
+                    <a href="/{{ l.region_slug.as_deref().unwrap_or("") }}/{{ l.orp_slug.as_deref().unwrap_or("") }}/{{ l.slug }}/" style="font-size: 1.1rem; font-weight: 600; color: var(--color-link);">{{ l.name }}</a>
+                    {% else %}
+                    <span style="font-size: 1.1rem; font-weight: 600;">{{ l.name }}</span>
+                    {% endif %}
+                    {% match l.municipality_name %}
+                    {% when Some with (mname) %}
+                    <div style="color: #666; font-size: 0.9rem; margin-top: 0.2rem;">{{ mname }}</div>
+                    {% when None %}
+                    {% endmatch %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <nav style="display: flex; gap: 0.5rem; justify-content: center; margin: 2rem 0; flex-wrap: wrap;" id="pagination">
+            {% if page > 1 %}
+            <a href="?strana={{ page - 1 }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">&laquo; Předchozí</a>
+            {% endif %}
+
+            {% for p in 1..=total_pages %}
+            {% if p == page %}
+            <span style="padding: 0.5rem 1rem; border: 1px solid var(--color-link); border-radius: 6px; background: var(--color-link); color: white;">{{ p }}</span>
+            {% else %}
+            {% if p <= 3 || p > total_pages - 3 || (p >= page - 2 && p <= page + 2) %}
+            <a href="?strana={{ p }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">{{ p }}</a>
+            {% endif %}
+            {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+            <a href="?strana={{ page + 1 }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">Další &raquo;</a>
+            {% endif %}
+        </nav>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+    var typeSlug = '{{ type_slug }}';
+    var currentPage = {{ page }};
+    var totalPages = {{ total_pages }};
+    var loading = false;
+    var list = document.getElementById('landmarks-list');
+
+    function loadMore() {
+        if (loading || currentPage >= totalPages) return;
+        loading = true;
+        currentPage++;
+
+        fetch('/api/landmarks?type=' + typeSlug + '&page=' + currentPage)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                data.items.forEach(function(item) {
+                    var card = document.createElement('div');
+                    card.className = 'landmark-card';
+                    card.style.cssText = 'display:flex;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--color-gray-border);';
+                    var link = item.url ? '<a href="' + item.url + '" style="font-size:1.1rem;font-weight:600;color:var(--color-link);">' + item.name + '</a>' : '<span style="font-size:1.1rem;font-weight:600;">' + item.name + '</span>';
+                    var muni = item.municipality ? '<div style="color:#666;font-size:0.9rem;margin-top:0.2rem;">' + item.municipality + '</div>' : '';
+                    card.innerHTML = '<div style="flex:1;">' + link + muni + '</div>';
+                    list.appendChild(card);
+                });
+                loading = false;
+                if (!data.hasMore) currentPage = totalPages;
+            })
+            .catch(function() { loading = false; });
+    }
+
+    window.addEventListener('scroll', function() {
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
+            loadMore();
+        }
+    });
+})();
+</script>
+{% endblock %}

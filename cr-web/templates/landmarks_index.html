@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Památky České republiky{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Památky</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="active-hub">
+    <div class="active-left" style="width: 100%; max-width: 100%;">
+        <h2 class="section-title">Památky České republiky</h2>
+        <p class="lead-text">Prozkoumejte hrady, zámky, rozhledny a další památky po celém Česku.</p>
+
+        <div class="grid-cols-3" style="margin-top: 1.5rem;">
+            {% for t in types %}
+            <a href="/{% match t.slug.as_str() %}{% when "castle" %}hrady{% when "chateau" %}zamky{% when "lookout_tower" %}rozhledny{% when "watermill" %}vodni-mlyny{% when "windmill" %}vetrne-mlyny{% when _ %}pamatky{% endmatch %}/" class="nav-link" style="font-size: 1.1rem;">
+                <span>{{ t.name }} ({{ t.count }})</span>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endblock %}

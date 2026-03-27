@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}{{ landmark.name }} | {{ landmark.type_name }}{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <div style="display:flex;align-items:center;gap:0.5rem;">
+        <h1>{{ landmark.name }}</h1>
+    </div>
+</div>
+{% endblock %}
+
+{% block search_placeholder %}Hledat památky...{% endblock %}
+
+{% block header_right %}
+{% match region.flag_ext %}
+{% when Some with (ext) %}
+<div class="context-emblem">
+    <img src="{{ img }}/img/regions/{{ region.region_code }}/flag.{{ ext }}" alt="Vlajka {{ region.name }}" class="context-emblem-img">
+</div>
+{% when None %}
+{% endmatch %}
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
+    <a href="/{{ region.slug }}/{{ orp.slug }}/">{{ orp.name }}</a> &raquo;
+    <span>{{ landmark.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="info-hub">
+    <div class="content-left">
+        <span style="display: inline-block; background: var(--color-link); color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem; margin-bottom: 1rem;">{{ landmark.type_name }}</span>
+        {% match landmark.description %}
+        {% when Some with (desc) %}
+        <div style="line-height: 1.7; color: #333;">
+            {% for paragraph in desc.split("\n\n") %}
+            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endfor %}
+        </div>
+        {% when None %}
+        {% match landmark.municipality_name %}
+        {% when Some with (mname) %}
+        <p class="lead-text">{{ landmark.name }} se nachází v obci {{ mname }}, {{ region.name }}.</p>
+        {% when None %}
+        <p class="lead-text">{{ landmark.name }}, {{ region.name }}.</p>
+        {% endmatch %}
+        {% endmatch %}
+    </div>
+    <aside class="content-right">
+        {% if landmark.latitude.is_some() %}
+        <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
+        {% endif %}
+        <div class="premium-infobox">
+            <div class="infobox-top">
+                <div class="infobox-title">{{ landmark.name }}</div>
+                <div class="infobox-subtitle">{{ landmark.type_name }}</div>
+            </div>
+            <div class="infobox-table">
+                {% match landmark.municipality_name %}
+                {% when Some with (mname) %}
+                <div class="row-data">
+                    <span class="label-data">Obec</span>
+                    <span class="value-data">{{ mname }}</span>
+                </div>
+                {% when None %}
+                {% endmatch %}
+                <div class="row-data">
+                    <span class="label-data">Kraj</span>
+                    <span class="value-data">{{ region.name }}</span>
+                </div>
+            </div>
+            <div style="padding: 0.75rem 1.25rem; display: flex; flex-direction: column; gap: 0.4rem;">
+                {% match landmark.wikipedia_url %}
+                {% when Some with (url) %}
+                <a href="{{ url }}" target="_blank" rel="noopener" style="color: var(--color-link); font-size: 0.9rem;">Wikipedia</a>
+                {% when None %}
+                {% endmatch %}
+            </div>
+        </div>
+    </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if landmark.latitude.is_some() %}
+<script>
+(function(){
+    var lat = {{ landmark.latitude.unwrap_or(49.8) }};
+    var lon = {{ landmark.longitude.unwrap_or(15.5) }};
+    var map = L.map('map', {scrollWheelZoom: false}).setView([lat, lon], 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+    }).addTo(map);
+    L.marker([lat, lon]).addTo(map).bindPopup('{{ landmark.name }}');
+})();
+</script>
+{% endif %}
+{% endblock %}
