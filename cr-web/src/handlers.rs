@@ -115,6 +115,7 @@ struct OrpTemplate {
     orp: OrpRow,
     main_municipality: MunicipalityRow,
     other_municipalities: Vec<MunicipalityRow>,
+    landmarks: Vec<MunicipalityLandmarkRow>,
     landmarks_count: i64,
 }
 
@@ -351,12 +352,26 @@ async fn render_orp(
     .await
     .unwrap_or(0);
 
+    // Landmarks in the main municipality (ORP town itself)
+    let landmarks = sqlx::query_as::<_, MunicipalityLandmarkRow>(
+        "SELECT l.name, l.slug, lt.name as type_name \
+         FROM landmarks l \
+         JOIN landmark_types lt ON l.type_id = lt.id \
+         WHERE l.municipality_id = $1 \
+         ORDER BY lt.name, l.name",
+    )
+    .bind(main_municipality.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
     let tmpl = OrpTemplate {
         img: state.image_base_url.clone(),
         region,
         orp,
         main_municipality,
         other_municipalities,
+        landmarks,
         landmarks_count,
     };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
@@ -368,6 +383,11 @@ async fn render_municipality(
     orp_slug: &str,
     municipality_slug: &str,
 ) -> (StatusCode, Html<String>) {
+    // If municipality slug = ORP slug, the ORP page already shows this municipality
+    if municipality_slug == orp_slug {
+        return not_found(&state.image_base_url);
+    }
+
     let region = sqlx::query_as::<_, RegionRow>(
         "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
     )
