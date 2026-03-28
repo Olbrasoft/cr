@@ -83,6 +83,7 @@ struct LandmarkTypeCount {
 struct LandmarkTypeCountRow {
     slug: String,
     name: String,
+    name_plural: Option<String>,
     count: i64,
 }
 
@@ -578,10 +579,10 @@ fn type_slug_to_url(type_slug: &str) -> &'static str {
 
 pub async fn landmarks_index(State(state): State<AppState>) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, LandmarkTypeCountRow>(
-        "SELECT lt.slug, lt.name, COUNT(l.id) as count \
+        "SELECT lt.slug, lt.name, lt.name_plural, COUNT(l.id) as count \
          FROM landmark_types lt \
          JOIN landmarks l ON l.type_id = lt.id \
-         GROUP BY lt.slug, lt.name \
+         GROUP BY lt.slug, lt.name, lt.name_plural \
          ORDER BY count DESC",
     )
     .fetch_all(&state.db)
@@ -590,7 +591,8 @@ pub async fn landmarks_index(State(state): State<AppState>) -> impl IntoResponse
 
     let types: Vec<LandmarkTypeCount> = rows.into_iter().map(|r| {
         let url_path = format!("/pamatky/{}/", type_slug_to_url(&r.slug));
-        LandmarkTypeCount { slug: r.slug, name: r.name, count: r.count, url_path }
+        let display_name = r.name_plural.clone().unwrap_or_else(|| r.name.clone());
+        LandmarkTypeCount { slug: r.slug, name: display_name, count: r.count, url_path }
     }).collect();
 
     let tmpl = LandmarksIndexTemplate { img: state.image_base_url.clone(), types };
@@ -621,11 +623,11 @@ pub async fn landmarks_by_type(
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
     let type_row = sqlx::query_as::<_, LandmarkTypeCountRow>(
-        "SELECT lt.slug, lt.name, COUNT(l.id) as count \
+        "SELECT lt.slug, lt.name, lt.name_plural, COUNT(l.id) as count \
          FROM landmark_types lt \
          JOIN landmarks l ON l.type_id = lt.id \
          WHERE lt.slug = $1 \
-         GROUP BY lt.slug, lt.name",
+         GROUP BY lt.slug, lt.name, lt.name_plural",
     )
     .bind(&type_slug)
     .fetch_optional(&state.db)
@@ -635,9 +637,10 @@ pub async fn landmarks_by_type(
     let Some(type_row) = type_row else {
         return not_found(&state.image_base_url).into_response();
     };
+    let display_name = type_row.name_plural.clone().unwrap_or_else(|| type_row.name.clone());
     let type_info = LandmarkTypeCount {
         url_path: format!("/pamatky/{}/", type_slug_to_url(&type_row.slug)),
-        slug: type_row.slug, name: type_row.name, count: type_row.count,
+        slug: type_row.slug, name: display_name, count: type_row.count,
     };
 
     let total_pages = (type_info.count + LANDMARKS_PER_PAGE - 1) / LANDMARKS_PER_PAGE;
