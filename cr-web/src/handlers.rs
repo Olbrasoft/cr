@@ -352,15 +352,15 @@ async fn render_orp(
     .await
     .unwrap_or(0);
 
-    // Landmarks in the main municipality (ORP town itself)
+    // Landmarks in entire ORP area (all municipalities)
     let landmarks = sqlx::query_as::<_, MunicipalityLandmarkRow>(
         "SELECT l.name, l.slug, lt.name as type_name \
          FROM landmarks l \
          JOIN landmark_types lt ON l.type_id = lt.id \
-         WHERE l.municipality_id = $1 \
+         WHERE l.municipality_id IN (SELECT id FROM municipalities WHERE orp_id = $1) \
          ORDER BY lt.name, l.name",
     )
-    .bind(main_municipality.id)
+    .bind(orp.id)
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();

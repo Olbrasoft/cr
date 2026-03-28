@@ -94,15 +94,30 @@
 {% if !landmarks.is_empty() %}
 <section class="active-hub" style="padding-top: 0;">
     <div class="active-left">
-        <h3 class="section-title" style="font-size: 1.3rem;">Památky v {{ orp.name }}</h3>
+        <h3 class="section-title" style="font-size: 1.3rem;">Památky v ORP {{ orp.name }} ({{ landmarks.len() }})</h3>
         <div style="margin-top: 0.5rem;">
             {% for l in landmarks %}
+            {% if loop.index0 < 10 %}
             <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
                 <a href="/{{ region.slug }}/{{ orp.slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
                 <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{{ l.type_name }}</span>
             </div>
+            {% endif %}
             {% endfor %}
         </div>
+        {% if landmarks.len() > 10 %}
+        <div id="landmarks-more" style="display:none; margin-top: 0;">
+            {% for l in landmarks %}
+            {% if loop.index0 >= 10 %}
+            <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
+                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
+                <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{{ l.type_name }}</span>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        <a href="javascript:void(0)" id="landmarks-toggle" onclick="var m=document.getElementById('landmarks-more');var t=document.getElementById('landmarks-toggle');if(m.style.display==='none'){m.style.display='block';t.textContent='Zobrazit méně';}else{m.style.display='none';t.textContent='Zobrazit všech {{ landmarks.len() }} památek';}" style="color: var(--color-link); font-size: 0.9rem; cursor: pointer; display: inline-block; margin-top: 0.5rem;">Zobrazit všech {{ landmarks.len() }} památek</a>
+        {% endif %}
     </div>
 </section>
 {% endif %}
