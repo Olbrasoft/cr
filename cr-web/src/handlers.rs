@@ -217,18 +217,36 @@ pub async fn resolve_path(
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     match segments.len() {
-        1 => render_region(&state, segments[0]).await,
-        2 => render_orp(&state, segments[0], segments[1]).await,
+        1 => {
+            // Try landmark type first (e.g. /hrady, /zamky), then region
+            if url_slug_to_type_slug(segments[0]).is_some() {
+                let query = uri.query().map(|q| {
+                    q.split('&')
+                        .filter_map(|p| {
+                            let mut kv = p.splitn(2, '=');
+                            Some((kv.next()?.to_string(), kv.next().unwrap_or("").to_string()))
+                        })
+                        .collect::<std::collections::HashMap<String, String>>()
+                }).unwrap_or_default();
+                return landmarks_by_url(
+                    State(state.clone()),
+                    Path(segments[0].to_string()),
+                    axum::extract::Query(query),
+                ).await.into_response();
+            }
+            render_region(&state, segments[0]).await.into_response()
+        }
+        2 => render_orp(&state, segments[0], segments[1]).await.into_response(),
         3 => {
             // Try municipality first, then landmark
             let result = render_municipality(&state, segments[0], segments[1], segments[2]).await;
             if result.0 == StatusCode::NOT_FOUND {
-                render_landmark(&state, segments[0], segments[1], segments[2]).await
+                render_landmark(&state, segments[0], segments[1], segments[2]).await.into_response()
             } else {
-                result
+                result.into_response()
             }
         }
-        _ => not_found(&state.image_base_url),
+        _ => not_found(&state.image_base_url).into_response(),
     }
 }
 
@@ -590,7 +608,7 @@ pub async fn landmarks_index(State(state): State<AppState>) -> impl IntoResponse
     .unwrap_or_default();
 
     let types: Vec<LandmarkTypeCount> = rows.into_iter().map(|r| {
-        let url_path = format!("/pamatky/{}/", type_slug_to_url(&r.slug));
+        let url_path = format!("/{}/", type_slug_to_url(&r.slug));
         let display_name = r.name_plural.clone().unwrap_or_else(|| r.name.clone());
         LandmarkTypeCount { slug: r.slug, name: display_name, count: r.count, url_path }
     }).collect();
@@ -639,7 +657,7 @@ pub async fn landmarks_by_type(
     };
     let display_name = type_row.name_plural.clone().unwrap_or_else(|| type_row.name.clone());
     let type_info = LandmarkTypeCount {
-        url_path: format!("/pamatky/{}/", type_slug_to_url(&type_row.slug)),
+        url_path: format!("/{}/", type_slug_to_url(&type_row.slug)),
         slug: type_row.slug, name: display_name, count: type_row.count,
     };
 

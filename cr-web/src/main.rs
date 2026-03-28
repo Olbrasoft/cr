@@ -57,8 +57,6 @@ async fn main() -> Result<()> {
         .route("/api/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
         .route("/pamatky", axum::routing::get(handlers::landmarks_index))
         .route("/pamatky/", axum::routing::get(handlers::landmarks_index))
-        .route("/pamatky/{url_slug}", axum::routing::get(handlers::landmarks_by_url))
-        .route("/pamatky/{url_slug}/", axum::routing::get(handlers::landmarks_by_url))
         .route("/api/landmarks", axum::routing::get(handlers::api_landmarks))
         .route("/audioknihy", axum::routing::get(handlers::audiobooks))
         .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
