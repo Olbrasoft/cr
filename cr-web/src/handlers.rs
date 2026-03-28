@@ -72,8 +72,15 @@ struct LandmarkRow {
     region_slug: Option<String>,
 }
 
-#[derive(sqlx::FromRow)]
 struct LandmarkTypeCount {
+    slug: String,
+    name: String,
+    count: i64,
+    url_path: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct LandmarkTypeCountRow {
     slug: String,
     name: String,
     count: i64,
@@ -485,8 +492,92 @@ pub async fn geojson_orp(
 
 const LANDMARKS_PER_PAGE: i64 = 10;
 
+/// Map URL path segments to database type slugs
+fn url_slug_to_type_slug(url_slug: &str) -> Option<&'static str> {
+    match url_slug {
+        "hrady" => Some("castle"),
+        "zamky" => Some("chateau"),
+        "kostely" => Some("church"),
+        "kaple" => Some("chapel"),
+        "tvrze" => Some("fortress"),
+        "sochy" => Some("statue"),
+        "krize" => Some("cross"),
+        "sloupy" => Some("column"),
+        "pomniky" => Some("monument"),
+        "vodni-mlyny" => Some("watermill"),
+        "vetrne-mlyny" => Some("windmill"),
+        "rozhledny" => Some("lookout_tower"),
+        "klastery" => Some("monastery"),
+        "zriceniny" => Some("ruins"),
+        "vily" => Some("villa"),
+        "sousosi" => Some("sculpture_group"),
+        "fary" => Some("rectory"),
+        "sypky" => Some("granary"),
+        "hrbitovy" => Some("cemetery"),
+        "mosty" => Some("bridge"),
+        "radnice" => Some("town_hall"),
+        "skoly" => Some("school"),
+        "kasny" => Some("fountain"),
+        "zvonice" => Some("belfry"),
+        "brany" => Some("gate"),
+        "pivovary" => Some("brewery"),
+        "synagogy" => Some("synagogue"),
+        "hotely" => Some("hotel"),
+        "veze" => Some("tower"),
+        "hrobky" => Some("tomb"),
+        "divadla" => Some("theater"),
+        "parky" => Some("park"),
+        "palace" => Some("palace"),
+        "tovarny" => Some("factory"),
+        "rotundy" => Some("rotunda"),
+        _ => None,
+    }
+}
+
+/// Map database type slug to URL path segment
+fn type_slug_to_url(type_slug: &str) -> &'static str {
+    match type_slug {
+        "castle" => "hrady",
+        "chateau" => "zamky",
+        "church" => "kostely",
+        "chapel" => "kaple",
+        "fortress" => "tvrze",
+        "statue" => "sochy",
+        "cross" => "krize",
+        "column" => "sloupy",
+        "monument" => "pomniky",
+        "watermill" => "vodni-mlyny",
+        "windmill" => "vetrne-mlyny",
+        "lookout_tower" => "rozhledny",
+        "monastery" => "klastery",
+        "ruins" => "zriceniny",
+        "villa" => "vily",
+        "sculpture_group" => "sousosi",
+        "rectory" => "fary",
+        "granary" => "sypky",
+        "cemetery" => "hrbitovy",
+        "bridge" => "mosty",
+        "town_hall" => "radnice",
+        "school" => "skoly",
+        "fountain" => "kasny",
+        "belfry" => "zvonice",
+        "gate" => "brany",
+        "brewery" => "pivovary",
+        "synagogue" => "synagogy",
+        "hotel" => "hotely",
+        "tower" => "veze",
+        "tomb" => "hrobky",
+        "theater" => "divadla",
+        "park" => "parky",
+        "palace" => "palace",
+        "factory" => "tovarny",
+        "rotunda" => "rotundy",
+        _ => "ostatni",
+    }
+}
+
 pub async fn landmarks_index(State(state): State<AppState>) -> impl IntoResponse {
-    let types = sqlx::query_as::<_, LandmarkTypeCount>(
+    let rows = sqlx::query_as::<_, LandmarkTypeCountRow>(
         "SELECT lt.slug, lt.name, COUNT(l.id) as count \
          FROM landmark_types lt \
          JOIN landmarks l ON l.type_id = lt.id \
@@ -497,8 +588,28 @@ pub async fn landmarks_index(State(state): State<AppState>) -> impl IntoResponse
     .await
     .unwrap_or_default();
 
+    let types: Vec<LandmarkTypeCount> = rows.into_iter().map(|r| {
+        let url_path = format!("/pamatky/{}/", type_slug_to_url(&r.slug));
+        LandmarkTypeCount { slug: r.slug, name: r.name, count: r.count, url_path }
+    }).collect();
+
     let tmpl = LandmarksIndexTemplate { img: state.image_base_url.clone(), types };
     Html(tmpl.render().unwrap_or_default())
+}
+
+pub async fn landmarks_by_url(
+    State(state): State<AppState>,
+    Path(url_slug): Path<String>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(type_slug) = url_slug_to_type_slug(&url_slug) else {
+        return not_found(&state.image_base_url).into_response();
+    };
+    landmarks_by_type(
+        State(state),
+        Path(type_slug.to_string()),
+        query,
+    ).await
 }
 
 pub async fn landmarks_by_type(
@@ -509,7 +620,7 @@ pub async fn landmarks_by_type(
     let page: i64 = params.get("strana").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
-    let type_info = sqlx::query_as::<_, LandmarkTypeCount>(
+    let type_row = sqlx::query_as::<_, LandmarkTypeCountRow>(
         "SELECT lt.slug, lt.name, COUNT(l.id) as count \
          FROM landmark_types lt \
          JOIN landmarks l ON l.type_id = lt.id \
@@ -521,8 +632,12 @@ pub async fn landmarks_by_type(
     .await
     .unwrap_or(None);
 
-    let Some(type_info) = type_info else {
+    let Some(type_row) = type_row else {
         return not_found(&state.image_base_url).into_response();
+    };
+    let type_info = LandmarkTypeCount {
+        url_path: format!("/pamatky/{}/", type_slug_to_url(&type_row.slug)),
+        slug: type_row.slug, name: type_row.name, count: type_row.count,
     };
 
     let total_pages = (type_info.count + LANDMARKS_PER_PAGE - 1) / LANDMARKS_PER_PAGE;
