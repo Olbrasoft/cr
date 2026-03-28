@@ -115,6 +115,7 @@ struct OrpTemplate {
     orp: OrpRow,
     main_municipality: MunicipalityRow,
     other_municipalities: Vec<MunicipalityRow>,
+    landmarks_count: i64,
 }
 
 #[derive(Template)]
@@ -124,6 +125,14 @@ struct MunicipalityTemplate {
     region: RegionRow,
     orp: OrpRow,
     municipality: MunicipalityRow,
+    landmarks: Vec<MunicipalityLandmarkRow>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MunicipalityLandmarkRow {
+    name: String,
+    slug: String,
+    type_name: String,
 }
 
 #[derive(Template)]
@@ -333,12 +342,22 @@ async fn render_orp(
         return not_found(&state.image_base_url);
     };
 
+    let landmarks_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM landmarks WHERE municipality_id IN \
+         (SELECT id FROM municipalities WHERE orp_id = $1)",
+    )
+    .bind(orp.id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
     let tmpl = OrpTemplate {
         img: state.image_base_url.clone(),
         region,
         orp,
         main_municipality,
         other_municipalities,
+        landmarks_count,
     };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }
@@ -391,11 +410,24 @@ async fn render_municipality(
         return not_found(&state.image_base_url);
     };
 
+    let landmarks = sqlx::query_as::<_, MunicipalityLandmarkRow>(
+        "SELECT l.name, l.slug, lt.name as type_name \
+         FROM landmarks l \
+         JOIN landmark_types lt ON l.type_id = lt.id \
+         WHERE l.municipality_id = $1 \
+         ORDER BY lt.name, l.name",
+    )
+    .bind(municipality.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
     let tmpl = MunicipalityTemplate {
         img: state.image_base_url.clone(),
         region,
         orp,
         municipality,
+        landmarks,
     };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }

@@ -64,6 +64,12 @@
                     <span class="label-data">Počet obcí v ORP</span>
                     <span class="value-data">{{ other_municipalities.len() + 1 }}</span>
                 </div>
+                {% if landmarks_count > 0 %}
+                <div class="row-data">
+                    <span class="label-data">Památky</span>
+                    <span class="value-data">{{ landmarks_count }}</span>
+                </div>
+                {% endif %}
             </div>
         </div>
     </aside>
