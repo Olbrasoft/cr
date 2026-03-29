@@ -68,7 +68,9 @@ async fn main() -> Result<()> {
         // Insert with a placeholder; we'll get the real ID
         let slug = slug_from_name(&row.region_name);
         let rec = sqlx::query_scalar::<_, i32>(
-            "INSERT INTO regions (name, slug, region_code, nuts_code) VALUES ($1, $2, $3, $4) RETURNING id",
+            "INSERT INTO regions (name, slug, region_code, nuts_code) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (region_code) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug \
+             RETURNING id",
         )
         .bind(&row.region_name)
         .bind(&slug)
@@ -91,7 +93,9 @@ async fn main() -> Result<()> {
         let region_id = region_ids[&row.region_code];
         let slug = slug_from_name(&row.district_name);
         let rec = sqlx::query_scalar::<_, i32>(
-            "INSERT INTO districts (name, slug, district_code, region_id) VALUES ($1, $2, $3, $4) RETURNING id",
+            "INSERT INTO districts (name, slug, district_code, region_id) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (district_code) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug \
+             RETURNING id",
         )
         .bind(&row.district_name)
         .bind(&slug)
@@ -114,7 +118,9 @@ async fn main() -> Result<()> {
         let district_id = district_ids[&row.district_code];
         let slug = slug_from_name(&row.orp_name);
         let rec = sqlx::query_scalar::<_, i32>(
-            "INSERT INTO orp (name, slug, orp_code, district_id) VALUES ($1, $2, $3, $4) RETURNING id",
+            "INSERT INTO orp (name, slug, orp_code, district_id) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (orp_code) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug \
+             RETURNING id",
         )
         .bind(&row.orp_name)
         .bind(&slug)
@@ -134,7 +140,8 @@ async fn main() -> Result<()> {
         let orp_id = orp_ids[&row.orp_code];
         let slug = slug_from_name(&row.municipality_name);
         sqlx::query(
-            "INSERT INTO municipalities (name, slug, municipality_code, pou_code, orp_id) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO municipalities (name, slug, municipality_code, pou_code, orp_id) VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (municipality_code) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug",
         )
         .bind(&row.municipality_name)
         .bind(&slug)

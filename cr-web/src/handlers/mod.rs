@@ -520,13 +520,14 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
                 )
                 .await;
             }
-            // Try ORP first (short URL: /{orp}/), then region
-            let orp_check = sqlx::query_scalar::<_, i32>("SELECT id FROM orp WHERE slug = $1")
-                .bind(segments[0])
-                .fetch_optional(&state.db)
-                .await?;
+            // Single query: is this an ORP or region slug?
+            let is_orp =
+                sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM orp WHERE slug = $1)")
+                    .bind(segments[0])
+                    .fetch_one(&state.db)
+                    .await?;
 
-            if orp_check.is_some() {
+            if is_orp {
                 return Ok(orp::render_orp_by_slug(&state, segments[0])
                     .await
                     .into_response());
@@ -536,40 +537,57 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
                 .into_response())
         }
         2 => {
-            // New primary: /{orp}/{entity}/ — try ORP + entity
-            let orp_check = sqlx::query_scalar::<_, i32>("SELECT id FROM orp WHERE slug = $1")
-                .bind(segments[0])
-                .fetch_optional(&state.db)
-                .await?;
+            // Single query to determine what /{seg0}/{seg1}/ refers to
+            #[derive(sqlx::FromRow)]
+            struct SlugLookup {
+                entity_type: String,
+            }
+            // Priority: municipality > landmark > pool > legacy region redirect
+            let lookup = sqlx::query_as::<_, SlugLookup>(
+                "SELECT entity_type FROM ( \
+                 SELECT 'municipality' as entity_type, 1 as priority FROM municipalities m \
+                 JOIN orp o ON m.orp_id = o.id WHERE o.slug = $1 AND m.slug = $2 \
+                 UNION ALL \
+                 SELECT 'landmark' as entity_type, 2 as priority FROM landmarks l \
+                 JOIN municipalities m ON l.municipality_id = m.id \
+                 JOIN orp o ON m.orp_id = o.id WHERE o.slug = $1 AND l.slug = $2 \
+                 UNION ALL \
+                 SELECT 'pool' as entity_type, 3 as priority FROM pools p \
+                 JOIN orp o ON p.orp_id = o.id WHERE o.slug = $1 AND p.slug = $2 \
+                 UNION ALL \
+                 SELECT 'region_redirect' as entity_type, 4 as priority FROM regions r \
+                 WHERE r.slug = $1 \
+                 ORDER BY priority LIMIT 1) sub",
+            )
+            .bind(segments[0])
+            .bind(segments[1])
+            .fetch_optional(&state.db)
+            .await?;
 
-            if orp_check.is_some() {
-                // /{orp}/{entity}/ — try municipality, landmark, pool
-                let result =
-                    municipalities::render_municipality_short(&state, segments[0], segments[1])
-                        .await;
-                if result.0 == StatusCode::NOT_FOUND {
-                    let landmark_result =
-                        landmarks::render_landmark_short(&state, segments[0], segments[1]).await;
-                    if landmark_result.0 == StatusCode::NOT_FOUND {
-                        return Ok(pools::render_pool_short(&state, segments[0], segments[1])
+            match lookup.as_ref().map(|l| l.entity_type.as_str()) {
+                Some("municipality") => {
+                    Ok(
+                        municipalities::render_municipality_short(&state, segments[0], segments[1])
                             .await
-                            .into_response());
-                    }
-                    return Ok(landmark_result.into_response());
+                            .into_response(),
+                    )
                 }
-                return Ok(result.into_response());
+                Some("landmark") => {
+                    Ok(
+                        landmarks::render_landmark_short(&state, segments[0], segments[1])
+                            .await
+                            .into_response(),
+                    )
+                }
+                Some("pool") => Ok(pools::render_pool_short(&state, segments[0], segments[1])
+                    .await
+                    .into_response()),
+                Some("region_redirect") => {
+                    let new_url = format!("/{}/", segments[1]);
+                    Ok(axum::response::Redirect::permanent(&new_url).into_response())
+                }
+                _ => Ok(not_found(&state.image_base_url).into_response()),
             }
-            // Legacy: /{region}/{orp}/ → 301 redirect to /{orp}/
-            let is_region = sqlx::query_scalar::<_, i32>("SELECT id FROM regions WHERE slug = $1")
-                .bind(segments[0])
-                .fetch_optional(&state.db)
-                .await?;
-
-            if is_region.is_some() {
-                let new_url = format!("/{}/", segments[1]);
-                return Ok(axum::response::Redirect::permanent(&new_url).into_response());
-            }
-            Ok(not_found(&state.image_base_url).into_response())
         }
         3 => {
             // First check: /{orp}/{municipality}/{entity}/ — landmark or pool in specific municipality
