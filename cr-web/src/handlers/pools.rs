@@ -168,14 +168,7 @@ pub(crate) async fn render_pool(
         return not_found(&state.image_base_url);
     };
 
-    let photos = fetch_photos(
-        &state.db,
-        &state.image_base_url,
-        "pool",
-        pool.id,
-        &pool.slug,
-    )
-    .await;
+    let photos = fetch_photos(state, "pool", pool.id, &pool.slug).await;
 
     let tmpl = PoolDetailTemplate {
         img: state.image_base_url.clone(),

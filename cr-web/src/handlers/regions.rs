@@ -1,33 +1,68 @@
+use cr_domain::id::RegionId;
+use cr_domain::repository::{OrpRepository, RegionRepository};
+
 use super::*;
+
+impl From<cr_domain::repository::RegionRecord> for RegionRow {
+    fn from(r: cr_domain::repository::RegionRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            slug: r.slug,
+            region_code: r.region_code,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            coat_of_arms_ext: r.coat_of_arms_ext,
+            flag_ext: r.flag_ext,
+            description: r.description,
+        }
+    }
+}
+
+impl From<cr_domain::repository::OrpRecord> for OrpRow {
+    fn from(r: cr_domain::repository::OrpRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            slug: r.slug,
+            orp_code: r.orp_code,
+            latitude: r.latitude,
+            longitude: r.longitude,
+        }
+    }
+}
 
 pub(crate) async fn render_region(
     state: &AppState,
     region_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
-    )
-    .bind(region_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| { tracing::error!("render_region region query failed: {e}"); None });
+    let region = state
+        .region_repo
+        .find_by_slug(region_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_region region query failed: {e}");
+            None
+        });
 
     let Some(region) = region else {
         return not_found(&state.image_base_url);
     };
 
-    let orps = sqlx::query_as::<_, OrpRow>(
-        "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude FROM orp o \
-         JOIN districts d ON o.district_id = d.id \
-         WHERE d.region_id = $1 ORDER BY o.name",
-    )
-    .bind(region.id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_region orps query failed: {e}");
-        Vec::new()
-    });
+    let region_id = region.id;
+    let region_row: RegionRow = region.into();
+
+    let orps: Vec<OrpRow> = state
+        .orp_repo
+        .find_by_region(RegionId::from(region_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_region orps query failed: {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .map(OrpRow::from)
+        .collect();
 
     // Special case: region with single ORP (e.g. Praha) — render ORP page directly
     if orps.len() == 1 {
@@ -36,7 +71,7 @@ pub(crate) async fn render_region(
 
     let tmpl = RegionTemplate {
         img: state.image_base_url.clone(),
-        region,
+        region: region_row,
         orps,
     };
     match tmpl.render() {

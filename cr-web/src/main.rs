@@ -3,6 +3,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use cr_infra::repositories::{
+    PgLandmarkRepository, PgMunicipalityRepository, PgOrpRepository, PgPhotoRepository,
+    PgPoolRepository, PgRegionRepository,
+};
 use sqlx::postgres::PgPoolOptions;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -48,6 +52,12 @@ async fn main() -> Result<()> {
     }
 
     let state = AppState {
+        region_repo: Arc::new(PgRegionRepository::new(pool.clone())),
+        orp_repo: Arc::new(PgOrpRepository::new(pool.clone())),
+        municipality_repo: Arc::new(PgMunicipalityRepository::new(pool.clone())),
+        landmark_repo: Arc::new(PgLandmarkRepository::new(pool.clone())),
+        pool_repo: Arc::new(PgPoolRepository::new(pool.clone())),
+        photo_repo: Arc::new(PgPhotoRepository::new(pool.clone())),
         db: pool,
         geojson_index: Arc::new(geojson_index),
         image_base_url,
