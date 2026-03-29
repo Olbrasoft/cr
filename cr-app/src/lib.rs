@@ -2,11 +2,13 @@
 //!
 //! Application layer for the Czech Republic portal.
 //!
-//! Contains use-cases, query/command functions, and DTOs.
+//! Contains use-cases, query functions, and DTOs.
 //! Orchestrates between domain logic and infrastructure.
 //!
-//! ## Modules (planned)
+//! ## Modules
 //!
-//! - `queries` - Read operations (get_kraj_by_slug, list_okresy, etc.)
-//! - `commands` - Write operations (import_regions, etc.)
-//! - `dto` - Data Transfer Objects for API/view responses
+//! - `error` - Application-layer error types
+//! - `queries` - Read operations (homepage, region detail, etc.)
+
+pub mod error;
+pub mod queries;

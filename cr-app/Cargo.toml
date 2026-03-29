@@ -9,6 +9,3 @@ license.workspace = true
 [dependencies]
 cr-domain = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true }
-chrono = { workspace = true }
