@@ -115,8 +115,7 @@ pub async fn img_proxy(
         format!("{}/img/{img_path}", state.image_base_url)
     };
 
-    let client = reqwest::Client::new();
-    let resp = match client
+    let resp = match state.http_client
         .get(&upstream_url)
         .timeout(std::time::Duration::from_secs(30))
         .send()

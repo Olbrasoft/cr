@@ -10,6 +10,8 @@ pub struct AppState {
     /// Base URL prefix for images. Empty string in production (served via Cloudflare Worker),
     /// "https://ceskarepublika.wiki" in dev (images fetched from production).
     pub image_base_url: String,
+    /// Shared HTTP client for image proxy (reuse connections).
+    pub http_client: reqwest::Client,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.
