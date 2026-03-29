@@ -1,3 +1,6 @@
+use cr_domain::id::OrpId;
+use cr_domain::repository::{MunicipalityRepository, OrpRepository, RegionRepository};
+
 use super::*;
 
 pub(crate) async fn render_orp_by_slug(
@@ -15,53 +18,53 @@ pub(crate) async fn render_orp(
     region_slug: &str,
     orp_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
-    )
-    .bind(region_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp region query failed: {e}"); None });
+    let region = state
+        .region_repo
+        .find_by_slug(region_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_orp region query failed: {e}");
+            None
+        });
 
     let Some(region) = region else {
         return not_found(&state.image_base_url);
     };
 
-    let orp = sqlx::query_as::<_, OrpRow>(
-        "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude FROM orp o \
-         JOIN districts d ON o.district_id = d.id \
-         WHERE d.region_id = $1 AND o.slug = $2",
-    )
-    .bind(region.id)
-    .bind(orp_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_orp orp query failed: {e}");
-        None
-    });
+    let region_row: RegionRow = region.into();
+
+    let orp = state
+        .orp_repo
+        .find_by_slug(orp_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_orp orp query failed: {e}");
+            None
+        });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
     };
 
-    let all_municipalities = sqlx::query_as::<_, MunicipalityRow>(
-        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-         wikipedia_url, official_website, coat_of_arms_ext, flag_ext, population, elevation \
-         FROM municipalities WHERE orp_id = $1 ORDER BY name",
-    )
-    .bind(orp.id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_orp municipalities query failed: {e}");
-        Vec::new()
-    });
+    let orp_id = orp.id;
+    let orp_row: OrpRow = orp.into();
+
+    let all_municipalities: Vec<MunicipalityRow> = state
+        .municipality_repo
+        .find_by_orp(OrpId::from(orp_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_orp municipalities query failed: {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .map(MunicipalityRow::from)
+        .collect();
 
     let mut main_municipality = None;
     let mut other_municipalities = Vec::new();
     for m in all_municipalities {
-        if main_municipality.is_none() && m.slug == orp.slug {
+        if main_municipality.is_none() && m.slug == orp_row.slug {
             main_municipality = Some(m);
         } else {
             other_municipalities.push(m);
@@ -72,11 +75,12 @@ pub(crate) async fn render_orp(
         return not_found(&state.image_base_url);
     };
 
+    // TODO: add count_by_orp to LandmarkRepository to replace this direct query
     let landmarks_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM landmarks WHERE municipality_id IN \
          (SELECT id FROM municipalities WHERE orp_id = $1)",
     )
-    .bind(orp.id)
+    .bind(orp_id)
     .fetch_one(&state.db)
     .await
     .unwrap_or_else(|e| {
@@ -85,6 +89,7 @@ pub(crate) async fn render_orp(
     });
 
     // Landmarks in entire ORP area — main municipality first, then others
+    // Keep direct sqlx: OrpLandmarkRow is a complex JOIN with no matching domain record
     let landmarks = sqlx::query_as::<_, OrpLandmarkRow>(
         "SELECT l.name, l.slug, lt.name as type_name, m.name as municipality_name, \
          m.slug as municipality_slug, (m.id = $2) as is_main \
@@ -94,7 +99,7 @@ pub(crate) async fn render_orp(
          WHERE m.orp_id = $1 \
          ORDER BY CASE WHEN m.id = $2 THEN 0 ELSE 1 END, lt.name, l.name",
     )
-    .bind(orp.id)
+    .bind(orp_id)
     .bind(main_municipality.id)
     .fetch_all(&state.db)
     .await
@@ -106,12 +111,12 @@ pub(crate) async fn render_orp(
     let (main_landmarks, other_landmarks): (Vec<_>, Vec<_>) =
         landmarks.into_iter().partition(|l| l.is_main);
 
-    // Pools in this ORP
+    // Pools in this ORP — keep direct sqlx: OrpPoolRow has no matching domain record
     let pools = sqlx::query_as::<_, OrpPoolRow>(
         "SELECT name, slug, is_aquapark, is_indoor, is_outdoor, is_natural \
          FROM pools WHERE orp_id = $1 ORDER BY name",
     )
-    .bind(orp.id)
+    .bind(orp_id)
     .fetch_all(&state.db)
     .await
     .unwrap_or_else(|e| {
@@ -121,8 +126,8 @@ pub(crate) async fn render_orp(
 
     let tmpl = OrpTemplate {
         img: state.image_base_url.clone(),
-        region,
-        orp,
+        region: region_row,
+        orp: orp_row,
         main_municipality,
         other_municipalities,
         main_landmarks,

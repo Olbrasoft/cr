@@ -19,11 +19,8 @@ pub struct AppState {
     // Repositories (cr-infra) — used progressively as handlers are refactored
     pub region_repo: Arc<PgRegionRepository>,
     pub orp_repo: Arc<PgOrpRepository>,
-    #[allow(dead_code)]
     pub municipality_repo: Arc<PgMunicipalityRepository>,
-    #[allow(dead_code)]
     pub landmark_repo: Arc<PgLandmarkRepository>,
-    #[allow(dead_code)]
     pub pool_repo: Arc<PgPoolRepository>,
     pub photo_repo: Arc<PgPhotoRepository>,
 }
