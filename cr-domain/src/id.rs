@@ -4,7 +4,14 @@
 macro_rules! define_id {
     ($name:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name(pub i32);
+        pub struct $name(i32);
+
+        impl $name {
+            /// Get the inner i32 value.
+            pub fn value(self) -> i32 {
+                self.0
+            }
+        }
 
         impl From<i32> for $name {
             fn from(id: i32) -> Self {
@@ -38,25 +45,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn different_id_types_are_incompatible() {
-        let region_id = RegionId(1);
-        let district_id = DistrictId(1);
-        // These are different types — can't be compared or swapped
-        assert_eq!(region_id.0, district_id.0); // same inner value
-        // But region_id != district_id would not compile (different types)
-    }
-
-    #[test]
     fn id_conversion() {
         let id = RegionId::from(42);
-        assert_eq!(id.0, 42);
+        assert_eq!(id.value(), 42);
         let raw: i32 = id.into();
         assert_eq!(raw, 42);
     }
 
     #[test]
     fn id_display() {
-        let id = OrpId(123);
+        let id = OrpId::from(123);
         assert_eq!(format!("{id}"), "123");
+    }
+
+    #[test]
+    fn id_equality() {
+        assert_eq!(RegionId::from(1), RegionId::from(1));
+        assert_ne!(RegionId::from(1), RegionId::from(2));
     }
 }
