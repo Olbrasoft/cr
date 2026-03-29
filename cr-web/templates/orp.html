@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{% if other_municipalities.is_empty() %}{{ main_municipality.name }}{% else %}{{ orp.name }} | {{ region.name }}{% endif %}{% endblock %}
+{% block title %}{% if orp.slug == "praha" %}{{ main_municipality.name }}{% else %}{{ orp.name }} | {{ region.name }}{% endif %}{% endblock %}
 
 {% block header_left %}
 <div class="logo-group">
@@ -30,7 +30,7 @@
 {% block breadcrumb %}
 <nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
     <a href="/">Česká republika</a> &raquo;
-    {% if other_municipalities.is_empty() %}
+    {% if orp.slug == "praha" %}
     <span>{{ main_municipality.name }}</span>
     {% else %}
     <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
@@ -42,7 +42,7 @@
 {% block content %}
 <section class="info-hub">
     <div class="content-left">
-        {% if other_municipalities.is_empty() %}
+        {% if orp.slug == "praha" %}
         <p class="lead-text">{{ main_municipality.name }} je hlavní město České republiky a zároveň samostatný kraj.</p>
         {% else %}
         <p class="lead-text">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
@@ -104,7 +104,7 @@
 {% if !main_landmarks.is_empty() %}
 <section class="active-hub" style="padding-top: 0;">
     <div class="active-left">
-        <h3 class="section-title" style="font-size: 1.3rem;">Památky {% if other_municipalities.is_empty() %}({{ main_landmarks.len() }}){% else %}v obci {{ main_municipality.name }} ({{ main_landmarks.len() }}){% endif %}</h3>
+        <h3 class="section-title" style="font-size: 1.3rem;">Památky {% if orp.slug == "praha" %}({{ main_landmarks.len() }}){% else %}v obci {{ main_municipality.name }} ({{ main_landmarks.len() }}){% endif %}</h3>
         <div style="margin-top: 0.5rem;">
             {% for l in main_landmarks %}
             <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">

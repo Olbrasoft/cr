@@ -12,8 +12,8 @@ LOG_ERR="/tmp/r2_landmarks_err.log"
 LOG_SKIP="/tmp/r2_landmarks_skip.log"
 
 # Use production DB for correct IDs
-DB_HOST="46.225.101.253"
-DB_PORT="2222"
+DB_HOST="${DB_HOST:-46.225.101.253}"
+DB_PORT="${DB_PORT:-2222}"
 
 echo "Fetching landmark slug+id mapping from production DB..."
 

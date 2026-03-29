@@ -46,5 +46,7 @@ FROM remaining r
 WHERE l.id = r.id AND r.rn > 1;
 
 -- Step 6: Add new unique constraint (per ORP)
+-- Ensure orp_id is NOT NULL before unique index
+ALTER TABLE landmarks ALTER COLUMN orp_id SET NOT NULL;
 CREATE UNIQUE INDEX idx_landmarks_slug_orp ON landmarks(slug, orp_id);
 CREATE INDEX idx_landmarks_orp ON landmarks(orp_id);
