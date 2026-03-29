@@ -4,7 +4,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 
 mod error;
 mod handlers;
@@ -50,7 +53,14 @@ async fn main() -> Result<()> {
         db: pool,
         geojson_index: Arc::new(geojson_index),
         image_base_url,
+        http_client: reqwest::Client::new(),
     };
+
+    // CORS: allow API endpoints from any origin
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
 
     let app = Router::new()
         .route("/", axum::routing::get(handlers::homepage))
@@ -77,13 +87,48 @@ async fn main() -> Result<()> {
             std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string())
         ))
         .fallback(axum::routing::get(handlers::resolve_path))
+        .layer(CompressionLayer::new())
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received, starting graceful shutdown");
 }
