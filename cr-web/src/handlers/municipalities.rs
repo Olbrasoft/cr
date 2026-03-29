@@ -1,6 +1,10 @@
 use super::*;
 
-pub(crate) async fn render_municipality_short(state: &AppState, orp_slug: &str, muni_slug: &str) -> (StatusCode, Html<String>) {
+pub(crate) async fn render_municipality_short(
+    state: &AppState,
+    orp_slug: &str,
+    muni_slug: &str,
+) -> (StatusCode, Html<String>) {
     let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
@@ -39,7 +43,10 @@ pub(crate) async fn render_municipality(
     .bind(orp_slug)
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_municipality orp query failed: {e}"); None });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_municipality orp query failed: {e}");
+        None
+    });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
@@ -54,7 +61,10 @@ pub(crate) async fn render_municipality(
     .bind(municipality_slug)
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_municipality municipality query failed: {e}"); None });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_municipality municipality query failed: {e}");
+        None
+    });
 
     let Some(municipality) = municipality else {
         return not_found(&state.image_base_url);
@@ -70,7 +80,10 @@ pub(crate) async fn render_municipality(
     .bind(municipality.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_municipality landmarks query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_municipality landmarks query failed: {e}");
+        Vec::new()
+    });
 
     let tmpl = MunicipalityTemplate {
         img: state.image_base_url.clone(),

@@ -1,6 +1,9 @@
 use super::*;
 
-pub(crate) async fn render_orp_by_slug(state: &AppState, orp_slug: &str) -> (StatusCode, Html<String>) {
+pub(crate) async fn render_orp_by_slug(
+    state: &AppState,
+    orp_slug: &str,
+) -> (StatusCode, Html<String>) {
     let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
@@ -33,7 +36,10 @@ pub(crate) async fn render_orp(
     .bind(orp_slug)
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp orp query failed: {e}"); None });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_orp orp query failed: {e}");
+        None
+    });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
@@ -47,7 +53,10 @@ pub(crate) async fn render_orp(
     .bind(orp.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp municipalities query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_orp municipalities query failed: {e}");
+        Vec::new()
+    });
 
     let mut main_municipality = None;
     let mut other_municipalities = Vec::new();
@@ -70,7 +79,10 @@ pub(crate) async fn render_orp(
     .bind(orp.id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp landmarks_count query failed: {e}"); 0 });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_orp landmarks_count query failed: {e}");
+        0
+    });
 
     // Landmarks in entire ORP area — main municipality first, then others
     let landmarks = sqlx::query_as::<_, OrpLandmarkRow>(
@@ -86,7 +98,10 @@ pub(crate) async fn render_orp(
     .bind(main_municipality.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp landmarks query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_orp landmarks query failed: {e}");
+        Vec::new()
+    });
 
     let (main_landmarks, other_landmarks): (Vec<_>, Vec<_>) =
         landmarks.into_iter().partition(|l| l.is_main);
@@ -99,7 +114,10 @@ pub(crate) async fn render_orp(
     .bind(orp.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_orp pools query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_orp pools query failed: {e}");
+        Vec::new()
+    });
 
     let tmpl = OrpTemplate {
         img: state.image_base_url.clone(),

@@ -33,8 +33,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     dotenvy::dotenv().ok();
-    let database_url =
-        std::env::var("DATABASE_URL").context("DATABASE_URL must be set in .env")?;
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set in .env")?;
 
     let pool = PgPool::connect(&database_url)
         .await
@@ -46,8 +45,8 @@ async fn main() -> Result<()> {
 
     tracing::info!("Reading CSV from {csv_path}");
 
-    let mut rdr = csv::Reader::from_path(&csv_path)
-        .with_context(|| format!("Failed to open {csv_path}"))?;
+    let mut rdr =
+        csv::Reader::from_path(&csv_path).with_context(|| format!("Failed to open {csv_path}"))?;
 
     let rows: Vec<CsvRow> = rdr
         .deserialize()

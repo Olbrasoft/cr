@@ -53,6 +53,7 @@ pub(crate) struct MunicipalityRow {
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) municipality_code: String,
+    #[allow(dead_code)]
     pub(crate) pou_code: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
@@ -85,6 +86,7 @@ pub(crate) struct LandmarkRow {
     #[allow(dead_code)]
     pub(crate) municipality_slug: Option<String>,
     pub(crate) orp_slug: Option<String>,
+    #[allow(dead_code)]
     pub(crate) region_slug: Option<String>,
 }
 
@@ -108,7 +110,9 @@ pub(crate) struct LandmarkTypeCountRow {
 pub(crate) struct PhotoInfo {
     pub(crate) url: String,
     pub(crate) thumb_url: String,
+    #[allow(dead_code)]
     pub(crate) width: i16,
+    #[allow(dead_code)]
     pub(crate) height: i16,
 }
 
@@ -134,7 +138,10 @@ pub(crate) async fn fetch_photos(
     .bind(entity_id)
     .fetch_all(db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("fetch_photos query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("fetch_photos query failed: {e}");
+        Vec::new()
+    });
 
     rows.into_iter()
         .map(|r| {
@@ -147,7 +154,12 @@ pub(crate) async fn fetch_photos(
                 format!("{}/img/{}", img_base, r.r2_key)
             };
             let thumb_url = format!("{}?w=360", &url);
-            PhotoInfo { url, thumb_url, width: r.width, height: r.height }
+            PhotoInfo {
+                url,
+                thumb_url,
+                width: r.width,
+                height: r.height,
+            }
         })
         .collect()
 }
@@ -191,6 +203,7 @@ pub(crate) struct OrpPoolRow {
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) is_aquapark: bool,
+    #[allow(dead_code)]
     pub(crate) is_indoor: bool,
     pub(crate) is_outdoor: bool,
     pub(crate) is_natural: bool,
@@ -288,6 +301,7 @@ pub(crate) struct PoolListRow {
     pub(crate) municipality_name: Option<String>,
     pub(crate) orp_slug: Option<String>,
     pub(crate) region_slug: Option<String>,
+    #[allow(dead_code)]
     pub(crate) photo_count: i16,
 }
 
@@ -311,6 +325,7 @@ pub(crate) struct PoolDetailRow {
     pub(crate) is_indoor: bool,
     pub(crate) is_outdoor: bool,
     pub(crate) is_natural: bool,
+    #[allow(dead_code)]
     pub(crate) photo_count: i16,
     pub(crate) municipality_name: Option<String>,
 }
@@ -330,6 +345,7 @@ pub(crate) struct PoolsHubTemplate {
 pub(crate) struct PoolsListTemplate {
     pub(crate) img: String,
     pub(crate) category_name: String,
+    #[allow(dead_code)]
     pub(crate) category_slug: String,
     pub(crate) pools: Vec<PoolListRow>,
     pub(crate) page: i64,
@@ -350,7 +366,9 @@ pub(crate) struct PoolDetailTemplate {
 // --- Shared helpers ---
 
 pub(crate) fn not_found(image_base_url: &str) -> (StatusCode, Html<String>) {
-    let tmpl = NotFoundTemplate { img: image_base_url.to_string() };
+    let tmpl = NotFoundTemplate {
+        img: image_base_url.to_string(),
+    };
     (
         StatusCode::NOT_FOUND,
         Html(tmpl.render().unwrap_or_default()),
@@ -368,7 +386,10 @@ pub(crate) async fn region_slug_for_orp(db: &sqlx::PgPool, orp_slug: &str) -> Op
     .bind(orp_slug)
     .fetch_optional(db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("region_slug_for_orp query failed: {e}"); None })
+    .unwrap_or_else(|e| {
+        tracing::error!("region_slug_for_orp query failed: {e}");
+        None
+    })
 }
 
 /// Map URL path segments to database type slugs
@@ -466,14 +487,14 @@ pub async fn homepage(State(state): State<AppState>) -> WebResult<impl IntoRespo
         .fetch_all(&state.db)
         .await?;
 
-    let tmpl = HomepageTemplate { img: state.image_base_url.clone(), regions };
+    let tmpl = HomepageTemplate {
+        img: state.image_base_url.clone(),
+        regions,
+    };
     Ok(Html(tmpl.render()?))
 }
 
-pub async fn resolve_path(
-    State(state): State<AppState>,
-    uri: Uri,
-) -> WebResult<Response> {
+pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<Response> {
     let path = uri.path().trim_matches('/');
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -481,61 +502,68 @@ pub async fn resolve_path(
         1 => {
             // Try landmark type first (e.g. /hrady, /zamky)
             if url_slug_to_type_slug(segments[0]).is_some() {
-                let query = uri.query().map(|q| {
-                    q.split('&')
-                        .filter_map(|p| {
-                            let mut kv = p.splitn(2, '=');
-                            Some((kv.next()?.to_string(), kv.next().unwrap_or("").to_string()))
-                        })
-                        .collect::<std::collections::HashMap<String, String>>()
-                }).unwrap_or_default();
+                let query = uri
+                    .query()
+                    .map(|q| {
+                        q.split('&')
+                            .filter_map(|p| {
+                                let mut kv = p.splitn(2, '=');
+                                Some((kv.next()?.to_string(), kv.next().unwrap_or("").to_string()))
+                            })
+                            .collect::<std::collections::HashMap<String, String>>()
+                    })
+                    .unwrap_or_default();
                 return landmarks_by_url(
                     State(state.clone()),
                     Path(segments[0].to_string()),
                     axum::extract::Query(query),
-                ).await;
+                )
+                .await;
             }
             // Try ORP first (short URL: /{orp}/), then region
-            let orp_check = sqlx::query_scalar::<_, i32>(
-                "SELECT id FROM orp WHERE slug = $1",
-            )
-            .bind(segments[0])
-            .fetch_optional(&state.db)
-            .await?;
+            let orp_check = sqlx::query_scalar::<_, i32>("SELECT id FROM orp WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(&state.db)
+                .await?;
 
             if orp_check.is_some() {
-                return Ok(orp::render_orp_by_slug(&state, segments[0]).await.into_response());
+                return Ok(orp::render_orp_by_slug(&state, segments[0])
+                    .await
+                    .into_response());
             }
-            Ok(regions::render_region(&state, segments[0]).await.into_response())
+            Ok(regions::render_region(&state, segments[0])
+                .await
+                .into_response())
         }
         2 => {
             // New primary: /{orp}/{entity}/ — try ORP + entity
-            let orp_check = sqlx::query_scalar::<_, i32>(
-                "SELECT id FROM orp WHERE slug = $1",
-            )
-            .bind(segments[0])
-            .fetch_optional(&state.db)
-            .await?;
+            let orp_check = sqlx::query_scalar::<_, i32>("SELECT id FROM orp WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(&state.db)
+                .await?;
 
             if orp_check.is_some() {
                 // /{orp}/{entity}/ — try municipality, landmark, pool
-                let result = municipalities::render_municipality_short(&state, segments[0], segments[1]).await;
+                let result =
+                    municipalities::render_municipality_short(&state, segments[0], segments[1])
+                        .await;
                 if result.0 == StatusCode::NOT_FOUND {
-                    let landmark_result = landmarks::render_landmark_short(&state, segments[0], segments[1]).await;
+                    let landmark_result =
+                        landmarks::render_landmark_short(&state, segments[0], segments[1]).await;
                     if landmark_result.0 == StatusCode::NOT_FOUND {
-                        return Ok(pools::render_pool_short(&state, segments[0], segments[1]).await.into_response());
+                        return Ok(pools::render_pool_short(&state, segments[0], segments[1])
+                            .await
+                            .into_response());
                     }
                     return Ok(landmark_result.into_response());
                 }
                 return Ok(result.into_response());
             }
             // Legacy: /{region}/{orp}/ → 301 redirect to /{orp}/
-            let is_region = sqlx::query_scalar::<_, i32>(
-                "SELECT id FROM regions WHERE slug = $1",
-            )
-            .bind(segments[0])
-            .fetch_optional(&state.db)
-            .await?;
+            let is_region = sqlx::query_scalar::<_, i32>("SELECT id FROM regions WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(&state.db)
+                .await?;
 
             if is_region.is_some() {
                 let new_url = format!("/{}/", segments[1]);
@@ -545,12 +573,10 @@ pub async fn resolve_path(
         }
         3 => {
             // First check: /{orp}/{municipality}/{entity}/ — landmark or pool in specific municipality
-            let orp_id = sqlx::query_scalar::<_, i32>(
-                "SELECT id FROM orp WHERE slug = $1",
-            )
-            .bind(segments[0])
-            .fetch_optional(&state.db)
-            .await?;
+            let orp_id = sqlx::query_scalar::<_, i32>("SELECT id FROM orp WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(&state.db)
+                .await?;
 
             if let Some(oid) = orp_id {
                 // Check if second segment is a municipality in this ORP
@@ -570,21 +596,27 @@ pub async fn resolve_path(
                         return Ok(axum::response::Redirect::permanent(&new_url).into_response());
                     }
                     // Try landmark in this municipality, then pool
-                    let landmark_result = landmarks::render_landmark_in_municipality(&state, segments[0], segments[2], oid).await;
+                    let landmark_result = landmarks::render_landmark_in_municipality(
+                        &state,
+                        segments[0],
+                        segments[2],
+                        oid,
+                    )
+                    .await;
                     if landmark_result.0 != StatusCode::NOT_FOUND {
                         return Ok(landmark_result.into_response());
                     }
-                    return Ok(pools::render_pool_short(&state, segments[0], segments[2]).await.into_response());
+                    return Ok(pools::render_pool_short(&state, segments[0], segments[2])
+                        .await
+                        .into_response());
                 }
             }
 
             // Legacy fallback: /{region}/{orp}/{entity}/ → redirect to /{orp}/{entity}/
-            let is_region = sqlx::query_scalar::<_, i32>(
-                "SELECT id FROM regions WHERE slug = $1",
-            )
-            .bind(segments[0])
-            .fetch_optional(&state.db)
-            .await?;
+            let is_region = sqlx::query_scalar::<_, i32>("SELECT id FROM regions WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(&state.db)
+                .await?;
 
             if is_region.is_some() {
                 let new_url = format!("/{}/{}/", segments[1], segments[2]);

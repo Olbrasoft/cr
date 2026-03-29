@@ -8,6 +8,9 @@ pub async fn audiobooks(State(state): State<AppState>) -> WebResult<impl IntoRes
     .fetch_all(&state.db)
     .await?;
 
-    let tmpl = AudiobooksTemplate { img: state.image_base_url.clone(), audiobooks };
+    let tmpl = AudiobooksTemplate {
+        img: state.image_base_url.clone(),
+        audiobooks,
+    };
     Ok(Html(tmpl.render()?))
 }
