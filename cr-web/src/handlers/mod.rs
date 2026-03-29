@@ -4,6 +4,7 @@ use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
+use cr_domain::repository::{PhotoRepository, RegionRepository};
 
 use crate::error::WebResult;
 use crate::state::AppState;
@@ -117,42 +118,34 @@ pub(crate) struct PhotoInfo {
     pub(crate) height: i16,
 }
 
-#[derive(sqlx::FromRow)]
-struct PhotoMetadataRow {
-    r2_key: String,
-    width: i16,
-    height: i16,
-}
-
 pub(crate) async fn fetch_photos(
-    db: &sqlx::PgPool,
-    img_base: &str,
+    state: &AppState,
     entity_type: &str,
     entity_id: i32,
     slug: &str,
 ) -> Vec<PhotoInfo> {
-    let rows = sqlx::query_as::<_, PhotoMetadataRow>(
-        "SELECT r2_key, width, height FROM photo_metadata \
-         WHERE entity_type = $1 AND entity_id = $2 ORDER BY photo_index",
-    )
-    .bind(entity_type)
-    .bind(entity_id)
-    .fetch_all(db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("fetch_photos query failed: {e}");
-        Vec::new()
-    });
+    let records = state
+        .photo_repo
+        .find_by_entity(entity_type, entity_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("fetch_photos query failed: {e}");
+            Vec::new()
+        });
 
-    rows.into_iter()
+    records
+        .into_iter()
         .map(|r| {
             let url = if entity_type == "landmark" {
                 // SEO URL: /img/landmarks/{slug}-{r2_filename}
                 let filename = r.r2_key.strip_prefix("landmarks/").unwrap_or(&r.r2_key);
-                format!("{}/img/landmarks/{}-{}", img_base, slug, filename)
+                format!(
+                    "{}/img/landmarks/{}-{}",
+                    state.image_base_url, slug, filename
+                )
             } else {
                 // Pools: /img/{r2_key} (slug already in filename)
-                format!("{}/img/{}", img_base, r.r2_key)
+                format!("{}/img/{}", state.image_base_url, r.r2_key)
             };
             let thumb_url = format!("{}?w=360", &url);
             PhotoInfo {
@@ -484,9 +477,13 @@ pub async fn health() -> &'static str {
 }
 
 pub async fn homepage(State(state): State<AppState>) -> WebResult<impl IntoResponse> {
-    let regions = sqlx::query_as::<_, RegionRow>("SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions ORDER BY name")
-        .fetch_all(&state.db)
-        .await?;
+    let regions: Vec<RegionRow> = state
+        .region_repo
+        .find_all()
+        .await?
+        .into_iter()
+        .map(RegionRow::from)
+        .collect();
 
     let tmpl = HomepageTemplate {
         img: state.image_base_url.clone(),
