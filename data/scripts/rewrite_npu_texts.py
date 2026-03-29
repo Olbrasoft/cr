@@ -7,6 +7,7 @@ Saves to cr_staging.npu_rewritten table.
 Skips already-rewritten texts. Safe to restart.
 """
 
+import os
 import time
 import requests
 import psycopg2
@@ -15,9 +16,9 @@ STAGING_URL = "postgresql:///cr_staging"
 
 # Google Gemini API keys (Gemma 3 27B, free tier: 14,400 RPD each)
 GEMINI_KEYS = [
-    "AIzaSyBR4Um_j1hi5ZJvuIWuziHX6HQ2eW83piQ",  # olbrasoft.opencode@gmail.com
-    "AIzaSyCR114yCHheYzlVqLCqdmh-DCK2zgwG1qc",  # olbrasoft.opencode1@gmail.com
-    "AIzaSyBAZinU6QD5twSlz1gIteICV2s-AuFhUOQ",  # olbrasoft.claudecode@gmail.com
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
 ]
 GEMINI_URL_TPL = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={}"
 
@@ -53,12 +54,11 @@ RATE_LIMIT_PAUSE = 60
 
 def rewrite_with_retry(text, key_index=0, max_retries=3):
     """Send text to Gemma 3 27B via Gemini API for rewriting."""
-    key = GEMINI_KEYS[key_index % len(GEMINI_KEYS)]
-    url = GEMINI_URL_TPL.format(key)
-
-    payload = {
-        "contents": [
-            {"role": "user", "parts": [{"text": SYSTEM_PROMPT + "\n\n" + text}]}
+GEMINI_KEYS = [
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
+]
         ],
         "generationConfig": {
             "temperature": 0.7,
@@ -149,14 +149,11 @@ def main():
 
     rewritten = 0
     failed = 0
-    num_keys = len(GEMINI_KEYS)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    # Process in batches of num_keys (3 parallel requests, one per API key)
-    i = 0
-    while i < total:
-        batch = []
+GEMINI_KEYS = [
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
+]
         for j in range(num_keys):
             idx = i + j
             if idx >= total:

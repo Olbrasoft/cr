@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Test Gemma 3 27B via Google Gemini API for rewriting NPÚ texts."""
 
+import os
 import time
 import requests
 import psycopg2
 
-GEMINI_KEY = "AIzaSyBR4Um_j1hi5ZJvuIWuziHX6HQ2eW83piQ"
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY_1", "")
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={GEMINI_KEY}"
 STAGING_URL = "postgresql:///cr_staging"
 

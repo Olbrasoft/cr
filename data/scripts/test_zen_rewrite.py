@@ -5,13 +5,14 @@ Tests Big Pickle, MiMo V2 Pro, Nemotron 3 Super, MiniMax M2.5 on sample texts.
 Measures quality of Czech text rewriting for SEO uniqueness.
 """
 
+import os
 import json
 import time
 import requests
 import psycopg2
 
 ZEN_URL = "https://opencode.ai/zen/v1/chat/completions"
-ZEN_KEY = "sk-av2Vuy1VWwqs6DMjKO0ZVkskgKTF1fSh9OgqaKOCuRk5GAuuLQ5fbLnzB8FguHfu"
+ZEN_KEY = os.environ.get("ZEN_API_KEY", "")
 
 STAGING_URL = "postgresql:///cr_staging"
 

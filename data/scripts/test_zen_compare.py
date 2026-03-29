@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Compare Zen free models side-by-side on one NPÚ text."""
 
+import os
 import json
 import time
 import requests
 import psycopg2
 
 ZEN_URL = "https://opencode.ai/zen/v1/chat/completions"
-ZEN_KEY = "sk-av2Vuy1VWwqs6DMjKO0ZVkskgKTF1fSh9OgqaKOCuRk5GAuuLQ5fbLnzB8FguHfu"
+ZEN_KEY = os.environ.get("ZEN_API_KEY", "")
 STAGING_URL = "postgresql:///cr_staging"
 
 SYSTEM_PROMPT = """Jsi odborný copywriter specializující se na české kulturní dědictví. Tvým úkolem je přepsat poskytnutý text o památce tak, aby:

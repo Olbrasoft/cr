@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Generate pool descriptions using Gemma 3 27B via Google Gemini API."""
 
+import os
 import time
 import requests
 import psycopg2
 
 STAGING_URL = "postgresql:///cr_staging"
 GEMINI_KEYS = [
-    "AIzaSyBR4Um_j1hi5ZJvuIWuziHX6HQ2eW83piQ",
-    "AIzaSyCR114yCHheYzlVqLCqdmh-DCK2zgwG1qc",
-    "AIzaSyBAZinU6QD5twSlz1gIteICV2s-AuFhUOQ",
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
 ]
 GEMINI_URL_TPL = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={}"
 
@@ -41,9 +42,11 @@ Vybavení: {facilities or 'neuvedeno'}
 
 Napiš to jako informativní článek pro turistického průvodce. Zmiň typ zařízení, vybavení a pro koho je vhodné. Napiš POUZE popis, bez nadpisu."""
 
-    url = GEMINI_URL_TPL.format(GEMINI_KEYS[key_idx % len(GEMINI_KEYS)])
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+GEMINI_KEYS = [
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
+]
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 500},
     }
 
