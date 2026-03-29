@@ -63,7 +63,9 @@ pub async fn img_proxy(
     }
 
     // Validate requested width
-    if let Some(w) = target_width && !ALLOWED_WIDTHS.contains(&w) {
+    if let Some(w) = target_width
+        && !ALLOWED_WIDTHS.contains(&w)
+    {
         return (StatusCode::BAD_REQUEST, "Allowed widths: 360, 720").into_response();
     }
 
@@ -77,7 +79,9 @@ pub async fn img_proxy(
     };
 
     // Serve from disk cache if available
-    if cache_path.exists() && let Ok(data) = tokio::fs::read(&cache_path).await {
+    if cache_path.exists()
+        && let Ok(data) = tokio::fs::read(&cache_path).await
+    {
         // Resized images are always JPEG
         let content_type = if target_width.is_some() {
             "image/jpeg"

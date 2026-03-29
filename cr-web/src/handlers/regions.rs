@@ -1,6 +1,9 @@
 use super::*;
 
-pub(crate) async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html<String>) {
+pub(crate) async fn render_region(
+    state: &AppState,
+    region_slug: &str,
+) -> (StatusCode, Html<String>) {
     let region = sqlx::query_as::<_, RegionRow>(
         "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
     )
@@ -21,14 +24,21 @@ pub(crate) async fn render_region(state: &AppState, region_slug: &str) -> (Statu
     .bind(region.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_region orps query failed: {e}"); Vec::new() });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_region orps query failed: {e}");
+        Vec::new()
+    });
 
     // Special case: region with single ORP (e.g. Praha) — render ORP page directly
     if orps.len() == 1 {
         return orp::render_orp(state, region_slug, &orps[0].slug).await;
     }
 
-    let tmpl = RegionTemplate { img: state.image_base_url.clone(), region, orps };
+    let tmpl = RegionTemplate {
+        img: state.image_base_url.clone(),
+        region,
+        orps,
+    };
     match tmpl.render() {
         Ok(html) => (StatusCode::OK, Html(html)),
         Err(e) => {

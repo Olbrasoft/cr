@@ -2,7 +2,11 @@ use super::*;
 
 const LANDMARKS_PER_PAGE: i64 = 10;
 
-pub(crate) async fn render_landmark_short(state: &AppState, orp_slug: &str, landmark_slug: &str) -> (StatusCode, Html<String>) {
+pub(crate) async fn render_landmark_short(
+    state: &AppState,
+    orp_slug: &str,
+    landmark_slug: &str,
+) -> (StatusCode, Html<String>) {
     let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
@@ -48,7 +52,10 @@ pub(crate) async fn render_landmark(
     .bind(orp_slug)
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_landmark orp query failed: {e}"); None });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_landmark orp query failed: {e}");
+        None
+    });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
@@ -73,13 +80,23 @@ pub(crate) async fn render_landmark(
     .bind(orp.id)
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| { tracing::error!("render_landmark landmark query failed: {e}"); None });
+    .unwrap_or_else(|e| {
+        tracing::error!("render_landmark landmark query failed: {e}");
+        None
+    });
 
     let Some(landmark) = landmark else {
         return not_found(&state.image_base_url);
     };
 
-    let photos = fetch_photos(&state.db, &state.image_base_url, "landmark", landmark.id, &landmark.slug).await;
+    let photos = fetch_photos(
+        &state.db,
+        &state.image_base_url,
+        "landmark",
+        landmark.id,
+        &landmark.slug,
+    )
+    .await;
 
     let tmpl = LandmarkDetailTemplate {
         img: state.image_base_url.clone(),
@@ -108,13 +125,24 @@ pub async fn landmarks_index(State(state): State<AppState>) -> WebResult<impl In
     .fetch_all(&state.db)
     .await?;
 
-    let types: Vec<LandmarkTypeCount> = rows.into_iter().map(|r| {
-        let url_path = format!("/{}/", type_slug_to_url(&r.slug));
-        let display_name = r.name_plural.clone().unwrap_or_else(|| r.name.clone());
-        LandmarkTypeCount { slug: r.slug, name: display_name, count: r.count, url_path }
-    }).collect();
+    let types: Vec<LandmarkTypeCount> = rows
+        .into_iter()
+        .map(|r| {
+            let url_path = format!("/{}/", type_slug_to_url(&r.slug));
+            let display_name = r.name_plural.clone().unwrap_or_else(|| r.name.clone());
+            LandmarkTypeCount {
+                slug: r.slug,
+                name: display_name,
+                count: r.count,
+                url_path,
+            }
+        })
+        .collect();
 
-    let tmpl = LandmarksIndexTemplate { img: state.image_base_url.clone(), types };
+    let tmpl = LandmarksIndexTemplate {
+        img: state.image_base_url.clone(),
+        types,
+    };
     Ok(Html(tmpl.render()?))
 }
 
@@ -126,11 +154,7 @@ pub async fn landmarks_by_url(
     let Some(type_slug) = url_slug_to_type_slug(&url_slug) else {
         return Ok(not_found(&state.image_base_url).into_response());
     };
-    landmarks_by_type(
-        State(state),
-        Path(type_slug.to_string()),
-        query,
-    ).await
+    landmarks_by_type(State(state), Path(type_slug.to_string()), query).await
 }
 
 pub async fn landmarks_by_type(
@@ -138,7 +162,11 @@ pub async fn landmarks_by_type(
     Path(type_slug): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> WebResult<Response> {
-    let page: i64 = params.get("strana").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    let page: i64 = params
+        .get("strana")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
     let type_row = sqlx::query_as::<_, LandmarkTypeCountRow>(
@@ -155,10 +183,15 @@ pub async fn landmarks_by_type(
     let Some(type_row) = type_row else {
         return Ok(not_found(&state.image_base_url).into_response());
     };
-    let display_name = type_row.name_plural.clone().unwrap_or_else(|| type_row.name.clone());
+    let display_name = type_row
+        .name_plural
+        .clone()
+        .unwrap_or_else(|| type_row.name.clone());
     let type_info = LandmarkTypeCount {
         url_path: format!("/{}/", type_slug_to_url(&type_row.slug)),
-        slug: type_row.slug, name: display_name, count: type_row.count,
+        slug: type_row.slug,
+        name: display_name,
+        count: type_row.count,
     };
 
     let total_pages = (type_info.count + LANDMARKS_PER_PAGE - 1) / LANDMARKS_PER_PAGE;
@@ -202,7 +235,11 @@ pub async fn api_landmarks(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> WebResult<Response> {
     let type_slug = params.get("type").cloned().unwrap_or_default();
-    let page: i64 = params.get("page").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    let page: i64 = params
+        .get("page")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
     let landmarks = sqlx::query_as::<_, LandmarkRow>(
@@ -227,22 +264,25 @@ pub async fn api_landmarks(
     .fetch_all(&state.db)
     .await?;
 
-    let items: Vec<serde_json::Value> = landmarks.iter().map(|l| {
-        let url = match (&l.orp_slug, &l.municipality_slug) {
-            (Some(o), Some(m)) if o == m => format!("/{o}/{}/", l.slug),
-            (Some(o), Some(m)) => format!("/{o}/{m}/{}/", l.slug),
-            _ => String::new(),
-        };
-        serde_json::json!({
-            "name": l.name,
-            "slug": l.slug,
-            "type": l.type_name,
-            "municipality": l.municipality_name,
-            "url": url,
-            "latitude": l.latitude,
-            "longitude": l.longitude,
+    let items: Vec<serde_json::Value> = landmarks
+        .iter()
+        .map(|l| {
+            let url = match (&l.orp_slug, &l.municipality_slug) {
+                (Some(o), Some(m)) if o == m => format!("/{o}/{}/", l.slug),
+                (Some(o), Some(m)) => format!("/{o}/{m}/{}/", l.slug),
+                _ => String::new(),
+            };
+            serde_json::json!({
+                "name": l.name,
+                "slug": l.slug,
+                "type": l.type_name,
+                "municipality": l.municipality_name,
+                "url": url,
+                "latitude": l.latitude,
+                "longitude": l.longitude,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok((
         StatusCode::OK,
@@ -252,5 +292,6 @@ pub async fn api_landmarks(
             "page": page,
             "hasMore": landmarks.len() as i64 == LANDMARKS_PER_PAGE,
         }))?,
-    ).into_response())
+    )
+        .into_response())
 }

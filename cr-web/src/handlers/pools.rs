@@ -1,18 +1,30 @@
 use super::*;
 
 pub async fn pools_hub(State(state): State<AppState>) -> WebResult<impl IntoResponse> {
-    let aquapark_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark")
-        .fetch_one(&state.db).await?;
-    let indoor_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_indoor AND NOT is_aquapark")
-        .fetch_one(&state.db).await?;
-    let outdoor_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_outdoor AND NOT is_aquapark")
-        .fetch_one(&state.db).await?;
+    let aquapark_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark")
+            .fetch_one(&state.db)
+            .await?;
+    let indoor_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pools WHERE is_indoor AND NOT is_aquapark",
+    )
+    .fetch_one(&state.db)
+    .await?;
+    let outdoor_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pools WHERE is_outdoor AND NOT is_aquapark",
+    )
+    .fetch_one(&state.db)
+    .await?;
     let natural_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_natural")
-        .fetch_one(&state.db).await?;
+        .fetch_one(&state.db)
+        .await?;
 
     let tmpl = PoolsHubTemplate {
         img: state.image_base_url.clone(),
-        aquapark_count, indoor_count, outdoor_count, natural_count,
+        aquapark_count,
+        indoor_count,
+        outdoor_count,
+        natural_count,
     };
     Ok(Html(tmpl.render()?))
 }
@@ -31,15 +43,39 @@ pub async fn pools_by_category(
         _ => ("is_indoor", "Bazény"),
     };
 
-    let page: i64 = params.get("strana").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    let page: i64 = params
+        .get("strana")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let per_page: i64 = 20;
 
     // Use separate queries per category to avoid SQL string interpolation
     let total_count = match filter_col {
-        "is_aquapark" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark").fetch_one(&state.db).await?,
-        "is_indoor" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_indoor AND NOT is_aquapark").fetch_one(&state.db).await?,
-        "is_outdoor" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_outdoor AND NOT is_aquapark").fetch_one(&state.db).await?,
-        _ => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_natural").fetch_one(&state.db).await?,
+        "is_aquapark" => {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark")
+                .fetch_one(&state.db)
+                .await?
+        }
+        "is_indoor" => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pools WHERE is_indoor AND NOT is_aquapark",
+            )
+            .fetch_one(&state.db)
+            .await?
+        }
+        "is_outdoor" => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pools WHERE is_outdoor AND NOT is_aquapark",
+            )
+            .fetch_one(&state.db)
+            .await?
+        }
+        _ => {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_natural")
+                .fetch_one(&state.db)
+                .await?
+        }
     };
     let total_pages = (total_count + per_page - 1) / per_page;
     let offset = (page - 1) * per_page;
@@ -97,9 +133,14 @@ pub(crate) async fn render_pool(
          JOIN districts d ON o.district_id = d.id \
          WHERE d.region_id = $1 AND o.slug = $2",
     )
-    .bind(region.id).bind(orp_slug)
-    .fetch_optional(&state.db).await
-    .unwrap_or_else(|e| { tracing::error!("render_pool orp query failed: {e}"); None });
+    .bind(region.id)
+    .bind(orp_slug)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("render_pool orp query failed: {e}");
+        None
+    });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
@@ -114,19 +155,34 @@ pub(crate) async fn render_pool(
          LEFT JOIN municipalities m ON p.municipality_id = m.id \
          WHERE p.slug = $1 AND p.orp_id = $2",
     )
-    .bind(pool_slug).bind(orp.id)
-    .fetch_optional(&state.db).await
-    .unwrap_or_else(|e| { tracing::error!("render_pool pool query failed: {e}"); None });
+    .bind(pool_slug)
+    .bind(orp.id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("render_pool pool query failed: {e}");
+        None
+    });
 
     let Some(pool) = pool else {
         return not_found(&state.image_base_url);
     };
 
-    let photos = fetch_photos(&state.db, &state.image_base_url, "pool", pool.id, &pool.slug).await;
+    let photos = fetch_photos(
+        &state.db,
+        &state.image_base_url,
+        "pool",
+        pool.id,
+        &pool.slug,
+    )
+    .await;
 
     let tmpl = PoolDetailTemplate {
         img: state.image_base_url.clone(),
-        pool, region, orp, photos,
+        pool,
+        region,
+        orp,
+        photos,
     };
     match tmpl.render() {
         Ok(html) => (StatusCode::OK, Html(html)),
@@ -137,7 +193,11 @@ pub(crate) async fn render_pool(
     }
 }
 
-pub(crate) async fn render_pool_short(state: &AppState, orp_slug: &str, pool_slug: &str) -> (StatusCode, Html<String>) {
+pub(crate) async fn render_pool_short(
+    state: &AppState,
+    orp_slug: &str,
+    pool_slug: &str,
+) -> (StatusCode, Html<String>) {
     let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
         return not_found(&state.image_base_url);
     };

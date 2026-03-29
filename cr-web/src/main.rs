@@ -21,8 +21,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     dotenvy::dotenv().ok();
-    let database_url =
-        std::env::var("DATABASE_URL").context("DATABASE_URL must be set in .env")?;
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set in .env")?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -38,10 +37,9 @@ async fn main() -> Result<()> {
     tracing::info!("Database migrations applied");
 
     // Load GeoJSON index into memory for API endpoints
-    let geojson_dir = std::env::var("GEOJSON_DATA_DIR")
-        .unwrap_or_else(|_| "data/geojson".to_string());
-    let geojson_index = GeoJsonIndex::load(&geojson_dir)
-        .context("Failed to load GeoJSON index")?;
+    let geojson_dir =
+        std::env::var("GEOJSON_DATA_DIR").unwrap_or_else(|_| "data/geojson".to_string());
+    let geojson_index = GeoJsonIndex::load(&geojson_dir).context("Failed to load GeoJSON index")?;
 
     // IMAGE_BASE_URL: empty in production, "https://ceskarepublika.wiki" in dev
     let image_base_url = std::env::var("IMAGE_BASE_URL").unwrap_or_default();
@@ -62,8 +60,14 @@ async fn main() -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
     let api_routes = Router::new()
-        .route("/geojson/municipality/{code}", axum::routing::get(handlers::geojson_municipality))
-        .route("/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
+        .route(
+            "/geojson/municipality/{code}",
+            axum::routing::get(handlers::geojson_municipality),
+        )
+        .route(
+            "/geojson/orp/{code}",
+            axum::routing::get(handlers::geojson_orp),
+        )
         .route("/landmarks", axum::routing::get(handlers::api_landmarks))
         .layer(cors);
 
@@ -77,18 +81,39 @@ async fn main() -> Result<()> {
         .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
         .route("/koupani", axum::routing::get(handlers::pools_hub))
         .route("/koupani/", axum::routing::get(handlers::pools_hub))
-        .route("/aquaparky", axum::routing::get(handlers::pools_by_category))
-        .route("/aquaparky/", axum::routing::get(handlers::pools_by_category))
+        .route(
+            "/aquaparky",
+            axum::routing::get(handlers::pools_by_category),
+        )
+        .route(
+            "/aquaparky/",
+            axum::routing::get(handlers::pools_by_category),
+        )
         .route("/bazeny", axum::routing::get(handlers::pools_by_category))
         .route("/bazeny/", axum::routing::get(handlers::pools_by_category))
-        .route("/koupaliste", axum::routing::get(handlers::pools_by_category))
-        .route("/koupaliste/", axum::routing::get(handlers::pools_by_category))
-        .route("/prirodni-koupaliste", axum::routing::get(handlers::pools_by_category))
-        .route("/prirodni-koupaliste/", axum::routing::get(handlers::pools_by_category))
+        .route(
+            "/koupaliste",
+            axum::routing::get(handlers::pools_by_category),
+        )
+        .route(
+            "/koupaliste/",
+            axum::routing::get(handlers::pools_by_category),
+        )
+        .route(
+            "/prirodni-koupaliste",
+            axum::routing::get(handlers::pools_by_category),
+        )
+        .route(
+            "/prirodni-koupaliste/",
+            axum::routing::get(handlers::pools_by_category),
+        )
         .route("/img/{*path}", axum::routing::get(img_proxy::img_proxy))
-        .nest_service("/static", ServeDir::new(
-            std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string())
-        ))
+        .nest_service(
+            "/static",
+            ServeDir::new(
+                std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string()),
+            ),
+        )
         .fallback(axum::routing::get(handlers::resolve_path))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

@@ -105,7 +105,10 @@ mod tests {
     fn names_with_prepositions() {
         assert_eq!(slug_from_name("Žďár nad Sázavou"), "zdar-nad-sazavou");
         assert_eq!(slug_from_name("Ústí nad Labem"), "usti-nad-labem");
-        assert_eq!(slug_from_name("Dvůr Králové nad Labem"), "dvur-kralove-nad-labem");
+        assert_eq!(
+            slug_from_name("Dvůr Králové nad Labem"),
+            "dvur-kralove-nad-labem"
+        );
     }
 
     #[test]

@@ -60,6 +60,9 @@ impl GeoJsonIndex {
             tracing::warn!("ORP GeoJSON not found at {orp_path}");
         }
 
-        Ok(Self { municipalities, orp })
+        Ok(Self {
+            municipalities,
+            orp,
+        })
     }
 }
