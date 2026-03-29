@@ -1,3 +1,6 @@
+use cr_domain::id::OrpId;
+use cr_domain::repository::{LandmarkRepository, OrpRepository, RegionRepository};
+
 use super::*;
 
 const LANDMARKS_PER_PAGE: i64 = 10;
@@ -31,71 +34,60 @@ pub(crate) async fn render_landmark(
     orp_slug: &str,
     landmark_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
-    )
-    .bind(region_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| { tracing::error!("render_landmark region query failed: {e}"); None });
+    let region = state
+        .region_repo
+        .find_by_slug(region_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_landmark region query failed: {e}");
+            None
+        });
 
     let Some(region) = region else {
         return not_found(&state.image_base_url);
     };
 
-    let orp = sqlx::query_as::<_, OrpRow>(
-        "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude FROM orp o \
-         JOIN districts d ON o.district_id = d.id \
-         WHERE d.region_id = $1 AND o.slug = $2",
-    )
-    .bind(region.id)
-    .bind(orp_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_landmark orp query failed: {e}");
-        None
-    });
+    let region_row: RegionRow = region.into();
+
+    let orp = state
+        .orp_repo
+        .find_by_slug(orp_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_landmark orp query failed: {e}");
+            None
+        });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
     };
 
+    let orp_id = orp.id;
+    let orp_row: OrpRow = orp.into();
+
     // Find landmark by slug within municipalities of this ORP
-    let landmark = sqlx::query_as::<_, LandmarkRow>(
-        "SELECT l.id, l.name, l.slug, l.latitude, l.longitude, l.description, \
-         l.wikipedia_url, l.image_ext, l.npu_catalog_id, \
-         lt.slug as type_slug, lt.name as type_name, \
-         m.name as municipality_name, m.slug as municipality_slug, \
-         o2.slug as orp_slug, r2.slug as region_slug \
-         FROM landmarks l \
-         JOIN landmark_types lt ON l.type_id = lt.id \
-         LEFT JOIN municipalities m ON l.municipality_id = m.id \
-         LEFT JOIN orp o2 ON m.orp_id = o2.id \
-         LEFT JOIN districts d2 ON o2.district_id = d2.id \
-         LEFT JOIN regions r2 ON d2.region_id = r2.id \
-         WHERE l.slug = $1 AND m.orp_id = $2",
-    )
-    .bind(landmark_slug)
-    .bind(orp.id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_landmark landmark query failed: {e}");
-        None
-    });
+    let landmark = state
+        .landmark_repo
+        .find_by_slug_and_orp(landmark_slug, OrpId::from(orp_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_landmark landmark query failed: {e}");
+            None
+        });
 
     let Some(landmark) = landmark else {
         return not_found(&state.image_base_url);
     };
 
-    let photos = fetch_photos(state, "landmark", landmark.id, &landmark.slug).await;
+    let landmark_row: LandmarkRow = landmark.into();
+
+    let photos = fetch_photos(state, "landmark", landmark_row.id, &landmark_row.slug).await;
 
     let tmpl = LandmarkDetailTemplate {
         img: state.image_base_url.clone(),
-        landmark,
-        region,
-        orp,
+        landmark: landmark_row,
+        region: region_row,
+        orp: orp_row,
         photos,
     };
     match tmpl.render() {
@@ -108,6 +100,7 @@ pub(crate) async fn render_landmark(
 }
 
 pub async fn landmarks_index(State(state): State<AppState>) -> WebResult<impl IntoResponse> {
+    // Keep direct sqlx: complex aggregate query with no matching repository method
     let rows = sqlx::query_as::<_, LandmarkTypeCountRow>(
         "SELECT lt.slug, lt.name, lt.name_plural, COUNT(l.id) as count \
          FROM landmark_types lt \
@@ -162,6 +155,7 @@ pub async fn landmarks_by_type(
         .max(1);
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
+    // Keep direct sqlx: complex aggregate + pagination query
     let type_row = sqlx::query_as::<_, LandmarkTypeCountRow>(
         "SELECT lt.slug, lt.name, lt.name_plural, COUNT(l.id) as count \
          FROM landmark_types lt \
@@ -189,6 +183,7 @@ pub async fn landmarks_by_type(
 
     let total_pages = (type_info.count as u64).div_ceil(LANDMARKS_PER_PAGE as u64) as i64;
 
+    // Keep direct sqlx: complex paginated query with multiple JOINs
     let landmarks = sqlx::query_as::<_, LandmarkRow>(
         "SELECT l.id, l.name, l.slug, l.latitude, l.longitude, l.description, \
          l.wikipedia_url, l.image_ext, l.npu_catalog_id, \
@@ -235,6 +230,7 @@ pub async fn api_landmarks(
         .max(1);
     let offset = (page - 1) * LANDMARKS_PER_PAGE;
 
+    // Keep direct sqlx: complex paginated API query with multiple JOINs
     let landmarks = sqlx::query_as::<_, LandmarkRow>(
         "SELECT l.id, l.name, l.slug, l.latitude, l.longitude, l.description, \
          l.wikipedia_url, l.image_ext, l.npu_catalog_id, \

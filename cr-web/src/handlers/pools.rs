@@ -1,6 +1,10 @@
+use cr_domain::id::OrpId;
+use cr_domain::repository::{OrpRepository, PoolRepository, RegionRepository};
+
 use super::*;
 
 pub async fn pools_hub(State(state): State<AppState>) -> WebResult<impl IntoResponse> {
+    // Keep direct sqlx: complex category count queries with no matching repository method
     let aquapark_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark")
             .fetch_one(&state.db)
@@ -34,6 +38,7 @@ pub async fn pools_by_category(
     uri: Uri,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> WebResult<impl IntoResponse> {
+    // Keep direct sqlx: complex category pagination with no matching repository method
     let path = uri.path().trim_matches('/');
     let (filter_col, category_name) = match path {
         "aquaparky" => ("is_aquapark", "Aquaparky"),
@@ -117,64 +122,59 @@ pub(crate) async fn render_pool(
     orp_slug: &str,
     pool_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
-    )
-    .bind(region_slug)
-    .fetch_optional(&state.db).await
-    .unwrap_or_else(|e| { tracing::error!("render_pool region query failed: {e}"); None });
+    let region = state
+        .region_repo
+        .find_by_slug(region_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_pool region query failed: {e}");
+            None
+        });
 
     let Some(region) = region else {
         return not_found(&state.image_base_url);
     };
 
-    let orp = sqlx::query_as::<_, OrpRow>(
-        "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude FROM orp o \
-         JOIN districts d ON o.district_id = d.id \
-         WHERE d.region_id = $1 AND o.slug = $2",
-    )
-    .bind(region.id)
-    .bind(orp_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_pool orp query failed: {e}");
-        None
-    });
+    let region_row: RegionRow = region.into();
+
+    let orp = state
+        .orp_repo
+        .find_by_slug(orp_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_pool orp query failed: {e}");
+            None
+        });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
     };
 
-    let pool = sqlx::query_as::<_, PoolDetailRow>(
-        "SELECT p.id, p.name, p.slug, p.description, p.address, p.latitude, p.longitude, \
-         p.website, p.email, p.phone, p.facebook, p.facilities, p.pool_length_m, \
-         p.is_aquapark, p.is_indoor, p.is_outdoor, p.is_natural, p.photo_count, \
-         m.name as municipality_name \
-         FROM pools p \
-         LEFT JOIN municipalities m ON p.municipality_id = m.id \
-         WHERE p.slug = $1 AND p.orp_id = $2",
-    )
-    .bind(pool_slug)
-    .bind(orp.id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_pool pool query failed: {e}");
-        None
-    });
+    let orp_id = orp.id;
+    let orp_row: OrpRow = orp.into();
+
+    let pool = state
+        .pool_repo
+        .find_by_slug_and_orp(pool_slug, OrpId::from(orp_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_pool pool query failed: {e}");
+            None
+        });
 
     let Some(pool) = pool else {
         return not_found(&state.image_base_url);
     };
 
-    let photos = fetch_photos(state, "pool", pool.id, &pool.slug).await;
+    let pool_row: PoolDetailRow = pool.into();
+
+    let photos = fetch_photos(state, "pool", pool_row.id, &pool_row.slug).await;
 
     let tmpl = PoolDetailTemplate {
         img: state.image_base_url.clone(),
-        pool,
-        region,
-        orp,
+        pool: pool_row,
+        region: region_row,
+        orp: orp_row,
         photos,
     };
     match tmpl.render() {

@@ -27,6 +27,7 @@ pub use pools::{pools_by_category, pools_hub};
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct RegionRow {
+    #[allow(dead_code)]
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
@@ -40,6 +41,7 @@ pub(crate) struct RegionRow {
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct OrpRow {
+    #[allow(dead_code)]
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
@@ -105,6 +107,76 @@ pub(crate) struct LandmarkTypeCountRow {
     pub(crate) name: String,
     pub(crate) name_plural: Option<String>,
     pub(crate) count: i64,
+}
+
+// --- From impls: domain record → handler row types ---
+
+impl From<cr_domain::repository::MunicipalityRecord> for MunicipalityRow {
+    fn from(r: cr_domain::repository::MunicipalityRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            slug: r.slug,
+            municipality_code: r.municipality_code,
+            pou_code: r.pou_code,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            wikipedia_url: r.wikipedia_url,
+            official_website: r.official_website,
+            coat_of_arms_ext: r.coat_of_arms_ext,
+            flag_ext: r.flag_ext,
+            population: r.population,
+            elevation: r.elevation,
+        }
+    }
+}
+
+impl From<cr_domain::repository::LandmarkRecord> for LandmarkRow {
+    fn from(r: cr_domain::repository::LandmarkRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            slug: r.slug,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            description: r.description,
+            wikipedia_url: r.wikipedia_url,
+            image_ext: r.image_ext,
+            npu_catalog_id: r.npu_catalog_id,
+            type_slug: r.type_slug,
+            type_name: r.type_name,
+            municipality_name: r.municipality_name,
+            municipality_slug: r.municipality_slug,
+            orp_slug: r.orp_slug,
+            region_slug: r.region_slug,
+        }
+    }
+}
+
+impl From<cr_domain::repository::PoolRecord> for PoolDetailRow {
+    fn from(r: cr_domain::repository::PoolRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            slug: r.slug,
+            description: r.description,
+            address: r.address,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            website: r.website,
+            email: r.email,
+            phone: r.phone,
+            facebook: r.facebook,
+            facilities: r.facilities,
+            pool_length_m: r.pool_length_m,
+            is_aquapark: r.is_aquapark,
+            is_indoor: r.is_indoor,
+            is_outdoor: r.is_outdoor,
+            is_natural: r.is_natural,
+            photo_count: r.photo_count,
+            municipality_name: r.municipality_name,
+        }
+    }
 }
 
 // --- Photo info for gallery display ---

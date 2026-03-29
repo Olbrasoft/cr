@@ -1,3 +1,6 @@
+use cr_domain::id::OrpId;
+use cr_domain::repository::{MunicipalityRepository, OrpRepository, RegionRepository};
+
 use super::*;
 
 pub(crate) async fn render_municipality_short(
@@ -22,54 +25,54 @@ pub(crate) async fn render_municipality(
         return not_found(&state.image_base_url);
     }
 
-    let region = sqlx::query_as::<_, RegionRow>(
-        "SELECT id, name, slug, region_code, latitude, longitude, coat_of_arms_ext, flag_ext, description FROM regions WHERE slug = $1",
-    )
-    .bind(region_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| { tracing::error!("render_municipality region query failed: {e}"); None });
+    let region = state
+        .region_repo
+        .find_by_slug(region_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_municipality region query failed: {e}");
+            None
+        });
 
     let Some(region) = region else {
         return not_found(&state.image_base_url);
     };
 
-    let orp = sqlx::query_as::<_, OrpRow>(
-        "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude FROM orp o \
-         JOIN districts d ON o.district_id = d.id \
-         WHERE d.region_id = $1 AND o.slug = $2",
-    )
-    .bind(region.id)
-    .bind(orp_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_municipality orp query failed: {e}");
-        None
-    });
+    let region_row: RegionRow = region.into();
+
+    let orp = state
+        .orp_repo
+        .find_by_slug(orp_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_municipality orp query failed: {e}");
+            None
+        });
 
     let Some(orp) = orp else {
         return not_found(&state.image_base_url);
     };
 
-    let municipality = sqlx::query_as::<_, MunicipalityRow>(
-        "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-         wikipedia_url, official_website, coat_of_arms_ext, flag_ext, population, elevation \
-         FROM municipalities WHERE orp_id = $1 AND slug = $2",
-    )
-    .bind(orp.id)
-    .bind(municipality_slug)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("render_municipality municipality query failed: {e}");
-        None
-    });
+    let orp_id = orp.id;
+    let orp_row: OrpRow = orp.into();
+
+    let municipality = state
+        .municipality_repo
+        .find_by_slug_and_orp(municipality_slug, OrpId::from(orp_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_municipality municipality query failed: {e}");
+            None
+        });
 
     let Some(municipality) = municipality else {
         return not_found(&state.image_base_url);
     };
 
+    let municipality_id = municipality.id;
+    let municipality_row: MunicipalityRow = municipality.into();
+
+    // Keep direct sqlx: MunicipalityLandmarkRow is a complex JOIN with no matching domain record
     let landmarks = sqlx::query_as::<_, MunicipalityLandmarkRow>(
         "SELECT l.name, l.slug, lt.name as type_name \
          FROM landmarks l \
@@ -77,7 +80,7 @@ pub(crate) async fn render_municipality(
          WHERE l.municipality_id = $1 \
          ORDER BY lt.name, l.name",
     )
-    .bind(municipality.id)
+    .bind(municipality_id)
     .fetch_all(&state.db)
     .await
     .unwrap_or_else(|e| {
@@ -87,9 +90,9 @@ pub(crate) async fn render_municipality(
 
     let tmpl = MunicipalityTemplate {
         img: state.image_base_url.clone(),
-        region,
-        orp,
-        municipality,
+        region: region_row,
+        orp: orp_row,
+        municipality: municipality_row,
         landmarks,
     };
     match tmpl.render() {
