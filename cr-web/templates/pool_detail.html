@@ -91,7 +91,7 @@
         </div>
         {% endif %}
         {% if pool.latitude.is_some() %}
-        <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
+        <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;" data-name="{{ pool.name }}"></div>
         {% endif %}
         <div class="premium-infobox">
             <div class="infobox-top">
@@ -164,7 +164,7 @@
         maxZoom: 18,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
     }).addTo(map);
-    L.marker([lat, lon]).addTo(map).bindPopup('{{ pool.name }}');
+    L.marker([lat, lon]).addTo(map).bindPopup(document.getElementById('map').getAttribute('data-name'));
 })();
 </script>
 {% endif %}
