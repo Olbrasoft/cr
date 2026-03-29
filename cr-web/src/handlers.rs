@@ -579,6 +579,11 @@ pub async fn resolve_path(
                 .unwrap_or(None);
 
                 if muni_id.is_some() {
+                    // If municipality slug == ORP slug, redirect to short URL
+                    if segments[1] == segments[0] {
+                        let new_url = format!("/{}/{}/", segments[0], segments[2]);
+                        return axum::response::Redirect::permanent(&new_url).into_response();
+                    }
                     // Try landmark in this municipality, then pool
                     let landmark_result = render_landmark_in_municipality(&state, segments[0], segments[2], oid).await;
                     if landmark_result.0 != StatusCode::NOT_FOUND {
