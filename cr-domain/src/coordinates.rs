@@ -1,5 +1,7 @@
 //! Coordinates value object with latitude/longitude validation.
 
+use crate::error::DomainError;
+
 /// Geographic coordinates with validated latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Coordinates {
@@ -10,12 +12,15 @@ pub struct Coordinates {
 impl Coordinates {
     /// Create new coordinates with validation.
     ///
-    /// Returns `None` if latitude is outside -90..=90 or longitude is outside -180..=180.
-    pub fn new(latitude: f64, longitude: f64) -> Option<Self> {
-        if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
-            return None;
+    /// Returns `Err(DomainError)` if latitude is outside -90..=90 or longitude is outside -180..=180.
+    pub fn new(latitude: f64, longitude: f64) -> Result<Self, DomainError> {
+        if !(-90.0..=90.0).contains(&latitude) {
+            return Err(DomainError::InvalidLatitude(latitude));
         }
-        Some(Self {
+        if !(-180.0..=180.0).contains(&longitude) {
+            return Err(DomainError::InvalidLongitude(longitude));
+        }
+        Ok(Self {
             latitude,
             longitude,
         })
@@ -43,20 +48,26 @@ mod tests {
 
     #[test]
     fn boundary_values() {
-        assert!(Coordinates::new(90.0, 180.0).is_some());
-        assert!(Coordinates::new(-90.0, -180.0).is_some());
-        assert!(Coordinates::new(0.0, 0.0).is_some());
+        assert!(Coordinates::new(90.0, 180.0).is_ok());
+        assert!(Coordinates::new(-90.0, -180.0).is_ok());
+        assert!(Coordinates::new(0.0, 0.0).is_ok());
     }
 
     #[test]
     fn invalid_latitude() {
-        assert!(Coordinates::new(91.0, 15.0).is_none());
-        assert!(Coordinates::new(-91.0, 15.0).is_none());
+        assert_eq!(
+            Coordinates::new(91.0, 15.0),
+            Err(DomainError::InvalidLatitude(91.0))
+        );
+        assert!(Coordinates::new(-91.0, 15.0).is_err());
     }
 
     #[test]
     fn invalid_longitude() {
-        assert!(Coordinates::new(49.0, 181.0).is_none());
-        assert!(Coordinates::new(49.0, -181.0).is_none());
+        assert_eq!(
+            Coordinates::new(49.0, 181.0),
+            Err(DomainError::InvalidLongitude(181.0))
+        );
+        assert!(Coordinates::new(49.0, -181.0).is_err());
     }
 }
