@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}Chyba serveru{% endblock %}
+
+{% block content %}
+<section style="padding: 4rem 0; text-align: center;">
+    <h2 style="font-size: 2rem; margin-bottom: 1rem; color: var(--color-red);">500 — Chyba serveru</h2>
+    <p style="color: #666; font-size: 1.1rem; max-width: 500px; margin: 0 auto;">Omlouváme se, při zpracování požadavku došlo k chybě. Zkuste to prosím znovu.</p>
+    <a href="/" style="display: inline-block; margin-top: 2rem; padding: 0.75rem 2rem; background: var(--color-link); color: white; border-radius: 8px; text-decoration: none; font-weight: 600;">Zpět na hlavní stránku</a>
+</section>
+{% endblock %}

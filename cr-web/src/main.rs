@@ -6,6 +6,7 @@ use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::services::ServeDir;
 
+mod error;
 mod handlers;
 mod img_proxy;
 mod state;
