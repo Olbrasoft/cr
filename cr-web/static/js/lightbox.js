@@ -194,13 +194,16 @@
 
     function initSlideshow(el) {
         var group = el.getAttribute('data-slideshow');
-        var photosJson;
+        var photosJson, thumbsJson;
         try {
             photosJson = JSON.parse(el.getAttribute('data-gallery-photos'));
+            thumbsJson = JSON.parse(el.getAttribute('data-gallery-thumbs') || '[]');
         } catch (e) {
             return;
         }
         if (!photosJson || photosJson.length === 0) return;
+        // Use thumbs for slide display, full URLs for lightbox
+        if (!thumbsJson || thumbsJson.length === 0) thumbsJson = photosJson;
 
         var startIndex = parseInt(el.getAttribute('data-slide-start') || '0');
         var currentSlide = startIndex;
@@ -211,7 +214,7 @@
 
         function show(idx) {
             currentSlide = idx;
-            img.src = photosJson[idx];
+            img.src = thumbsJson[idx];
             img.setAttribute('data-index', idx);
             if (counterEl) {
                 counterEl.textContent = (idx + 1) + ' / ' + photosJson.length;

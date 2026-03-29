@@ -28,7 +28,11 @@
             <div class="landmark-card" style="display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--color-gray-border);">
                 <div style="flex: 1;">
                     {% if l.orp_slug.is_some() && l.municipality_slug.is_some() %}
+                    {% if l.orp_slug == l.municipality_slug %}
+                    <a href="/{{ l.orp_slug.as_deref().unwrap_or("") }}/{{ l.slug }}/" style="font-size: 1.1rem; font-weight: 600; color: var(--color-link);">{{ l.name }}</a>
+                    {% else %}
                     <a href="/{{ l.orp_slug.as_deref().unwrap_or("") }}/{{ l.municipality_slug.as_deref().unwrap_or("") }}/{{ l.slug }}/" style="font-size: 1.1rem; font-weight: 600; color: var(--color-link);">{{ l.name }}</a>
+                    {% endif %}
                     {% else %}
                     <span style="font-size: 1.1rem; font-weight: 600;">{{ l.name }}</span>
                     {% endif %}
