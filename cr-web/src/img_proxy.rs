@@ -42,9 +42,14 @@ pub async fn img_proxy(
     }
 
     // Validate path: only allow safe characters and image extensions
-    let valid_path = img_path.chars().all(|c| c.is_ascii_alphanumeric() || "-_/.".contains(c));
-    let valid_ext = img_path.ends_with(".webp") || img_path.ends_with(".jpg")
-        || img_path.ends_with(".jpeg") || img_path.ends_with(".png") || img_path.ends_with(".svg");
+    let valid_path = img_path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_/.".contains(c));
+    let valid_ext = img_path.ends_with(".webp")
+        || img_path.ends_with(".jpg")
+        || img_path.ends_with(".jpeg")
+        || img_path.ends_with(".png")
+        || img_path.ends_with(".svg");
     if !valid_path || !valid_ext {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -58,10 +63,8 @@ pub async fn img_proxy(
     }
 
     // Validate requested width
-    if let Some(w) = target_width {
-        if !ALLOWED_WIDTHS.contains(&w) {
-            return (StatusCode::BAD_REQUEST, "Allowed widths: 360, 720").into_response();
-        }
+    if let Some(w) = target_width && !ALLOWED_WIDTHS.contains(&w) {
+        return (StatusCode::BAD_REQUEST, "Allowed widths: 360, 720").into_response();
     }
 
     // Build cache key
@@ -74,33 +77,34 @@ pub async fn img_proxy(
     };
 
     // Serve from disk cache if available
-    if cache_path.exists() {
-        if let Ok(data) = tokio::fs::read(&cache_path).await {
-            // Resized images are always JPEG
-            let content_type = if target_width.is_some() {
-                "image/jpeg"
-            } else if img_path.ends_with(".webp") {
-                "image/webp"
-            } else if img_path.ends_with(".jpg") || img_path.ends_with(".jpeg") {
-                "image/jpeg"
-            } else if img_path.ends_with(".png") {
-                "image/png"
-            } else if img_path.ends_with(".svg") {
-                "image/svg+xml"
-            } else {
-                "application/octet-stream"
-            };
+    if cache_path.exists() && let Ok(data) = tokio::fs::read(&cache_path).await {
+        // Resized images are always JPEG
+        let content_type = if target_width.is_some() {
+            "image/jpeg"
+        } else if img_path.ends_with(".webp") {
+            "image/webp"
+        } else if img_path.ends_with(".jpg") || img_path.ends_with(".jpeg") {
+            "image/jpeg"
+        } else if img_path.ends_with(".png") {
+            "image/png"
+        } else if img_path.ends_with(".svg") {
+            "image/svg+xml"
+        } else {
+            "application/octet-stream"
+        };
 
-            return (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, content_type),
-                    (header::CACHE_CONTROL, "public, max-age=86400, s-maxage=604800"),
-                ],
-                data,
-            )
-                .into_response();
-        }
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type),
+                (
+                    header::CACHE_CONTROL,
+                    "public, max-age=86400, s-maxage=604800",
+                ),
+            ],
+            data,
+        )
+            .into_response();
     }
 
     // Fetch original image from upstream
@@ -115,7 +119,8 @@ pub async fn img_proxy(
         format!("{}/img/{img_path}", state.image_base_url)
     };
 
-    let resp = match state.http_client
+    let resp = match state
+        .http_client
         .get(&upstream_url)
         .timeout(std::time::Duration::from_secs(30))
         .send()
@@ -145,9 +150,7 @@ pub async fn img_proxy(
     // WebP encoder only supports lossless VP8L, which produces larger files than originals.
     let (output_bytes, is_resized) = if let Some(w) = target_width {
         // Decode and resize
-        let reader = match ImageReader::new(Cursor::new(&original_bytes))
-            .with_guessed_format()
-        {
+        let reader = match ImageReader::new(Cursor::new(&original_bytes)).with_guessed_format() {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("Failed to guess image format: {e}");
@@ -210,7 +213,10 @@ pub async fn img_proxy(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "public, max-age=86400, s-maxage=604800"),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=86400, s-maxage=604800",
+            ),
         ],
         output_bytes,
     )
