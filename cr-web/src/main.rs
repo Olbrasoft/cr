@@ -7,6 +7,7 @@ use sqlx::postgres::PgPoolOptions;
 use tower_http::services::ServeDir;
 
 mod handlers;
+mod img_proxy;
 mod state;
 
 use state::{AppState, GeoJsonIndex};
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
         .route("/koupaliste/", axum::routing::get(handlers::pools_by_category))
         .route("/prirodni-koupaliste", axum::routing::get(handlers::pools_by_category))
         .route("/prirodni-koupaliste/", axum::routing::get(handlers::pools_by_category))
+        .route("/img/{*path}", axum::routing::get(img_proxy::img_proxy))
         .nest_service("/static", ServeDir::new(
             std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string())
         ))

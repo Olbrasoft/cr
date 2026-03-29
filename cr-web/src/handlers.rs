@@ -52,7 +52,6 @@ struct MunicipalityRow {
 
 #[derive(sqlx::FromRow)]
 struct LandmarkRow {
-    #[allow(dead_code)]
     id: i32,
     name: String,
     slug: String,
@@ -60,8 +59,11 @@ struct LandmarkRow {
     longitude: Option<f64>,
     description: Option<String>,
     wikipedia_url: Option<String>,
+    #[allow(dead_code)]
     image_ext: Option<String>,
+    #[allow(dead_code)]
     npu_catalog_id: Option<String>,
+    #[allow(dead_code)]
     type_slug: String,
     type_name: String,
     municipality_name: Option<String>,
@@ -84,6 +86,55 @@ struct LandmarkTypeCountRow {
     name: String,
     name_plural: Option<String>,
     count: i64,
+}
+
+// --- Photo info for gallery display ---
+
+struct PhotoInfo {
+    url: String,
+    thumb_url: String,
+    width: i16,
+    height: i16,
+}
+
+#[derive(sqlx::FromRow)]
+struct PhotoMetadataRow {
+    r2_key: String,
+    width: i16,
+    height: i16,
+}
+
+async fn fetch_photos(
+    db: &sqlx::PgPool,
+    img_base: &str,
+    entity_type: &str,
+    entity_id: i32,
+    slug: &str,
+) -> Vec<PhotoInfo> {
+    let rows = sqlx::query_as::<_, PhotoMetadataRow>(
+        "SELECT r2_key, width, height FROM photo_metadata \
+         WHERE entity_type = $1 AND entity_id = $2 ORDER BY photo_index",
+    )
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .map(|r| {
+            let url = if entity_type == "landmark" {
+                // SEO URL: /img/landmarks/{slug}-{r2_filename}
+                let filename = r.r2_key.strip_prefix("landmarks/").unwrap_or(&r.r2_key);
+                format!("{}/img/landmarks/{}-{}", img_base, slug, filename)
+            } else {
+                // Pools: /img/{r2_key} (slug already in filename)
+                format!("{}/img/{}", img_base, r.r2_key)
+            };
+            let thumb_url = format!("{}?w=360", &url);
+            PhotoInfo { url, thumb_url, width: r.width, height: r.height }
+        })
+        .collect()
 }
 
 // --- Templates ---
@@ -189,6 +240,7 @@ struct LandmarkDetailTemplate {
     landmark: LandmarkRow,
     region: RegionRow,
     orp: OrpRow,
+    photos: Vec<PhotoInfo>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -277,6 +329,7 @@ struct PoolDetailTemplate {
     pool: PoolDetailRow,
     region: RegionRow,
     orp: OrpRow,
+    photos: Vec<PhotoInfo>,
 }
 
 // --- Handlers ---
@@ -419,9 +472,11 @@ async fn render_pool(
         return not_found(&state.image_base_url);
     };
 
+    let photos = fetch_photos(&state.db, &state.image_base_url, "pool", pool.id, &pool.slug).await;
+
     let tmpl = PoolDetailTemplate {
         img: state.image_base_url.clone(),
-        pool, region, orp,
+        pool, region, orp, photos,
     };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }
@@ -879,11 +934,14 @@ async fn render_landmark(
         return not_found(&state.image_base_url);
     };
 
+    let photos = fetch_photos(&state.db, &state.image_base_url, "landmark", landmark.id, &landmark.slug).await;
+
     let tmpl = LandmarkDetailTemplate {
         img: state.image_base_url.clone(),
         landmark,
         region,
         orp,
+        photos,
     };
     (StatusCode::OK, Html(tmpl.render().unwrap_or_default()))
 }
