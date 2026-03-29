@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}{{ category_name }} v České republice{% endblock %}
+
+{% block head %}
+{% if page > 1 %}
+<link rel="prev" href="?strana={{ page - 1 }}">
+{% endif %}
+{% if page < total_pages %}
+<link rel="next" href="?strana={{ page + 1 }}">
+{% endif %}
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/koupani/">Koupání</a> &raquo;
+    <span>{{ category_name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="active-hub">
+    <div class="active-left" style="width: 100%; max-width: 100%;">
+        <h2 class="section-title">{{ category_name }} ({{ total_count }})</h2>
+
+        <div id="pools-list">
+            {% for p in pools %}
+            <div style="display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--color-gray-border);">
+                {% if p.photo_count > 0 && p.orp_slug.is_some() && p.region_slug.is_some() %}
+                <div style="flex-shrink: 0; width: 120px; height: 80px; overflow: hidden; border-radius: 8px;">
+                    <img src="{{ img }}/img/pools/{{ p.slug }}-1.webp" alt="{{ p.name }}" style="width: 100%; height: 100%; object-fit: cover;" loading="lazy">
+                </div>
+                {% endif %}
+                <div style="flex: 1;">
+                    {% if p.region_slug.is_some() && p.orp_slug.is_some() %}
+                    <a href="/{{ p.orp_slug.as_deref().unwrap_or("") }}/{{ p.slug }}/" style="font-size: 1.1rem; font-weight: 600; color: var(--color-link);">{{ p.name }}</a>
+                    {% else %}
+                    <span style="font-size: 1.1rem; font-weight: 600;">{{ p.name }}</span>
+                    {% endif %}
+                    {% match p.municipality_name %}
+                    {% when Some with (mname) %}
+                    <div style="color: #666; font-size: 0.9rem; margin-top: 0.2rem;">{{ mname }}</div>
+                    {% when None %}
+                    {% endmatch %}
+                    {% match p.description %}
+                    {% when Some with (desc) %}
+                    <div style="color: #555; font-size: 0.85rem; margin-top: 0.3rem; line-height: 1.4;">{{ desc|truncate(150) }}</div>
+                    {% when None %}
+                    {% endmatch %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if total_pages > 1 %}
+        <nav style="display: flex; gap: 0.5rem; justify-content: center; margin: 2rem 0; flex-wrap: wrap;">
+            {% if page > 1 %}
+            <a href="?strana={{ page - 1 }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">&laquo; Předchozí</a>
+            {% endif %}
+
+            {% for p in 1..=total_pages %}
+            {% if p == page %}
+            <span style="padding: 0.5rem 1rem; border: 1px solid var(--color-link); border-radius: 6px; background: var(--color-link); color: white;">{{ p }}</span>
+            {% else %}
+            {% if p <= 3 || p > total_pages - 3 || (p >= page - 2 && p <= page + 2) %}
+            <a href="?strana={{ p }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">{{ p }}</a>
+            {% endif %}
+            {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+            <a href="?strana={{ page + 1 }}" style="padding: 0.5rem 1rem; border: 1px solid var(--color-gray-border); border-radius: 6px; color: var(--color-link); text-decoration: none;">Další &raquo;</a>
+            {% endif %}
+        </nav>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

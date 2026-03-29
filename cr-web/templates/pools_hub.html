@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Koupání v České republice{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <span>Koupání</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="active-hub">
+    <div class="active-left" style="width: 100%; max-width: 100%;">
+        <h2 class="section-title">Koupání v České republice</h2>
+        <p class="lead-text">Aquaparky, kryté bazény, venkovní a přírodní koupaliště po celém Česku.</p>
+        <div class="grid-cols-2" style="margin-top: 1.5rem;">
+            <a href="/aquaparky/" class="nav-link" style="font-size: 1.05rem; padding: 1rem;">
+                <span>Aquaparky ({{ aquapark_count }})</span>
+            </a>
+            <a href="/bazeny/" class="nav-link" style="font-size: 1.05rem; padding: 1rem;">
+                <span>Kryté bazény ({{ indoor_count }})</span>
+            </a>
+            <a href="/koupaliste/" class="nav-link" style="font-size: 1.05rem; padding: 1rem;">
+                <span>Venkovní koupaliště ({{ outdoor_count }})</span>
+            </a>
+            <a href="/prirodni-koupaliste/" class="nav-link" style="font-size: 1.05rem; padding: 1rem;">
+                <span>Přírodní koupaliště ({{ natural_count }})</span>
+            </a>
+        </div>
+    </div>
+</section>
+{% endblock %}
