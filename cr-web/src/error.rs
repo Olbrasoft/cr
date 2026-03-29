@@ -21,9 +21,12 @@ struct ErrorTemplate {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
-        tracing::error!("Internal error: {:?}", self.0);
+        tracing::error!("Internal error: {:#}", self.0);
         let tmpl = ErrorTemplate { img: String::new() };
-        let body = tmpl.render().unwrap_or_else(|_| "Internal Server Error".to_string());
+        let body = tmpl.render().unwrap_or_else(|e| {
+            tracing::error!("Failed to render 500 error template: {}", e);
+            "Internal Server Error".to_string()
+        });
         (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
     }
 }

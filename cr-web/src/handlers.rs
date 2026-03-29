@@ -488,7 +488,13 @@ async fn render_pool(
         img: state.image_base_url.clone(),
         pool, region, orp, photos,
     };
-    (StatusCode::OK, Html(tmpl.render().unwrap_or_else(|e| { tracing::error!("render_pool template failed: {e}"); String::new() })))
+    match tmpl.render() {
+        Ok(html) => (StatusCode::OK, Html(html)),
+        Err(e) => {
+            tracing::error!("template render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new()))
+        }
+    }
 }
 
 pub async fn resolve_path(
@@ -700,7 +706,13 @@ async fn render_region(state: &AppState, region_slug: &str) -> (StatusCode, Html
     }
 
     let tmpl = RegionTemplate { img: state.image_base_url.clone(), region, orps };
-    (StatusCode::OK, Html(tmpl.render().unwrap_or_else(|e| { tracing::error!("render_region template failed: {e}"); String::new() })))
+    match tmpl.render() {
+        Ok(html) => (StatusCode::OK, Html(html)),
+        Err(e) => {
+            tracing::error!("template render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new()))
+        }
+    }
 }
 
 async fn render_orp(
@@ -808,7 +820,13 @@ async fn render_orp(
         landmarks_count,
         pools,
     };
-    (StatusCode::OK, Html(tmpl.render().unwrap_or_else(|e| { tracing::error!("render_orp template failed: {e}"); String::new() })))
+    match tmpl.render() {
+        Ok(html) => (StatusCode::OK, Html(html)),
+        Err(e) => {
+            tracing::error!("template render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new()))
+        }
+    }
 }
 
 async fn render_municipality(
@@ -883,7 +901,13 @@ async fn render_municipality(
         municipality,
         landmarks,
     };
-    (StatusCode::OK, Html(tmpl.render().unwrap_or_else(|e| { tracing::error!("render_municipality template failed: {e}"); String::new() })))
+    match tmpl.render() {
+        Ok(html) => (StatusCode::OK, Html(html)),
+        Err(e) => {
+            tracing::error!("template render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new()))
+        }
+    }
 }
 
 async fn render_landmark(
@@ -953,7 +977,13 @@ async fn render_landmark(
         orp,
         photos,
     };
-    (StatusCode::OK, Html(tmpl.render().unwrap_or_else(|e| { tracing::error!("render_landmark template failed: {e}"); String::new() })))
+    match tmpl.render() {
+        Ok(html) => (StatusCode::OK, Html(html)),
+        Err(e) => {
+            tracing::error!("template render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new()))
+        }
+    }
 }
 
 fn not_found(image_base_url: &str) -> (StatusCode, Html<String>) {
