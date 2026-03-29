@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate pool descriptions using Gemma 3 27B via Google Gemini API."""
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import time
 import requests

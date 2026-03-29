@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Test Gemma 3 27B via Google Gemini API for rewriting NPÚ texts."""
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import time
 import requests

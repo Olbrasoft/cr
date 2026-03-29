@@ -2,6 +2,8 @@
 """Generate comparison markdown files: originals + Gemma 3 27B rewrites."""
 
 import time
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import requests
 import psycopg2

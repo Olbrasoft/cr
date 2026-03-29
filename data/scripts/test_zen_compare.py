@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Compare Zen free models side-by-side on one NPÚ text."""
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import json
 import time

@@ -7,6 +7,8 @@ Saves to cr_staging.npu_rewritten table.
 Skips already-rewritten texts. Safe to restart.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import time
 import requests

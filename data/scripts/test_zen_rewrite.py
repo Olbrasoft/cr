@@ -5,6 +5,8 @@ Tests Big Pickle, MiMo V2 Pro, Nemotron 3 Super, MiniMax M2.5 on sample texts.
 Measures quality of Czech text rewriting for SEO uniqueness.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import json
 import time
