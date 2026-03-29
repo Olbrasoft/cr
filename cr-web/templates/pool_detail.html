@@ -83,7 +83,7 @@
     </div>
     <aside class="content-right">
         {% if photos.len() > 1 %}
-        <div class="photo-slideshow" data-slideshow="pool" data-gallery-photos="[{% for photo in photos %}{% if !loop.first %},{% endif %}&quot;{{ photo.url }}&quot;{% endfor %}]" data-slide-start="1">
+        <div class="photo-slideshow" data-slideshow="pool" data-gallery-photos="[{% for photo in photos %}{% if !loop.first %},{% endif %}&quot;{{ photo.url }}&quot;{% endfor %}]" data-gallery-thumbs="[{% for photo in photos %}{% if !loop.first %},{% endif %}&quot;{{ photo.thumb_url }}&quot;{% endfor %}]" data-slide-start="1">
             <img src="{{ photos[1].thumb_url }}" alt="{{ pool.name }}" loading="lazy" data-index="1">
             <button class="slide-nav slide-prev" aria-label="Předchozí">&#8249;</button>
             <button class="slide-nav slide-next" aria-label="Další">&#8250;</button>

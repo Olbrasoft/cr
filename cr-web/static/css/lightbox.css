@@ -2,8 +2,8 @@
 
 /* --- Inline photo in content text (float, small) --- */
 .photo-inline {
-    float: right;
-    margin: 0 0 1rem 1.5rem;
+    float: left;
+    margin: 0 1.5rem 1rem 0;
     max-width: 280px;
     max-height: 300px;
     cursor: zoom-in;
