@@ -10,12 +10,15 @@
 //! - `entities` - Region, District, Orp, Municipality structs
 //! - `coordinates` - Coordinates value object with validation
 //! - `error` - Domain-specific error types
+//! - `id` - Strongly-typed ID wrappers
+//! - `repository` - Repository trait definitions (ports)
 //! - `slug` - URL slug generation from Czech names
 
 pub mod coordinates;
 pub mod entities;
 pub mod error;
 pub mod id;
+pub mod repository;
 pub mod slug;
 
 pub use coordinates::Coordinates;
