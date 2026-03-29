@@ -1,3 +1,4 @@
+// Allow manual_div_ceil in askama-generated derive code (askama 0.12 issue, fixed in 0.15+)
 #![allow(clippy::manual_div_ceil)]
 use askama::Template;
 use axum::extract::{Path, State};
