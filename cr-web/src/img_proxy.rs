@@ -41,7 +41,21 @@ pub async fn img_proxy(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
+    // Validate path: only allow safe characters and image extensions
+    let valid_path = img_path.chars().all(|c| c.is_ascii_alphanumeric() || "-_/.".contains(c));
+    let valid_ext = img_path.ends_with(".webp") || img_path.ends_with(".jpg")
+        || img_path.ends_with(".jpeg") || img_path.ends_with(".png") || img_path.ends_with(".svg");
+    if !valid_path || !valid_ext {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let is_svg = img_path.ends_with(".svg");
     let target_width = params.w;
+
+    // SVGs cannot be raster-resized
+    if target_width.is_some() && is_svg {
+        return (StatusCode::BAD_REQUEST, "SVG resize not supported").into_response();
+    }
 
     // Validate requested width
     if let Some(w) = target_width {
@@ -71,6 +85,8 @@ pub async fn img_proxy(
                 "image/jpeg"
             } else if img_path.ends_with(".png") {
                 "image/png"
+            } else if img_path.ends_with(".svg") {
+                "image/svg+xml"
             } else {
                 "application/octet-stream"
             };

@@ -395,26 +395,34 @@ pub async fn pools_by_category(
     let page: i64 = params.get("strana").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
     let per_page: i64 = 20;
 
-    let count_sql = format!("SELECT COUNT(*) FROM pools WHERE {filter_col}");
-    let total_count = sqlx::query_scalar::<_, i64>(&count_sql)
-        .fetch_one(&state.db).await.unwrap_or(0);
+    // Use separate queries per category to avoid SQL string interpolation
+    let total_count = match filter_col {
+        "is_aquapark" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_aquapark").fetch_one(&state.db).await.unwrap_or(0),
+        "is_indoor" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_indoor AND NOT is_aquapark").fetch_one(&state.db).await.unwrap_or(0),
+        "is_outdoor" => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_outdoor AND NOT is_aquapark").fetch_one(&state.db).await.unwrap_or(0),
+        _ => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pools WHERE is_natural").fetch_one(&state.db).await.unwrap_or(0),
+    };
     let total_pages = (total_count + per_page - 1) / per_page;
+    let offset = (page - 1) * per_page;
 
-    let list_sql = format!(
-        "SELECT p.name, p.slug, p.description, m.name as municipality_name, \
+    let base_query = "SELECT p.name, p.slug, p.description, m.name as municipality_name, \
          o.slug as orp_slug, r.slug as region_slug, p.photo_count \
          FROM pools p \
          LEFT JOIN municipalities m ON p.municipality_id = m.id \
          LEFT JOIN orp o ON p.orp_id = o.id \
          LEFT JOIN districts d ON o.district_id = d.id \
-         LEFT JOIN regions r ON d.region_id = r.id \
-         WHERE p.{filter_col} \
-         ORDER BY p.name \
-         LIMIT {per_page} OFFSET {}",
-        (page - 1) * per_page
-    );
-    let pools = sqlx::query_as::<_, PoolListRow>(&list_sql)
-        .fetch_all(&state.db).await.unwrap_or_default();
+         LEFT JOIN regions r ON d.region_id = r.id";
+
+    let pools = match filter_col {
+        "is_aquapark" => sqlx::query_as::<_, PoolListRow>(&format!("{base_query} WHERE p.is_aquapark ORDER BY p.name LIMIT $1 OFFSET $2"))
+            .bind(per_page).bind(offset).fetch_all(&state.db).await.unwrap_or_default(),
+        "is_indoor" => sqlx::query_as::<_, PoolListRow>(&format!("{base_query} WHERE p.is_indoor AND NOT p.is_aquapark ORDER BY p.name LIMIT $1 OFFSET $2"))
+            .bind(per_page).bind(offset).fetch_all(&state.db).await.unwrap_or_default(),
+        "is_outdoor" => sqlx::query_as::<_, PoolListRow>(&format!("{base_query} WHERE p.is_outdoor AND NOT p.is_aquapark ORDER BY p.name LIMIT $1 OFFSET $2"))
+            .bind(per_page).bind(offset).fetch_all(&state.db).await.unwrap_or_default(),
+        _ => sqlx::query_as::<_, PoolListRow>(&format!("{base_query} WHERE p.is_natural ORDER BY p.name LIMIT $1 OFFSET $2"))
+            .bind(per_page).bind(offset).fetch_all(&state.db).await.unwrap_or_default(),
+    };
 
     let tmpl = PoolsListTemplate {
         img: state.image_base_url.clone(),

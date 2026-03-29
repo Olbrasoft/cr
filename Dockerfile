@@ -37,7 +37,8 @@ RUN cargo build --release -p cr-web && \
 # Stage 2: Runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* && \
+    useradd -r -s /bin/false appuser
 
 WORKDIR /app
 
@@ -52,6 +53,8 @@ COPY data/ /app/data/
 
 ENV STATIC_DIR=/app/static
 ENV RUST_LOG=info
+
+USER appuser
 
 EXPOSE 3000
 

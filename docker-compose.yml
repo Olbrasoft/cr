@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: cr
       POSTGRES_USER: cr
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cr_secret_2026}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     ports:
       - "80:3000"
     environment:
-      DATABASE_URL: postgres://cr:${POSTGRES_PASSWORD:-cr_secret_2026}@db:5432/cr
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       RUST_LOG: info
       STATIC_DIR: /app/static
     depends_on:

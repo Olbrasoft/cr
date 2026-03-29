@@ -90,9 +90,27 @@
                     var card = document.createElement('div');
                     card.className = 'landmark-card';
                     card.style.cssText = 'display:flex;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--color-gray-border);';
-                    var link = item.url ? '<a href="' + item.url + '" style="font-size:1.1rem;font-weight:600;color:var(--color-link);">' + item.name + '</a>' : '<span style="font-size:1.1rem;font-weight:600;">' + item.name + '</span>';
-                    var muni = item.municipality ? '<div style="color:#666;font-size:0.9rem;margin-top:0.2rem;">' + item.municipality + '</div>' : '';
-                    card.innerHTML = '<div style="flex:1;">' + link + muni + '</div>';
+                    var inner = document.createElement('div');
+                    inner.style.flex = '1';
+                    if (item.url) {
+                        var a = document.createElement('a');
+                        a.href = item.url;
+                        a.style.cssText = 'font-size:1.1rem;font-weight:600;color:var(--color-link);';
+                        a.textContent = item.name;
+                        inner.appendChild(a);
+                    } else {
+                        var span = document.createElement('span');
+                        span.style.cssText = 'font-size:1.1rem;font-weight:600;';
+                        span.textContent = item.name;
+                        inner.appendChild(span);
+                    }
+                    if (item.municipality) {
+                        var muni = document.createElement('div');
+                        muni.style.cssText = 'color:#666;font-size:0.9rem;margin-top:0.2rem;';
+                        muni.textContent = item.municipality;
+                        inner.appendChild(muni);
+                    }
+                    card.appendChild(inner);
                     list.appendChild(card);
                 });
                 loading = false;
