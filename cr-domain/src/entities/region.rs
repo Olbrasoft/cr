@@ -11,6 +11,8 @@ pub struct Region {
     region_code: String,
     nuts_code: String,
     coordinates: Option<Coordinates>,
+    coat_of_arms_ext: Option<String>,
+    flag_ext: Option<String>,
 }
 
 impl Region {
@@ -21,7 +23,7 @@ impl Region {
         nuts_code: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let name = name.into();
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(DomainError::EmptyName);
         }
         let slug = slug_from_name(&name);
@@ -32,11 +34,23 @@ impl Region {
             region_code: region_code.into(),
             nuts_code: nuts_code.into(),
             coordinates: None,
+            coat_of_arms_ext: None,
+            flag_ext: None,
         })
     }
 
     pub fn with_coordinates(mut self, coords: Coordinates) -> Self {
         self.coordinates = Some(coords);
+        self
+    }
+
+    pub fn with_coat_of_arms_ext(mut self, ext: impl Into<String>) -> Self {
+        self.coat_of_arms_ext = Some(ext.into());
+        self
+    }
+
+    pub fn with_flag_ext(mut self, ext: impl Into<String>) -> Self {
+        self.flag_ext = Some(ext.into());
         self
     }
 
@@ -58,6 +72,12 @@ impl Region {
     pub fn coordinates(&self) -> Option<&Coordinates> {
         self.coordinates.as_ref()
     }
+    pub fn coat_of_arms_ext(&self) -> Option<&str> {
+        self.coat_of_arms_ext.as_deref()
+    }
+    pub fn flag_ext(&self) -> Option<&str> {
+        self.flag_ext.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +95,12 @@ mod tests {
     #[test]
     fn empty_name_rejected() {
         let r = Region::new(RegionId::from(1), "", "CZ020", "CZ02");
+        assert_eq!(r, Err(DomainError::EmptyName));
+    }
+
+    #[test]
+    fn whitespace_only_name_rejected() {
+        let r = Region::new(RegionId::from(1), "   ", "CZ020", "CZ02");
         assert_eq!(r, Err(DomainError::EmptyName));
     }
 }

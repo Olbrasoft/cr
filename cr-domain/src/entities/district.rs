@@ -21,7 +21,7 @@ impl District {
         region_id: RegionId,
     ) -> Result<Self, DomainError> {
         let name = name.into();
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(DomainError::EmptyName);
         }
         let slug = slug_from_name(&name);
@@ -57,5 +57,36 @@ impl District {
     }
     pub fn coordinates(&self) -> Option<&Coordinates> {
         self.coordinates.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_district() {
+        let d = District::new(
+            DistrictId::from(1),
+            "Praha-západ",
+            "CZ020A",
+            RegionId::from(1),
+        )
+        .unwrap();
+        assert_eq!(d.name(), "Praha-západ");
+        assert_eq!(d.slug(), "praha-zapad");
+        assert_eq!(d.id().value(), 1);
+    }
+
+    #[test]
+    fn empty_name_rejected() {
+        let d = District::new(DistrictId::from(1), "", "CZ020A", RegionId::from(1));
+        assert_eq!(d, Err(DomainError::EmptyName));
+    }
+
+    #[test]
+    fn whitespace_only_name_rejected() {
+        let d = District::new(DistrictId::from(1), "   ", "CZ020A", RegionId::from(1));
+        assert_eq!(d, Err(DomainError::EmptyName));
     }
 }
