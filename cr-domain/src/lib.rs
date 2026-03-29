@@ -11,9 +11,11 @@
 //! - `traits` - Repository and service abstractions (planned)
 //! - `error` - Domain-specific error types (planned)
 
+pub mod coordinates;
 pub mod entities;
 pub mod id;
 pub mod slug;
 
+pub use coordinates::Coordinates;
 pub use id::*;
 pub use slug::slug_from_name;
