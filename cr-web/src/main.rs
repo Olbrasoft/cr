@@ -56,20 +56,23 @@ async fn main() -> Result<()> {
         http_client: reqwest::Client::new(),
     };
 
-    // CORS: allow API endpoints from any origin
+    // API routes with CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+    let api_routes = Router::new()
+        .route("/geojson/municipality/{code}", axum::routing::get(handlers::geojson_municipality))
+        .route("/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
+        .route("/landmarks", axum::routing::get(handlers::api_landmarks))
+        .layer(cors);
 
     let app = Router::new()
         .route("/", axum::routing::get(handlers::homepage))
         .route("/health", axum::routing::get(handlers::health))
-        .route("/api/geojson/municipality/{code}", axum::routing::get(handlers::geojson_municipality))
-        .route("/api/geojson/orp/{code}", axum::routing::get(handlers::geojson_orp))
+        .nest("/api", api_routes)
         .route("/pamatky", axum::routing::get(handlers::landmarks_index))
         .route("/pamatky/", axum::routing::get(handlers::landmarks_index))
-        .route("/api/landmarks", axum::routing::get(handlers::api_landmarks))
         .route("/audioknihy", axum::routing::get(handlers::audiobooks))
         .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
         .route("/koupani", axum::routing::get(handlers::pools_hub))
@@ -88,14 +91,13 @@ async fn main() -> Result<()> {
         ))
         .fallback(axum::routing::get(handlers::resolve_path))
         .layer(CompressionLayer::new())
-        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(3000);
+    let port: u16 = match std::env::var("PORT") {
+        Ok(p) => p.parse().context("PORT must be a valid port number")?,
+        Err(_) => 3000,
+    };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {addr}");
 

@@ -228,9 +228,10 @@ pub async fn api_landmarks(
     .await?;
 
     let items: Vec<serde_json::Value> = landmarks.iter().map(|l| {
-        let url = match (&l.region_slug, &l.orp_slug) {
-            (Some(r), Some(o)) => format!("/{r}/{o}/{}/", l.slug),
-            _ => format!("/pamatky/{}/", l.slug),
+        let url = match (&l.orp_slug, &l.municipality_slug) {
+            (Some(o), Some(m)) if o == m => format!("/{o}/{}/", l.slug),
+            (Some(o), Some(m)) => format!("/{o}/{m}/{}/", l.slug),
+            _ => String::new(),
         };
         serde_json::json!({
             "name": l.name,
