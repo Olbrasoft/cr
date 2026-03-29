@@ -12,6 +12,8 @@
 //! - `error` - Domain-specific error types (planned)
 
 pub mod entities;
+pub mod id;
 pub mod slug;
 
+pub use id::*;
 pub use slug::slug_from_name;
