@@ -542,20 +542,22 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
             struct SlugLookup {
                 entity_type: String,
             }
+            // Priority: municipality > landmark > pool > legacy region redirect
             let lookup = sqlx::query_as::<_, SlugLookup>(
-                "SELECT 'municipality' as entity_type FROM municipalities m \
+                "SELECT entity_type FROM ( \
+                 SELECT 'municipality' as entity_type, 1 as priority FROM municipalities m \
                  JOIN orp o ON m.orp_id = o.id WHERE o.slug = $1 AND m.slug = $2 \
                  UNION ALL \
-                 SELECT 'landmark' FROM landmarks l \
+                 SELECT 'landmark' as entity_type, 2 as priority FROM landmarks l \
                  JOIN municipalities m ON l.municipality_id = m.id \
                  JOIN orp o ON m.orp_id = o.id WHERE o.slug = $1 AND l.slug = $2 \
                  UNION ALL \
-                 SELECT 'pool' FROM pools p \
+                 SELECT 'pool' as entity_type, 3 as priority FROM pools p \
                  JOIN orp o ON p.orp_id = o.id WHERE o.slug = $1 AND p.slug = $2 \
                  UNION ALL \
-                 SELECT 'region_redirect' FROM regions r \
+                 SELECT 'region_redirect' as entity_type, 4 as priority FROM regions r \
                  WHERE r.slug = $1 \
-                 LIMIT 1",
+                 ORDER BY priority LIMIT 1) sub",
             )
             .bind(segments[0])
             .bind(segments[1])
