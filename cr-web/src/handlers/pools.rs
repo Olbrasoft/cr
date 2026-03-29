@@ -77,7 +77,7 @@ pub async fn pools_by_category(
                 .await?
         }
     };
-    let total_pages = (total_count + per_page - 1) / per_page;
+    let total_pages = (total_count as u64).div_ceil(per_page as u64) as i64;
     let offset = (page - 1) * per_page;
 
     let base_query = "SELECT p.name, p.slug, p.description, m.name as municipality_name, \

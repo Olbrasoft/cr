@@ -194,7 +194,7 @@ pub async fn landmarks_by_type(
         count: type_row.count,
     };
 
-    let total_pages = (type_info.count + LANDMARKS_PER_PAGE - 1) / LANDMARKS_PER_PAGE;
+    let total_pages = (type_info.count as u64).div_ceil(LANDMARKS_PER_PAGE as u64) as i64;
 
     let landmarks = sqlx::query_as::<_, LandmarkRow>(
         "SELECT l.id, l.name, l.slug, l.latitude, l.longitude, l.description, \
