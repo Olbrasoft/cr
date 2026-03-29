@@ -13,7 +13,18 @@ export default {
       return new Response('Not Found', { status: 404 });
     }
 
-    const object = await env.IMAGES.get(key);
+    // Try the key as-is first
+    let object = await env.IMAGES.get(key);
+
+    // Fallback for SEO landmark URLs: landmarks/{slug}-{catalog_id}.webp → landmarks/{catalog_id}.webp
+    if (!object && key.startsWith('landmarks/')) {
+      const match = key.match(/landmarks\/.*-(\d{10,})\.webp$/);
+      if (match) {
+        const fallbackKey = `landmarks/${match[1]}.webp`;
+        object = await env.IMAGES.get(fallbackKey);
+      }
+    }
+
     if (!object) {
       return new Response('Not Found', { status: 404 });
     }
