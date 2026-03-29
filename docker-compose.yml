@@ -20,7 +20,7 @@ services:
     ports:
       - "80:3000"
     environment:
-      DATABASE_URL: postgres://cr:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/cr
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       RUST_LOG: info
       STATIC_DIR: /app/static
     depends_on:

@@ -126,7 +126,9 @@
         maxZoom: 18,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
     }).addTo(map);
-    L.marker([lat, lon]).addTo(map).bindPopup(document.getElementById('map').getAttribute('data-name'));
+    var popupEl = document.createElement('div');
+    popupEl.textContent = document.getElementById('map').getAttribute('data-name') || '';
+    L.marker([lat, lon]).addTo(map).bindPopup(popupEl);
 })();
 </script>
 {% endif %}
