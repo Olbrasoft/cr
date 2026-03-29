@@ -5,8 +5,11 @@
 //! Implements persistence (SQLx/PostgreSQL), CSV data import,
 //! and external service integrations.
 //!
-//! ## Modules (planned)
+//! ## Modules
 //!
-//! - `db` - SQLx queries, migrations
-//! - `import` - CSV importer for ČSÚ territorial data
-//! - `github` - GitHub integration (Octocrab)
+//! - `repositories` - SQLx-based repository implementations
+//! - `db` (planned) - SQLx queries, migrations
+//! - `import` (planned) - CSV importer for ČSÚ territorial data
+//! - `github` (planned) - GitHub integration (Octocrab)
+
+pub mod repositories;
