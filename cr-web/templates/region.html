@@ -62,21 +62,21 @@
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 < third %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 >= third && loop.index0 < third * 2 %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 >= third * 2 %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
@@ -123,7 +123,7 @@
                     lyr.bindTooltip(name, {sticky: true});
                     if (slug) {
                         lyr.on('click', function(){
-                            window.location.href = '/{{ region.slug }}/' + slug + '/';
+                            window.location.href = '/' + slug + '/';
                         });
                     }
                     lyr.on('mouseover', function(){lyr.setStyle({fillOpacity: 0.35, weight: 3});});
