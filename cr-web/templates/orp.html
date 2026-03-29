@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ orp.name }} | {{ region.name }}{% endblock %}
+{% block title %}{% if orp.slug == "praha" %}{{ main_municipality.name }}{% else %}{{ orp.name }} | {{ region.name }}{% endif %}{% endblock %}
 
 {% block header_left %}
 <div class="logo-group">
@@ -30,15 +30,23 @@
 {% block breadcrumb %}
 <nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
     <a href="/">Česká republika</a> &raquo;
+    {% if orp.slug == "praha" %}
+    <span>{{ main_municipality.name }}</span>
+    {% else %}
     <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
     <span>{{ orp.name }}</span>
+    {% endif %}
 </nav>
 {% endblock %}
 
 {% block content %}
 <section class="info-hub">
     <div class="content-left">
+        {% if orp.slug == "praha" %}
+        <p class="lead-text">{{ main_municipality.name }} je hlavní město České republiky a zároveň samostatný kraj.</p>
+        {% else %}
         <p class="lead-text">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
+        {% endif %}
     </div>
     <aside class="content-right">
         <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
@@ -60,10 +68,12 @@
                     <span class="label-data">Kraj</span>
                     <span class="value-data">{{ region.name }}</span>
                 </div>
+                {% if !other_municipalities.is_empty() %}
                 <div class="row-data">
                     <span class="label-data">Obcí v ORP</span>
                     <span class="value-data">{{ other_municipalities.len() + 1 }}</span>
                 </div>
+                {% endif %}
                 {% if landmarks_count > 0 %}
                 <div class="row-data">
                     <span class="label-data">Památek v ORP</span>
@@ -91,33 +101,73 @@
     </aside>
 </section>
 
-{% if !landmarks.is_empty() %}
+{% if !main_landmarks.is_empty() %}
 <section class="active-hub" style="padding-top: 0;">
     <div class="active-left">
-        <h3 class="section-title" style="font-size: 1.3rem;">Památky v ORP {{ orp.name }} ({{ landmarks.len() }})</h3>
+        <h3 class="section-title" style="font-size: 1.3rem;">Památky {% if orp.slug == "praha" %}({{ main_landmarks.len() }}){% else %}v obci {{ main_municipality.name }} ({{ main_landmarks.len() }}){% endif %}</h3>
         <div style="margin-top: 0.5rem;">
-            {% for l in landmarks %}
+            {% for l in main_landmarks %}
+            <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
+                <a href="/{{ orp.slug }}/{{ l.municipality_slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
+                <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{{ l.type_name }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{% if !other_landmarks.is_empty() %}
+<section class="active-hub" style="padding-top: 0;">
+    <div class="active-left">
+        <h3 class="section-title" style="font-size: 1.3rem;">Památky v okolí ({{ other_landmarks.len() }})</h3>
+        <div style="margin-top: 0.5rem;">
+            {% for l in other_landmarks %}
             {% if loop.index0 < 10 %}
             <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
-                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
+                <a href="/{{ orp.slug }}/{{ l.municipality_slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
                 <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{{ l.type_name }}</span>
+                <span style="color: #aaa; font-size: 0.8rem; margin-left: 0.3rem;">· {{ l.municipality_name }}</span>
             </div>
             {% endif %}
             {% endfor %}
         </div>
-        {% if landmarks.len() > 10 %}
+        {% if other_landmarks.len() > 10 %}
         <div id="landmarks-more" style="display:none; margin-top: 0;">
-            {% for l in landmarks %}
+            {% for l in other_landmarks %}
             {% if loop.index0 >= 10 %}
             <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
-                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
+                <a href="/{{ orp.slug }}/{{ l.municipality_slug }}/{{ l.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ l.name }}</a>
                 <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{{ l.type_name }}</span>
+                <span style="color: #aaa; font-size: 0.8rem; margin-left: 0.3rem;">· {{ l.municipality_name }}</span>
             </div>
             {% endif %}
             {% endfor %}
         </div>
-        <a href="javascript:void(0)" id="landmarks-toggle" onclick="var m=document.getElementById('landmarks-more');var t=document.getElementById('landmarks-toggle');if(m.style.display==='none'){m.style.display='block';t.textContent='Zobrazit méně';}else{m.style.display='none';t.textContent='Zobrazit všech {{ landmarks.len() }} památek';}" style="color: var(--color-link); font-size: 0.9rem; cursor: pointer; display: inline-block; margin-top: 0.5rem;">Zobrazit všech {{ landmarks.len() }} památek</a>
+        <a href="javascript:void(0)" id="landmarks-toggle" onclick="var m=document.getElementById('landmarks-more');var t=document.getElementById('landmarks-toggle');if(m.style.display==='none'){m.style.display='block';t.textContent='Zobrazit méně';}else{m.style.display='none';t.textContent='Zobrazit všech {{ other_landmarks.len() }} památek v okolí';}" style="color: var(--color-link); font-size: 0.9rem; cursor: pointer; display: inline-block; margin-top: 0.5rem;">Zobrazit všech {{ other_landmarks.len() }} památek v okolí</a>
         {% endif %}
+    </div>
+</section>
+{% endif %}
+
+{% if !pools.is_empty() %}
+<section class="active-hub" style="padding-top: 0;">
+    <div class="active-left">
+        <h3 class="section-title" style="font-size: 1.3rem;">Koupání ({{ pools.len() }})</h3>
+        <div style="margin-top: 0.5rem;">
+            {% for p in pools %}
+            <div style="padding: 0.5rem 0; border-bottom: 1px solid var(--color-gray-border);">
+                <a href="/{{ orp.slug }}/{{ p.slug }}/" style="color: var(--color-link); font-weight: 500;">{{ p.name }}</a>
+                <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">
+                    {% if p.is_aquapark %}Aquapark
+                    {% else if p.is_natural %}Přírodní koupaliště
+                    {% else if p.is_outdoor %}Koupaliště
+                    {% else %}Krytý bazén
+                    {% endif %}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
     </div>
 </section>
 {% endif %}
@@ -131,21 +181,21 @@
             <div>
                 {% for m in other_municipalities %}
                 {% if loop.index0 < third %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                <a href="/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for m in other_municipalities %}
                 {% if loop.index0 >= third && loop.index0 < third * 2 %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                <a href="/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for m in other_municipalities %}
                 {% if loop.index0 >= third * 2 %}
-                <a href="/{{ region.slug }}/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
+                <a href="/{{ orp.slug }}/{{ m.slug }}/" class="nav-link"><span>{{ m.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}{{ pool.name }} | Koupání{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <div style="display:flex;align-items:center;gap:0.5rem;">
+        <h1>{{ pool.name }}</h1>
+    </div>
+</div>
+{% endblock %}
+
+{% block search_placeholder %}Hledat koupání...{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo;
+    <a href="/{{ region.slug }}/">{{ region.name }}</a> &raquo;
+    <a href="/{{ orp.slug }}/">{{ orp.name }}</a> &raquo;
+    <span>{{ pool.name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="info-hub">
+    <div class="content-left">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+            {% if pool.is_aquapark %}
+            <span style="display: inline-block; background: #2196F3; color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem;">Aquapark</span>
+            {% endif %}
+            {% if pool.is_indoor %}
+            <span style="display: inline-block; background: #607D8B; color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem;">Krytý bazén</span>
+            {% endif %}
+            {% if pool.is_outdoor %}
+            <span style="display: inline-block; background: #4CAF50; color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem;">Venkovní</span>
+            {% endif %}
+            {% if pool.is_natural %}
+            <span style="display: inline-block; background: #009688; color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem;">Přírodní</span>
+            {% endif %}
+        </div>
+        {% match pool.description %}
+        {% when Some with (desc) %}
+        <div style="line-height: 1.7; color: #333;">
+            {% for paragraph in desc.split("\n\n") %}
+            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endfor %}
+        </div>
+        {% when None %}
+        {% endmatch %}
+
+        {% match pool.facilities %}
+        {% when Some with (fac) %}
+        <div style="margin-top: 1rem;">
+            <h3 style="font-size: 1rem; margin-bottom: 0.5rem;">Vybavení</h3>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                {% for f in fac.split(",") %}
+                <span style="background: #f0f0f0; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.85rem;">
+                    {% if f.trim() == "tobogan" %}Tobogán
+                    {% else if f.trim() == "sauna" %}Sauna
+                    {% else if f.trim() == "whirlpool" %}Vířivka
+                    {% else if f.trim() == "kids_pool" %}Dětský bazén
+                    {% else if f.trim() == "steam_sauna" %}Parní sauna
+                    {% else if f.trim() == "wellness" %}Wellness
+                    {% else if f.trim() == "fitness" %}Fitness
+                    {% else %}{{ f.trim() }}
+                    {% endif %}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+        {% when None %}
+        {% endmatch %}
+    </div>
+    <aside class="content-right">
+        {% if pool.photo_count > 0 %}
+        <img src="{{ img }}/img/pools/{{ pool.slug }}-1.webp" alt="{{ pool.name }}" style="width:100%;border-radius:12px;margin-bottom:1rem;object-fit:cover;" loading="lazy">
+        {% endif %}
+        {% if pool.latitude.is_some() %}
+        <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
+        {% endif %}
+        <div class="premium-infobox">
+            <div class="infobox-top">
+                <div class="infobox-title">{{ pool.name }}</div>
+                {% match pool.municipality_name %}
+                {% when Some with (mname) %}
+                <div class="infobox-subtitle">{{ mname }}</div>
+                {% when None %}
+                {% endmatch %}
+            </div>
+            <div class="infobox-table">
+                {% match pool.address %}
+                {% when Some with (addr) %}
+                <div class="row-data">
+                    <span class="label-data">Adresa</span>
+                    <span class="value-data">{{ addr }}</span>
+                </div>
+                {% when None %}
+                {% endmatch %}
+                {% match pool.pool_length_m %}
+                {% when Some with (len) %}
+                <div class="row-data">
+                    <span class="label-data">Délka bazénu</span>
+                    <span class="value-data">{{ len }} m</span>
+                </div>
+                {% when None %}
+                {% endmatch %}
+                {% match pool.phone %}
+                {% when Some with (ph) %}
+                <div class="row-data">
+                    <span class="label-data">Telefon</span>
+                    <span class="value-data"><a href="tel:{{ ph }}" style="color: var(--color-link);">{{ ph }}</a></span>
+                </div>
+                {% when None %}
+                {% endmatch %}
+                {% match pool.email %}
+                {% when Some with (em) %}
+                <div class="row-data">
+                    <span class="label-data">E-mail</span>
+                    <span class="value-data"><a href="mailto:{{ em }}" style="color: var(--color-link);">{{ em }}</a></span>
+                </div>
+                {% when None %}
+                {% endmatch %}
+            </div>
+            <div style="padding: 0.75rem 1.25rem; display: flex; flex-direction: column; gap: 0.4rem;">
+                {% match pool.website %}
+                {% when Some with (url) %}
+                <a href="{{ url }}" target="_blank" rel="noopener" style="color: var(--color-link); font-size: 0.9rem;">Oficiální web</a>
+                {% when None %}
+                {% endmatch %}
+                {% match pool.facebook %}
+                {% when Some with (fb) %}
+                <a href="{{ fb }}" target="_blank" rel="noopener" style="color: var(--color-link); font-size: 0.9rem;">Facebook</a>
+                {% when None %}
+                {% endmatch %}
+            </div>
+        </div>
+    </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if pool.latitude.is_some() %}
+<script>
+(function(){
+    var lat = {{ pool.latitude.unwrap_or(49.8) }};
+    var lon = {{ pool.longitude.unwrap_or(15.5) }};
+    var map = L.map('map', {scrollWheelZoom: false}).setView([lat, lon], 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+    }).addTo(map);
+    L.marker([lat, lon]).addTo(map).bindPopup('{{ pool.name }}');
+})();
+</script>
+{% endif %}
+{% endblock %}

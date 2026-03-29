@@ -25,10 +25,15 @@ def download_and_convert(medium_id, catalog_id):
     jpg_path = os.path.join(OUT_DIR, f"{catalog_id}.jpg")
     url = f"https://iispp.npu.cz/mis_public/preview.htm?id={medium_id}"
 
-    result = subprocess.run(
-        ["curl", "-s", "-L", "-o", jpg_path, "-H", f"User-Agent: {UA}", url],
-        capture_output=True, timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-L", "--max-time", "45", "-o", jpg_path, "-H", f"User-Agent: {UA}", url],
+            capture_output=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, Exception):
+        if os.path.exists(jpg_path):
+            os.remove(jpg_path)
+        return "fail"
 
     if not os.path.exists(jpg_path) or os.path.getsize(jpg_path) < 500:
         if os.path.exists(jpg_path):
@@ -36,10 +41,15 @@ def download_and_convert(medium_id, catalog_id):
         return "fail"
 
     # Convert to WebP
-    conv = subprocess.run(
-        ["cwebp", "-q", "85", "-quiet", jpg_path, "-o", webp_path],
-        capture_output=True, timeout=30,
-    )
+    try:
+        conv = subprocess.run(
+            ["cwebp", "-q", "85", "-quiet", jpg_path, "-o", webp_path],
+            capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        if os.path.exists(jpg_path):
+            os.remove(jpg_path)
+        return "fail"
 
     if os.path.exists(webp_path) and os.path.getsize(webp_path) > 100:
         os.remove(jpg_path)
@@ -86,7 +96,8 @@ def main():
                 flush=True,
             )
 
-        time.sleep(0.3)
+        if status != "skip":
+            time.sleep(0.3)
 
     print(
         f"\nDone! Downloaded: {downloaded}, Skipped: {skipped}, "
