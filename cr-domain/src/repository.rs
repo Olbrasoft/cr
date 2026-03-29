@@ -8,7 +8,7 @@ use crate::id::*;
 /// Repository for region queries.
 #[allow(async_fn_in_trait)]
 pub trait RegionRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_all(&self) -> Result<Vec<RegionRecord>, Self::Error>;
     async fn find_by_slug(&self, slug: &str) -> Result<Option<RegionRecord>, Self::Error>;
 }
@@ -16,7 +16,7 @@ pub trait RegionRepository {
 /// Repository for ORP queries.
 #[allow(async_fn_in_trait)]
 pub trait OrpRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_by_slug(&self, slug: &str) -> Result<Option<OrpRecord>, Self::Error>;
     async fn find_by_region(&self, region_id: RegionId) -> Result<Vec<OrpRecord>, Self::Error>;
     async fn exists_by_slug(&self, slug: &str) -> Result<bool, Self::Error>;
@@ -25,7 +25,7 @@ pub trait OrpRepository {
 /// Repository for municipality queries.
 #[allow(async_fn_in_trait)]
 pub trait MunicipalityRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_by_slug_and_orp(
         &self,
         slug: &str,
@@ -37,7 +37,7 @@ pub trait MunicipalityRepository {
 /// Repository for landmark queries.
 #[allow(async_fn_in_trait)]
 pub trait LandmarkRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_by_slug_and_orp(
         &self,
         slug: &str,
@@ -50,7 +50,7 @@ pub trait LandmarkRepository {
 /// Repository for pool queries.
 #[allow(async_fn_in_trait)]
 pub trait PoolRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_by_slug_and_orp(
         &self,
         slug: &str,
@@ -62,7 +62,7 @@ pub trait PoolRepository {
 /// Repository for photo metadata queries.
 #[allow(async_fn_in_trait)]
 pub trait PhotoRepository {
-    type Error;
+    type Error: std::fmt::Debug;
     async fn find_by_entity(
         &self,
         entity_type: &str,
