@@ -62,28 +62,46 @@
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 < third %}
-                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link" data-orp-slug="{{ orp.slug }}"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 >= third && loop.index0 < third * 2 %}
-                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link" data-orp-slug="{{ orp.slug }}"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div>
                 {% for orp in orps %}
                 {% if loop.index0 >= third * 2 %}
-                <a href="/{{ orp.slug }}/" class="nav-link"><span>{{ orp.name }}</span></a>
+                <a href="/{{ orp.slug }}/" class="nav-link" data-orp-slug="{{ orp.slug }}"><span>{{ orp.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
         </div>
     </div>
     <aside class="content-right" style="padding-top: 1rem;">
-        <div id="map" style="width:100%;height:350px;border-radius:12px;margin-bottom:1rem;"></div>
+        <div class="map-card-premium">
+            <div class="map-container-svg">
+                {% if region.slug == "jihocesky-kraj" %}{% include "includes/map_jihocesky_kraj.html" %}
+                {% else if region.slug == "jihomoravsky-kraj" %}{% include "includes/map_jihomoravsky_kraj.html" %}
+                {% else if region.slug == "karlovarsky-kraj" %}{% include "includes/map_karlovarsky_kraj.html" %}
+                {% else if region.slug == "kralovehradecky-kraj" %}{% include "includes/map_kralovehradecky_kraj.html" %}
+                {% else if region.slug == "liberecky-kraj" %}{% include "includes/map_liberecky_kraj.html" %}
+                {% else if region.slug == "moravskoslezsky-kraj" %}{% include "includes/map_moravskoslezsky_kraj.html" %}
+                {% else if region.slug == "olomoucky-kraj" %}{% include "includes/map_olomoucky_kraj.html" %}
+                {% else if region.slug == "pardubicky-kraj" %}{% include "includes/map_pardubicky_kraj.html" %}
+                {% else if region.slug == "plzensky-kraj" %}{% include "includes/map_plzensky_kraj.html" %}
+                {% else if region.slug == "stredocesky-kraj" %}{% include "includes/map_stredocesky_kraj.html" %}
+                {% else if region.slug == "ustecky-kraj" %}{% include "includes/map_ustecky_kraj.html" %}
+                {% else if region.slug == "kraj-vysocina" %}{% include "includes/map_kraj_vysocina.html" %}
+                {% else if region.slug == "zlinsky-kraj" %}{% include "includes/map_zlinsky_kraj.html" %}
+                {% else if region.slug == "hlavni-mesto-praha" %}{% include "includes/map_hlavni_mesto_praha.html" %}
+                {% endif %}
+            </div>
+        </div>
         <div class="premium-infobox">
             <div class="infobox-top">
                 <div class="infobox-title">{{ region.name }}</div>
@@ -101,37 +119,46 @@
 
 {% block scripts %}
 <script>
-(function(){
-    var lat = {{ region.latitude.unwrap_or(49.8) }};
-    var lon = {{ region.longitude.unwrap_or(15.5) }};
-    var regionCode = '{{ region.region_code }}';
+(function() {
+    var svg = document.getElementById('map-region');
+    if (!svg) return;
 
-    var map = L.map('map', {scrollWheelZoom: false}).setView([lat, lon], 9);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 18,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-    }).addTo(map);
+    var paths = svg.querySelectorAll('path.orp');
+    var links = document.querySelectorAll('a.nav-link[data-orp-slug]');
 
-    fetch('/static/geojson/regions/' + regionCode + '.geojson')
-        .then(function(r){return r.json();})
-        .then(function(data){
-            var layer = L.geoJSON(data, {
-                style: {color: '#3388ff', weight: 2, fillColor: '#3388ff', fillOpacity: 0.1},
-                onEachFeature: function(feature, lyr){
-                    var name = feature.properties.naz_orp || '';
-                    var slug = feature.properties.slug || '';
-                    lyr.bindTooltip(name, {sticky: true});
-                    if (slug) {
-                        lyr.on('click', function(){
-                            window.location.href = '/' + slug + '/';
-                        });
-                    }
-                    lyr.on('mouseover', function(){lyr.setStyle({fillOpacity: 0.35, weight: 3});});
-                    lyr.on('mouseout', function(){layer.resetStyle(lyr);});
-                }
-            }).addTo(map);
-            map.fitBounds(layer.getBounds());
-        });
+    var pathBySlug = {};
+    var linkBySlug = {};
+    paths.forEach(function(p) { pathBySlug[p.getAttribute('data-slug')] = p; });
+    links.forEach(function(l) { linkBySlug[l.getAttribute('data-orp-slug')] = l; });
+
+    function highlight(slug) {
+        var path = pathBySlug[slug];
+        var link = linkBySlug[slug];
+        if (path) path.classList.add('active');
+        if (link) link.classList.add('map-hover');
+    }
+
+    function unhighlight(slug) {
+        var path = pathBySlug[slug];
+        var link = linkBySlug[slug];
+        if (path) path.classList.remove('active');
+        if (link) link.classList.remove('map-hover');
+    }
+
+    paths.forEach(function(path) {
+        var slug = path.getAttribute('data-slug');
+        path.addEventListener('mouseenter', function() { highlight(slug); });
+        path.addEventListener('mouseleave', function() { unhighlight(slug); });
+        path.addEventListener('click', function() { window.location.href = '/' + slug + '/'; });
+    });
+
+    links.forEach(function(link) {
+        var slug = link.getAttribute('data-orp-slug');
+        link.addEventListener('mouseenter', function() { highlight(slug); });
+        link.addEventListener('mouseleave', function() { unhighlight(slug); });
+        link.addEventListener('focus', function() { highlight(slug); });
+        link.addEventListener('blur', function() { unhighlight(slug); });
+    });
 })();
 </script>
 {% endblock %}
