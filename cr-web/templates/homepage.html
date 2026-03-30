@@ -8,6 +8,10 @@
         <span class="portal-category-icon">🏰</span>
         <span>Památky</span>
     </a>
+    <a href="/koupani/" class="portal-category-link">
+        <span class="portal-category-icon">🏊</span>
+        <span>Koupání</span>
+    </a>
     <a href="/audioknihy/" class="portal-category-link">
         <span class="portal-category-icon">🎧</span>
         <span>Audioknihy</span>
@@ -22,14 +26,14 @@
             <div class="col">
                 {% for region in regions %}
                 {% if loop.index0 < (regions.len() + 1) / 2 %}
-                <a href="/{{ region.slug }}/" class="nav-link"><span>{{ region.name }}</span></a>
+                <a href="/{{ region.slug }}/" class="nav-link" data-region-slug="{{ region.slug }}"><span>{{ region.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
             <div class="col">
                 {% for region in regions %}
                 {% if loop.index0 >= (regions.len() + 1) / 2 %}
-                <a href="/{{ region.slug }}/" class="nav-link"><span>{{ region.name }}</span></a>
+                <a href="/{{ region.slug }}/" class="nav-link" data-region-slug="{{ region.slug }}"><span>{{ region.name }}</span></a>
                 {% endif %}
                 {% endfor %}
             </div>
@@ -38,7 +42,6 @@
     <div class="map-card-premium">
         <div class="map-container-svg">
             {% include "includes/map_cr.html" %}
-            <div id="map-tooltip" class="map-tooltip"></div>
         </div>
     </div>
 </section>
@@ -48,33 +51,46 @@
 <script>
 (function() {
     var svg = document.getElementById('map-cr');
-    var tooltip = document.getElementById('map-tooltip');
-    if (!svg || !tooltip) return;
+    if (!svg) return;
 
     var paths = svg.querySelectorAll('path.kraj');
+    var links = document.querySelectorAll('a.nav-link[data-region-slug]');
+
+    // Build slug→path and slug→link maps
+    var pathBySlug = {};
+    var linkBySlug = {};
+    paths.forEach(function(p) { pathBySlug[p.getAttribute('data-slug')] = p; });
+    links.forEach(function(l) { linkBySlug[l.getAttribute('data-region-slug')] = l; });
+
+    function highlightRegion(slug) {
+        var path = pathBySlug[slug];
+        var link = linkBySlug[slug];
+        if (path) path.classList.add('active');
+        if (link) link.classList.add('map-hover');
+    }
+
+    function unhighlightRegion(slug) {
+        var path = pathBySlug[slug];
+        var link = linkBySlug[slug];
+        if (path) path.classList.remove('active');
+        if (link) link.classList.remove('map-hover');
+    }
+
+    // SVG map hover → highlight list item
     paths.forEach(function(path) {
-        var name = path.getAttribute('data-name');
         var slug = path.getAttribute('data-slug');
+        path.addEventListener('mouseenter', function() { highlightRegion(slug); });
+        path.addEventListener('mouseleave', function() { unhighlightRegion(slug); });
+        path.addEventListener('click', function() { window.location.href = '/' + slug + '/'; });
+    });
 
-        path.addEventListener('mouseenter', function() {
-            tooltip.textContent = name;
-            tooltip.style.display = 'block';
-        });
-
-        path.addEventListener('mousemove', function(e) {
-            var container = svg.closest('.map-container-svg');
-            var rect = container.getBoundingClientRect();
-            tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
-            tooltip.style.top = (e.clientY - rect.top - 28) + 'px';
-        });
-
-        path.addEventListener('mouseleave', function() {
-            tooltip.style.display = 'none';
-        });
-
-        path.addEventListener('click', function() {
-            window.location.href = '/' + slug + '/';
-        });
+    // List hover/focus → highlight SVG region
+    links.forEach(function(link) {
+        var slug = link.getAttribute('data-region-slug');
+        link.addEventListener('mouseenter', function() { highlightRegion(slug); });
+        link.addEventListener('mouseleave', function() { unhighlightRegion(slug); });
+        link.addEventListener('focus', function() { highlightRegion(slug); });
+        link.addEventListener('blur', function() { unhighlightRegion(slug); });
     });
 })();
 </script>
