@@ -31,9 +31,9 @@ node_modules/
 # Wrangler local state
 .wrangler/
 
-# GeoJSON source data (large files, generated from CSU data)
+# GeoJSON source data (large raw files)
 data/geojson/*_wgs84.geojson
-data/geojson/*_simple.geojson
+# Note: *_simple.geojson files ARE committed — they're needed on production for map polygons
 
 # Playwright screenshots
 .playwright-mcp/

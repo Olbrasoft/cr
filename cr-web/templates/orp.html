@@ -228,7 +228,7 @@
     }).addTo(map);
 
     fetch('/api/geojson/orp/' + orpCode)
-        .then(function(r){return r.json();})
+        .then(function(r){ if (!r.ok) throw new Error('GeoJSON not found'); return r.json(); })
         .then(function(data){
             var layer = L.geoJSON(data, {
                 style: {color: '#3388ff', weight: 2.5, fillColor: '#3388ff', fillOpacity: 0.12}
