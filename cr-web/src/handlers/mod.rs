@@ -85,6 +85,7 @@ pub(crate) struct LandmarkRow {
     pub(crate) image_ext: Option<String>,
     #[allow(dead_code)]
     pub(crate) npu_catalog_id: Option<String>,
+    #[sqlx(default)]
     pub(crate) npu_description: Option<String>,
     #[allow(dead_code)]
     pub(crate) type_slug: String,
