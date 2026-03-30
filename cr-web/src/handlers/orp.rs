@@ -92,7 +92,7 @@ pub(crate) async fn render_orp(
     // Keep direct sqlx: OrpLandmarkRow is a complex JOIN with no matching domain record
     let landmarks = sqlx::query_as::<_, OrpLandmarkRow>(
         "SELECT l.name, l.slug, lt.name as type_name, m.name as municipality_name, \
-         m.slug as municipality_slug, (m.id = $2) as is_main \
+         m.slug as municipality_slug, (m.id = $2) as is_main, l.npu_description \
          FROM landmarks l \
          JOIN landmark_types lt ON l.type_id = lt.id \
          JOIN municipalities m ON l.municipality_id = m.id \
