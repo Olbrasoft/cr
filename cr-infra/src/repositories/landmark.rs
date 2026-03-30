@@ -23,6 +23,7 @@ struct LandmarkRow {
     wikipedia_url: Option<String>,
     image_ext: Option<String>,
     npu_catalog_id: Option<String>,
+    npu_description: Option<String>,
     type_slug: String,
     type_name: String,
     municipality_name: Option<String>,
@@ -43,6 +44,7 @@ impl From<LandmarkRow> for LandmarkRecord {
             wikipedia_url: r.wikipedia_url,
             image_ext: r.image_ext,
             npu_catalog_id: r.npu_catalog_id,
+            npu_description: r.npu_description,
             type_slug: r.type_slug,
             type_name: r.type_name,
             municipality_name: r.municipality_name,
@@ -86,7 +88,7 @@ impl LandmarkRepository for PgLandmarkRepository {
     ) -> Result<Option<LandmarkRecord>, Self::Error> {
         let row = sqlx::query_as::<_, LandmarkRow>(
             "SELECT l.id, l.name, l.slug, l.latitude, l.longitude, l.description, \
-             l.wikipedia_url, l.image_ext, l.npu_catalog_id, \
+             l.wikipedia_url, l.image_ext, l.npu_catalog_id, l.npu_description, \
              lt.slug as type_slug, lt.name as type_name, \
              m.name as municipality_name, m.slug as municipality_slug, \
              o2.slug as orp_slug, r2.slug as region_slug \

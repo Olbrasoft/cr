@@ -85,6 +85,8 @@ pub(crate) struct LandmarkRow {
     pub(crate) image_ext: Option<String>,
     #[allow(dead_code)]
     pub(crate) npu_catalog_id: Option<String>,
+    #[sqlx(default)]
+    pub(crate) npu_description: Option<String>,
     #[allow(dead_code)]
     pub(crate) type_slug: String,
     pub(crate) type_name: String,
@@ -145,6 +147,7 @@ impl From<cr_domain::repository::LandmarkRecord> for LandmarkRow {
             wikipedia_url: r.wikipedia_url,
             image_ext: r.image_ext,
             npu_catalog_id: r.npu_catalog_id,
+            npu_description: r.npu_description,
             type_slug: r.type_slug,
             type_name: r.type_name,
             municipality_name: r.municipality_name,

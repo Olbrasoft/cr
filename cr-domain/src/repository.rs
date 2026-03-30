@@ -139,6 +139,7 @@ pub struct LandmarkRecord {
     pub wikipedia_url: Option<String>,
     pub image_ext: Option<String>,
     pub npu_catalog_id: Option<String>,
+    pub npu_description: Option<String>,
     pub type_slug: String,
     pub type_name: String,
     pub municipality_name: Option<String>,
