@@ -1,17 +1,19 @@
 /* --- MAP STYLES --- */
 
-/* SVG inline map on homepage */
+/* SVG inline maps */
 .map-container-svg {
     position: relative;
     width: 100%;
     height: 100%;
 }
 
-#map-cr {
+#map-cr,
+#map-region {
     width: 100%;
     height: 100%;
 }
 
+/* Homepage region paths */
 .kraj {
     fill: #d4d4d4;
     stroke: #888;
@@ -26,7 +28,22 @@
     stroke-width: 1.8;
 }
 
-/* Region list item highlighted when map region is hovered */
+/* Region page ORP paths */
+.orp {
+    fill: #d4d4d4;
+    stroke: #888;
+    stroke-width: 1;
+    cursor: pointer;
+    transition: fill 0.2s, stroke-width 0.2s;
+}
+
+.orp:hover,
+.orp.active {
+    fill: var(--color-link, #11457E);
+    stroke-width: 1.5;
+}
+
+/* List item highlighted when map region/ORP is hovered */
 .nav-link.map-hover {
     color: var(--color-link);
 }
