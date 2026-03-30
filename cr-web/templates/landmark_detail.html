@@ -46,40 +46,33 @@
 <section class="info-hub">
     <div class="content-left">
         <span style="display: inline-block; background: var(--color-link); color: white; padding: 0.2rem 0.7rem; border-radius: 4px; font-size: 0.85rem; margin-bottom: 1rem;">{{ landmark.type_name }}</span>
-        {% match landmark.description %}
-        {% when Some with (desc) %}
         <div style="line-height: 1.7; color: #333;">
             {% if !photos.is_empty() %}
             <div class="photo-inline" data-gallery-open="landmark" data-index="0" data-gallery-photos="[{% for photo in photos %}{% if !loop.first %},{% endif %}&quot;{{ photo.url }}&quot;{% endfor %}]">
                 <img src="{{ photos[0].thumb_url }}" alt="{{ landmark.name }}" loading="lazy">
             </div>
             {% endif %}
+            {% match landmark.npu_description %}
+            {% when Some with (npu) %}
+            {% for paragraph in npu.split("\n\n") %}
+            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
+            {% endfor %}
+            {% when None %}
+            {% match landmark.description %}
+            {% when Some with (desc) %}
             {% for paragraph in desc.split("\n\n") %}
             <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
             {% endfor %}
+            {% when None %}
+            {% match landmark.municipality_name %}
+            {% when Some with (mname) %}
+            <p class="lead-text">{{ landmark.name }} se nachází v obci {{ mname }}, {{ region.name }}.</p>
+            {% when None %}
+            <p class="lead-text">{{ landmark.name }}, {{ region.name }}.</p>
+            {% endmatch %}
+            {% endmatch %}
+            {% endmatch %}
         </div>
-        {% when None %}
-        <div style="line-height: 1.7; color: #333;">
-        {% if !photos.is_empty() %}
-        <div class="photo-inline" data-gallery-open="landmark" data-index="0" data-gallery-photos="[{% for photo in photos %}{% if !loop.first %},{% endif %}&quot;{{ photo.url }}&quot;{% endfor %}]">
-            <img src="{{ photos[0].thumb_url }}" alt="{{ landmark.name }}" loading="lazy">
-        </div>
-        {% endif %}
-        {% match landmark.npu_description %}
-        {% when Some with (npu) %}
-        {% for paragraph in npu.split("\n\n") %}
-        <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
-        {% endfor %}
-        {% when None %}
-        {% match landmark.municipality_name %}
-        {% when Some with (mname) %}
-        <p class="lead-text">{{ landmark.name }} se nachází v obci {{ mname }}, {{ region.name }}.</p>
-        {% when None %}
-        <p class="lead-text">{{ landmark.name }}, {{ region.name }}.</p>
-        {% endmatch %}
-        {% endmatch %}
-        </div>
-        {% endmatch %}
     </div>
     <aside class="content-right">
         {% if photos.len() > 1 %}
