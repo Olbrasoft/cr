@@ -237,20 +237,14 @@ pub async fn img_proxy(
 /// Pattern: `{orp-slug}/{municipality-slug}/{photo-slug}.webp`
 /// → `municipalities/{municipality_code}/{photo-slug}.webp`
 ///
-/// Known prefixes (municipalities/, landmarks/, pools/, regions/, img/) pass through unchanged.
+/// Known prefixes (municipalities/, landmarks/, pools/, regions/) pass through unchanged.
 async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
-    let known_prefixes = [
-        "municipalities/",
-        "landmarks/",
-        "pools/",
-        "regions/",
-        "img/",
-    ];
+    let known_prefixes = ["municipalities/", "landmarks/", "pools/", "regions/"];
     if known_prefixes.iter().any(|p| path.starts_with(p)) {
         return path.to_string();
     }
 
-    let segments: Vec<&str> = path.splitn(3, '/').collect();
+    let segments: Vec<&str> = path.split('/').collect();
     if segments.len() != 3 {
         return path.to_string();
     }
@@ -268,11 +262,14 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
     .bind(orp_slug)
     .bind(muni_slug)
     .fetch_optional(db)
-    .await
-    .unwrap_or(None);
+    .await;
 
     match code {
-        Some(code) => format!("municipalities/{code}/{photo_file}"),
-        None => path.to_string(), // fallback: pass through as-is
+        Ok(Some(code)) => format!("municipalities/{code}/{photo_file}"),
+        Ok(None) => path.to_string(), // fallback: pass through as-is
+        Err(e) => {
+            tracing::error!("DB error resolving SEO path '{path}': {e}");
+            path.to_string()
+        }
     }
 }

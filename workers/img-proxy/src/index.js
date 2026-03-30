@@ -19,7 +19,7 @@ export default {
 
     // SEO municipality URLs: {orp}/{municipality}/{photo}.webp
     // These need DB lookup (Axum handles), pass through to origin.
-    const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/', 'regions/', 'img/'];
+    const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/', 'regions/'];
     const isKnownPrefix = knownPrefixes.some(p => key.startsWith(p));
     const segmentCount = key.split('/').length;
     if (!isKnownPrefix && segmentCount === 3) {

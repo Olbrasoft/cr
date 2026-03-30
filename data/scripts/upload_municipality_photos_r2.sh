@@ -13,12 +13,17 @@ LOG_ERR="/tmp/r2_muni_photos_err.log"
 > "$LOG_OK"
 > "$LOG_ERR"
 
-export BUCKET IMG_DIR
+export BUCKET IMG_DIR LOG_OK LOG_ERR
 
 upload_one() {
     local FILE="$1"
     local BASENAME=$(basename "$FILE" .webp)
     # Parse: {code}-{slug} → code is first part before first hyphen (6 digits)
+    # Skip files not starting with digits (e.g. metadata files)
+    if ! [[ "$BASENAME" =~ ^[0-9] ]]; then
+        echo "SKIP (no leading digits): $BASENAME" >> "$LOG_ERR"
+        return 0
+    fi
     local CODE=$(echo "$BASENAME" | grep -oP '^\d+')
     local SLUG=$(echo "$BASENAME" | sed "s/^${CODE}-//")
     local KEY="municipalities/${CODE}/${SLUG}.webp"
@@ -27,9 +32,9 @@ upload_one() {
         --file="$FILE" \
         --content-type="image/webp" \
         --remote 2>&1 | grep -q "Upload complete"; then
-        echo "$KEY" >> /tmp/r2_muni_photos_ok.log
+        echo "$KEY" >> "$LOG_OK"
     else
-        echo "$KEY" >> /tmp/r2_muni_photos_err.log
+        echo "$KEY" >> "$LOG_ERR"
     fi
 }
 

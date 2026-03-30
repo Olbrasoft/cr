@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rewrite NPÚ landmark texts using Gemini API (Gemma 3 27B).
 
-Rotates between 3 API keys with parallel requests (one per key).
+Rotates between N API keys with parallel requests (one per key).
 Retries on 429 with exponential backoff.
 Saves to cr_staging.npu_rewritten table.
 Skips already-rewritten texts. Safe to restart.
@@ -25,6 +25,9 @@ GEMINI_KEYS = [
     os.environ.get("GEMINI_API_KEY_4", ""),
 ]
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]  # filter empty
+if not GEMINI_KEYS:
+    print("ERROR: No GEMINI_API_KEY_* environment variables set. Exiting.", file=sys.stderr)
+    sys.exit(1)
 GEMINI_URL_TPL = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={}"
 
 SYSTEM_PROMPT = """Jsi odborný copywriter specializující se na české kulturní dědictví. Přepiš poskytnutý text o památce podle těchto pravidel:
@@ -153,7 +156,7 @@ def main():
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Process in batches of num_keys (3 parallel requests, one per API key)
+    # Process in batches of num_keys (num_keys parallel requests, one per API key)
     i = 0
     while i < total:
         batch = []
