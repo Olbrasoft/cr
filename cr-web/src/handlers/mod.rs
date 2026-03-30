@@ -262,6 +262,7 @@ pub(crate) struct OrpTemplate {
     pub(crate) other_landmarks: Vec<OrpLandmarkRow>,
     pub(crate) landmarks_count: i64,
     pub(crate) pools: Vec<OrpPoolRow>,
+    pub(crate) photo: Option<MunicipalityPhotoInfo>,
 }
 
 #[derive(sqlx::FromRow)]

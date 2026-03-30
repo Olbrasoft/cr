@@ -42,11 +42,20 @@
 {% block content %}
 <section class="info-hub">
     <div class="content-left">
-        {% if orp.slug == "praha" %}
-        <p class="lead-text">{{ main_municipality.name }} je hlavní město České republiky a zároveň samostatný kraj.</p>
-        {% else %}
-        <p class="lead-text">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
-        {% endif %}
+        <div style="line-height: 1.7; color: #333;">
+            {% match photo %}
+            {% when Some with (p) %}
+            <div class="photo-inline" data-gallery-open="orp" data-index="0" data-gallery-photos="[&quot;{{ p.url }}&quot;]">
+                <img src="{{ p.thumb_url }}" alt="{% if p.description.is_empty() %}{{ main_municipality.name }}{% else %}{{ p.description }}{% endif %}" loading="lazy">
+            </div>
+            {% when None %}
+            {% endmatch %}
+            {% if orp.slug == "praha" %}
+            <p style="margin-bottom: 0.8rem;">{{ main_municipality.name }} je hlavní město České republiky a zároveň samostatný kraj.</p>
+            {% else %}
+            <p style="margin-bottom: 0.8rem;">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
+            {% endif %}
+        </div>
     </div>
     <aside class="content-right">
         <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;"></div>
