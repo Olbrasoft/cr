@@ -88,7 +88,13 @@ def rewrite_with_retry(text, key_index=0, max_retries=3):
                 return None, duration_ms, f"HTTP {resp.status_code}: {resp.text[:200]}"
 
             data = resp.json()
-            content = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None, duration_ms, "No candidates (safety filter)"
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                return None, duration_ms, "No content parts"
+            content = parts[0].get("text", "").strip()
             if not content:
                 return None, duration_ms, "Empty response"
 

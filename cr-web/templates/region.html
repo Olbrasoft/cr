@@ -84,7 +84,7 @@
     </div>
     <aside class="content-right" style="padding-top: 1rem;">
         <div class="map-card-premium">
-            <div class="map-container-svg" style="min-height:300px;">
+            <div class="map-container-svg">
                 {% if region.slug == "jihocesky-kraj" %}{% include "includes/map_jihocesky_kraj.html" %}
                 {% else if region.slug == "jihomoravsky-kraj" %}{% include "includes/map_jihomoravsky_kraj.html" %}
                 {% else if region.slug == "karlovarsky-kraj" %}{% include "includes/map_karlovarsky_kraj.html" %}
@@ -126,23 +126,31 @@
     var paths = svg.querySelectorAll('path.orp');
     var links = document.querySelectorAll('a.nav-link[data-orp-slug]');
 
+    var labels = svg.querySelectorAll('text.orp-label[data-slug]');
+
     var pathBySlug = {};
     var linkBySlug = {};
+    var labelBySlug = {};
     paths.forEach(function(p) { pathBySlug[p.getAttribute('data-slug')] = p; });
     links.forEach(function(l) { linkBySlug[l.getAttribute('data-orp-slug')] = l; });
+    labels.forEach(function(t) { labelBySlug[t.getAttribute('data-slug')] = t; });
 
     function highlight(slug) {
         var path = pathBySlug[slug];
         var link = linkBySlug[slug];
+        var label = labelBySlug[slug];
         if (path) path.classList.add('active');
         if (link) link.classList.add('map-hover');
+        if (label) label.classList.add('active');
     }
 
     function unhighlight(slug) {
         var path = pathBySlug[slug];
         var link = linkBySlug[slug];
+        var label = labelBySlug[slug];
         if (path) path.classList.remove('active');
         if (link) link.classList.remove('map-hover');
+        if (label) label.classList.remove('active');
     }
 
     paths.forEach(function(path) {

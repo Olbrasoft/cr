@@ -38,21 +38,21 @@ def get_orp_data():
     """Get ORP code → (slug, lat, lon) mapping from database."""
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    cur.execute("SELECT orp_code, slug, name, latitude, longitude FROM orp")
+    cur.execute("SELECT orp_code, slug, name, latitude, longitude, map_label FROM orp")
     result = {}
     for row in cur.fetchall():
-        result[row[0]] = {"slug": row[1], "name": row[2], "lat": row[3], "lon": row[4]}
+        result[row[0]] = {"slug": row[1], "name": row[2], "lat": row[3], "lon": row[4], "map_label": row[5]}
     conn.close()
     return result
 
 
-def polygon_to_svg_path(coords, min_x, min_y, scale):
+def polygon_to_svg_path(coords, min_x, min_y, scale, cos_lat=1.0):
     """Convert GeoJSON polygon coordinates to SVG path d attribute."""
     parts = []
     for ring in coords:
         points = []
         for i, (lon, lat) in enumerate(ring):
-            x = (lon - min_x) * scale
+            x = (lon - min_x) * cos_lat * scale
             y = (min_y - lat) * scale  # flip Y axis
             if i == 0:
                 points.append(f"M {x:.1f} {y:.1f}")
@@ -63,19 +63,19 @@ def polygon_to_svg_path(coords, min_x, min_y, scale):
     return " ".join(parts)
 
 
-def multipolygon_to_svg_path(geometry, min_x, min_y, scale):
+def multipolygon_to_svg_path(geometry, min_x, min_y, scale, cos_lat=1.0):
     """Convert GeoJSON geometry (Polygon or MultiPolygon) to SVG path."""
     if geometry["type"] == "Polygon":
-        return polygon_to_svg_path(geometry["coordinates"], min_x, min_y, scale)
+        return polygon_to_svg_path(geometry["coordinates"], min_x, min_y, scale, cos_lat)
     elif geometry["type"] == "MultiPolygon":
         parts = []
         for polygon in geometry["coordinates"]:
-            parts.append(polygon_to_svg_path(polygon, min_x, min_y, scale))
+            parts.append(polygon_to_svg_path(polygon, min_x, min_y, scale, cos_lat))
         return " ".join(parts)
     return ""
 
 
-def generate_region_svg(features, region_slug, orp_data, svg_width=480):
+def generate_region_svg(features, region_slug, orp_data, svg_width=700):
     """Generate SVG content for a region."""
     # Calculate bounding box
     all_coords = []
@@ -101,9 +101,16 @@ def generate_region_svg(features, region_slug, orp_data, svg_width=480):
     min_lat -= pad
     max_lat += pad
 
+    # Correct for latitude: 1° longitude is shorter than 1° latitude at Czech latitudes
+    import math
+    center_lat = (min_lat + max_lat) / 2
+    cos_lat = math.cos(math.radians(center_lat))
+
     lon_range = max_lon - min_lon
     lat_range = max_lat - min_lat
-    scale = svg_width / lon_range
+
+    # Scale so that width = svg_width, height preserves real proportions
+    scale = svg_width / (lon_range * cos_lat)
     svg_height = lat_range * scale
 
     # Generate SVG paths, dots and labels
@@ -115,10 +122,11 @@ def generate_region_svg(features, region_slug, orp_data, svg_width=480):
         orp_name = props["naz_orp_p"]
         info = orp_data.get(orp_code, {})
         orp_slug = info.get("slug", orp_name.lower().replace(" ", "-"))
+        label_text = info.get("map_label") or orp_name
         lat = info.get("lat")
         lon = info.get("lon")
 
-        d = multipolygon_to_svg_path(feat["geometry"], min_lon, max_lat, scale)
+        d = multipolygon_to_svg_path(feat["geometry"], min_lon, max_lat, scale, cos_lat)
         path_elements.append(
             f'    <path d="{d}" class="orp" '
             f'data-name="{orp_name}" data-slug="{orp_slug}" />'
@@ -126,13 +134,13 @@ def generate_region_svg(features, region_slug, orp_data, svg_width=480):
 
         # Add dot and label if coordinates available
         if lat and lon:
-            cx = (lon - min_lon) * scale
+            cx = (lon - min_lon) * cos_lat * scale
             cy = (max_lat - lat) * scale
             label_elements.append(
-                f'    <circle cx="{cx:.1f}" cy="{cy:.1f}" r="2.5" class="orp-dot" />'
+                f'    <circle cx="{cx:.1f}" cy="{cy:.1f}" r="2.5" class="orp-dot" data-slug="{orp_slug}" />'
             )
             label_elements.append(
-                f'    <text x="{cx:.1f}" y="{cy - 5:.1f}" class="orp-label">{orp_name}</text>'
+                f'    <text x="{cx:.1f}" y="{cy - 5:.1f}" class="orp-label" data-slug="{orp_slug}">{label_text}</text>'
             )
 
     svg = f'<svg id="map-region" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {svg_width:.0f} {svg_height:.0f}">\n'
