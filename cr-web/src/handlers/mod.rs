@@ -293,6 +293,54 @@ pub(crate) struct MunicipalityTemplate {
     pub(crate) orp: OrpRow,
     pub(crate) municipality: MunicipalityRow,
     pub(crate) landmarks: Vec<MunicipalityLandmarkRow>,
+    pub(crate) photo: Option<MunicipalityPhotoInfo>,
+}
+
+pub(crate) struct MunicipalityPhotoInfo {
+    pub(crate) url: String,
+    pub(crate) thumb_url: String,
+    pub(crate) description: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct MunicipalityPhotoRow {
+    slug: String,
+    description: Option<String>,
+    object_name: Option<String>,
+}
+
+pub(crate) async fn fetch_municipality_photo(
+    db: &sqlx::PgPool,
+    img_base: &str,
+    municipality_code: &str,
+    orp_slug: &str,
+    municipality_slug: &str,
+) -> Option<MunicipalityPhotoInfo> {
+    let row = sqlx::query_as::<_, MunicipalityPhotoRow>(
+        "SELECT slug, description, object_name FROM municipality_photos \
+         WHERE municipality_code = $1 AND is_primary = true \
+         ORDER BY photo_index LIMIT 1",
+    )
+    .bind(municipality_code)
+    .fetch_optional(db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("fetch_municipality_photo query failed: {e}");
+        None
+    })?;
+
+    let url = format!(
+        "{}/img/{}/{}/{}.webp",
+        img_base, orp_slug, municipality_slug, row.slug
+    );
+    let thumb_url = format!("{}?w=360", &url);
+    let description = row.description.or(row.object_name).unwrap_or_default();
+
+    Some(MunicipalityPhotoInfo {
+        url,
+        thumb_url,
+        description,
+    })
 }
 
 #[derive(sqlx::FromRow)]
