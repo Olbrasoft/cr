@@ -159,27 +159,55 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 ## Development Workflow
 
-**IMPORTANT: Do NOT deploy every change to production immediately.**
+### Issue-Driven Development
 
-1. Develop and test locally at `http://dev.localhost:3000`
-2. Run `cargo check`, `cargo test`, `cargo clippy -- -D warnings`
-3. Test in browser (use Playwright for verification)
-4. Commit changes (multiple iterations OK)
-5. Deploy to production only when a feature is complete and tested
+All work follows this cycle:
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full deployment procedure.
+1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
+2. **Implement** — Create feature branch, write code, test locally
+3. **PR + Review** — Push branch, create PR, wait for GitHub Copilot code review
+4. **Fix** — Address review comments, push fixes
+5. **Merge** — Merge PR → **automatic deploy** to production via GitHub Actions
+6. **Verify** — Check production health
 
-### Local Setup
+### Parallel vs Sequential Work
+
+When working on multiple sub-issues of a parent issue:
+- **Independent sub-issues** (no code dependency): start next issue while waiting for review on current PR
+- **Dependent sub-issues** (next builds on previous): MUST wait for previous PR to be reviewed, fixed, and merged before starting the next one
+- When blocked waiting for review: check review status periodically, fix comments as soon as review arrives, merge, then proceed
+
+### Branch Naming
+
+- `feat/description` — new features
+- `fix/description` — bug fixes
+- `refactor/description` — code restructuring
+
+### Local Development
+
 ```bash
 # Database: postgres://jirka@localhost/cr_dev
 cargo run -p cr-web    # Listens on port 3000
 # Open http://dev.localhost:3000
 ```
 
+- Test locally before creating PR
+- Run `cargo check`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`
+- Use Playwright for browser verification
+
 ### Deploy to Production
+
+**Automatic:** Merge PR to main → GitHub Actions CI → rsync → docker build → health check.
+
+No manual deployment needed. The CI pipeline handles everything:
+1. Check & Clippy
+2. Format check
+3. Tests
+4. Rsync to server + docker compose build + restart + health check
+
+**Manual deploy (emergency only):**
 ```bash
-git push origin main
-rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '*.png' --exclude '.env' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
+rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '.env' --exclude 'data/images/' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
 ssh -p 2222 root@46.225.101.253 "cd /opt/cr && docker compose build web && docker compose up -d web"
 ```
 
