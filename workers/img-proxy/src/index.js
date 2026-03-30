@@ -8,8 +8,6 @@ export default {
     }
 
     // If resize requested (?w=360), pass through to origin (Axum handles resize).
-    // Cloudflare CDN will cache the response based on Cache-Control headers,
-    // so subsequent requests for the same URL+params are served from edge cache.
     if (url.searchParams.has('w')) {
       return fetch(request);
     }
@@ -17,6 +15,15 @@ export default {
     const key = path.slice(5);
     if (!key) {
       return new Response('Not Found', { status: 404 });
+    }
+
+    // SEO municipality URLs: {orp}/{municipality}/{photo}.webp
+    // These need DB lookup (Axum handles), pass through to origin.
+    const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/', 'regions/', 'img/'];
+    const isKnownPrefix = knownPrefixes.some(p => key.startsWith(p));
+    const segmentCount = key.split('/').length;
+    if (!isKnownPrefix && segmentCount === 3) {
+      return fetch(request);
     }
 
     let object = await env.IMAGES.get(key);
