@@ -41,3 +41,51 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: [check, fmt, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync to server
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz --delete --exclude='target/' --exclude='.git/' --exclude='*.png' --exclude='.env' --exclude='data/images/' --exclude='data/porovnani/'
+          path: ./
+          remote_path: /opt/cr/
+          remote_host: ${{ secrets.VPS_HOST }}
+          remote_port: ${{ secrets.VPS_SSH_PORT }}
+          remote_user: root
+          remote_key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Build and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_SSH_PORT }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/cr
+            docker compose build web
+            docker compose up -d web
+
+      - name: Health check
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_SSH_PORT }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            sleep 15
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:80/health)
+            if [ "$STATUS" != "200" ]; then
+              echo "Health check failed: HTTP $STATUS"
+              exit 1
+            fi
+            echo "Health check passed: HTTP $STATUS"
