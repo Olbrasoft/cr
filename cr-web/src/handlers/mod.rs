@@ -286,6 +286,7 @@ pub(crate) struct OrpLandmarkRow {
     pub(crate) municipality_name: String,
     pub(crate) municipality_slug: String,
     pub(crate) is_main: bool,
+    pub(crate) npu_description: Option<String>,
 }
 
 #[derive(Template)]
