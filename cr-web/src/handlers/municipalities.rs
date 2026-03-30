@@ -88,12 +88,22 @@ pub(crate) async fn render_municipality(
         Vec::new()
     });
 
+    let photo = fetch_municipality_photo(
+        &state.db,
+        &state.image_base_url,
+        &municipality_row.municipality_code,
+        orp_slug,
+        municipality_slug,
+    )
+    .await;
+
     let tmpl = MunicipalityTemplate {
         img: state.image_base_url.clone(),
         region: region_row,
         orp: orp_row,
         municipality: municipality_row,
         landmarks,
+        photo,
     };
     match tmpl.render() {
         Ok(html) => (StatusCode::OK, Html(html)),
