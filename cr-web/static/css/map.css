@@ -20,21 +20,22 @@
     transition: fill 0.2s, stroke-width 0.2s;
 }
 
-.kraj:hover {
+.kraj:hover,
+.kraj.active {
     fill: var(--color-link, #11457E);
     stroke-width: 1.8;
 }
 
-/* Tooltip for SVG map */
-.map-tooltip {
-    display: none;
-    position: absolute;
-    background: rgba(0, 0, 0, 0.8);
-    color: #fff;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 0.85rem;
-    pointer-events: none;
-    white-space: nowrap;
-    z-index: 10;
+/* Region list item highlighted when map region is hovered */
+.nav-link.map-hover {
+    color: var(--color-link);
+}
+
+.nav-link.map-hover:before {
+    color: var(--color-link);
+}
+
+.nav-link.map-hover span {
+    text-decoration: underline;
+    text-decoration-color: var(--color-link);
 }
