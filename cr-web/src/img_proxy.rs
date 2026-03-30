@@ -54,6 +54,11 @@ pub async fn img_proxy(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
+    // SEO URL translation: /{orp}/{municipality}/{photo}.webp → municipalities/{code}/{photo}.webp
+    // Pattern: 3 path segments where first is not a known prefix
+    let img_path = resolve_seo_path(&state.db, img_path).await;
+    let img_path = img_path.as_str();
+
     let is_svg = img_path.ends_with(".svg");
     let target_width = params.w;
 
@@ -225,4 +230,46 @@ pub async fn img_proxy(
         output_bytes,
     )
         .into_response()
+}
+
+/// Translate SEO-friendly image paths to R2 storage paths.
+///
+/// Pattern: `{orp-slug}/{municipality-slug}/{photo-slug}.webp`
+/// → `municipalities/{municipality_code}/{photo-slug}.webp`
+///
+/// Known prefixes (municipalities/, landmarks/, pools/, regions/) pass through unchanged.
+async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
+    let known_prefixes = ["municipalities/", "landmarks/", "pools/", "regions/"];
+    if known_prefixes.iter().any(|p| path.starts_with(p)) {
+        return path.to_string();
+    }
+
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() != 3 {
+        return path.to_string();
+    }
+
+    let orp_slug = segments[0];
+    let muni_slug = segments[1];
+    let photo_file = segments[2];
+
+    // Look up municipality code by ORP slug + municipality slug
+    let code = sqlx::query_scalar::<_, String>(
+        "SELECT m.municipality_code FROM municipalities m \
+         JOIN orp o ON m.orp_id = o.id \
+         WHERE o.slug = $1 AND m.slug = $2",
+    )
+    .bind(orp_slug)
+    .bind(muni_slug)
+    .fetch_optional(db)
+    .await;
+
+    match code {
+        Ok(Some(code)) => format!("municipalities/{code}/{photo_file}"),
+        Ok(None) => path.to_string(), // fallback: pass through as-is
+        Err(e) => {
+            tracing::error!("DB error resolving SEO path '{path}': {e}");
+            path.to_string()
+        }
+    }
 }

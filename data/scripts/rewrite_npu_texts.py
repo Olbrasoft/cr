@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rewrite NPÚ landmark texts using Zen API free models.
+"""Rewrite NPÚ landmark texts using Gemini API (Gemma 3 27B).
 
-Rotates between 3 models sequentially. Sends one request at a time
-with polite pauses. Retries on 429 with exponential backoff.
+Rotates between N API keys with parallel requests (one per key).
+Retries on 429 with exponential backoff.
 Saves to cr_staging.npu_rewritten table.
 Skips already-rewritten texts. Safe to restart.
 """
@@ -10,6 +10,7 @@ Skips already-rewritten texts. Safe to restart.
 from dotenv import load_dotenv
 load_dotenv()
 import os
+import sys
 import time
 import requests
 import psycopg2
@@ -21,7 +22,12 @@ GEMINI_KEYS = [
     os.environ.get("GEMINI_API_KEY_1", ""),
     os.environ.get("GEMINI_API_KEY_2", ""),
     os.environ.get("GEMINI_API_KEY_3", ""),
+    os.environ.get("GEMINI_API_KEY_4", ""),
 ]
+GEMINI_KEYS = [k for k in GEMINI_KEYS if k]  # filter empty
+if not GEMINI_KEYS:
+    print("ERROR: No GEMINI_API_KEY_* environment variables set. Exiting.", file=sys.stderr)
+    sys.exit(1)
 GEMINI_URL_TPL = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={}"
 
 SYSTEM_PROMPT = """Jsi odborný copywriter specializující se na české kulturní dědictví. Přepiš poskytnutý text o památce podle těchto pravidel:
@@ -46,21 +52,19 @@ CÍL: Text musí být natolik odlišný od originálu, aby ho vyhledávače NEPO
 Napiš POUZE přepsaný text, bez komentářů nebo vysvětlení."""
 
 # Polite pause between batches of parallel requests (seconds)
-# Gemma 3 27B: 30 RPM per key, 14,400 RPD per key
-# With 3 keys parallel: ~6 req/batch, need >=12s between batches to stay under 30 RPM
-# Gemma response takes ~10-15s, so effective gap is 13-18s per batch
-PAUSE_BETWEEN_BATCHES = 3  # additional pause after batch completes (on top of response time)
+PAUSE_BETWEEN_BATCHES = 3
 # Extra pause after 429 rate limit
 RATE_LIMIT_PAUSE = 60
 
 
 def rewrite_with_retry(text, key_index=0, max_retries=3):
     """Send text to Gemma 3 27B via Gemini API for rewriting."""
-GEMINI_KEYS = [
-    os.environ.get("GEMINI_API_KEY_1", ""),
-    os.environ.get("GEMINI_API_KEY_2", ""),
-    os.environ.get("GEMINI_API_KEY_3", ""),
-]
+    key = GEMINI_KEYS[key_index % len(GEMINI_KEYS)]
+    url = GEMINI_URL_TPL.format(key)
+
+    payload = {
+        "contents": [
+            {"role": "user", "parts": [{"text": SYSTEM_PROMPT + "\n\n" + text}]}
         ],
         "generationConfig": {
             "temperature": 0.7,
@@ -123,9 +127,6 @@ def main():
     conn = psycopg2.connect(STAGING_URL)
     cur = conn.cursor()
 
-    # Get texts that have content worth rewriting
-    # Use --limit N argument to control batch size (default: all)
-    import sys
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 999999
 
     cur.execute("""
@@ -151,11 +152,14 @@ def main():
 
     rewritten = 0
     failed = 0
-GEMINI_KEYS = [
-    os.environ.get("GEMINI_API_KEY_1", ""),
-    os.environ.get("GEMINI_API_KEY_2", ""),
-    os.environ.get("GEMINI_API_KEY_3", ""),
-]
+    num_keys = len(GEMINI_KEYS)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Process in batches of num_keys (num_keys parallel requests, one per API key)
+    i = 0
+    while i < total:
+        batch = []
         for j in range(num_keys):
             idx = i + j
             if idx >= total:
