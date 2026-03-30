@@ -1,24 +1,36 @@
-# cr
+# ceskarepublika.wiki
 
-**Modern SEO portal about the Czech Republic**
+**Encyklopedický portál o České republice** — [ceskarepublika.wiki](https://ceskarepublika.wiki)
 
+[![Live](https://img.shields.io/badge/Live-ceskarepublika.wiki-blue?style=flat&logo=globe)](https://ceskarepublika.wiki)
 [![Rust](https://img.shields.io/badge/Rust-2024_edition-DEA584?logo=rust)](https://www.rust-lang.org/)
 [![Axum](https://img.shields.io/badge/Axum-0.8-blue)](https://github.com/tokio-rs/axum)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![CI](https://github.com/Olbrasoft/cr/actions/workflows/ci.yml/badge.svg)](https://github.com/Olbrasoft/cr/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
-## Overview
+## About
 
-Hierarchical territorial navigation for the Czech Republic:
+[ceskarepublika.wiki](https://ceskarepublika.wiki) is a comprehensive encyclopedic portal about the Czech Republic, providing detailed information about all territorial units, cultural monuments, swimming facilities, and more.
 
-- **Kraje** (14 regions)
-- **Okresy** (77 districts)
-- **ORP** (206 municipalities with extended powers)
-- **Obce** (~6,258 municipalities)
+### Content
 
-Built with Rust for maximum performance and SEO-friendly server-side rendering.
+- **14 regions** (kraje) with maps and statistics
+- **206 ORP** (municipalities with extended powers) with landmarks and pools
+- **6,258 municipalities** (obce) with Wikipedia photos and descriptions
+- **18,000+ cultural monuments** from NPÚ (National Heritage Institute) with photos and rewritten descriptions
+- **249 swimming facilities** — aquaparks, pools, outdoor pools, natural swimming
+- **43,000+ photos** served via Cloudflare R2 with SEO-friendly URLs
+
+### Features
+
+- Server-side rendered pages optimized for SEO
+- Interactive maps with OpenStreetMap / Leaflet
+- Photo gallery with lightbox, slideshow, and on-the-fly resize proxy
+- Automated CI/CD — merge PR → automatic deploy
+- Clean Architecture with typed domain layer
 
 ---
 
@@ -28,9 +40,9 @@ Cargo Workspace with Clean Architecture layers:
 
 ```
 cr/
-├── cr-domain/   # Entities, traits (zero deps)
-├── cr-app/      # Use-cases, queries, commands, DTOs
-├── cr-infra/    # SQLx, CSV import, external APIs
+├── cr-domain/   # Entities, value objects, repository traits (zero deps)
+├── cr-app/      # Use-cases, queries, AppError
+├── cr-infra/    # SQLx repositories, CSV import
 └── cr-web/      # Axum server, Askama SSR templates
 ```
 
@@ -46,12 +58,15 @@ cr-infra ─────┘
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Rust (edition 2024, Tokio) |
-| Web | Axum + Askama (SSR) |
-| Database | PostgreSQL + pgvector |
-| DB Access | SQLx (compile-time checked) |
-| AI | pgvector embeddings |
-| Images | Cloudflare R2 |
+| Language | Rust (edition 2024, Tokio async) |
+| Web | Axum + Askama (compile-time SSR) |
+| Database | PostgreSQL 16 |
+| DB Access | SQLx |
+| Images | Cloudflare R2 + on-the-fly resize proxy |
+| Maps | Leaflet + OpenStreetMap |
+| CI/CD | GitHub Actions (auto-deploy on merge) |
+| Hosting | Hetzner CAX11 (ARM64) + Cloudflare CDN |
+| Domain | [ceskarepublika.wiki](https://ceskarepublika.wiki) |
 
 ---
 
@@ -60,9 +75,8 @@ cr-infra ─────┘
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
-- [PostgreSQL 16+](https://www.postgresql.org/) with pgvector
+- [PostgreSQL 16+](https://www.postgresql.org/)
 - [sqlx-cli](https://github.com/launchbadge/sqlx/tree/main/sqlx-cli)
-- Docker (optional, for local DB)
 
 ### Setup
 
@@ -71,42 +85,35 @@ cr-infra ─────┘
 git clone https://github.com/Olbrasoft/cr.git
 cd cr
 
-# Start local PostgreSQL
-docker run -d --name cr-postgres \
-  -e POSTGRES_DB=cr -e POSTGRES_USER=cr -e POSTGRES_PASSWORD=cr \
-  -p 5432:5432 ankane/pgvector:latest
-
 # Configure
 echo 'DATABASE_URL=postgres://cr:cr@localhost:5432/cr' > .env
 
-# Build
+# Build & test
 cargo build
-
-# Run tests
 cargo test
+
+# Run locally
+cargo run -p cr-web
+# Open http://dev.localhost:3000
 ```
 
 ---
 
 ## Documentation
 
-- [Development Workflow](docs/DEVELOPMENT.md) — local setup, testing, deployment procedure
-- [Project Blueprint](docs/BLUEPRINT.md) — architecture, tech stack, database model, conventions, roadmap
-- [Vision](docs/VISION.md) — identity, infrastructure, deployment, email strategy
-- [URL Structure](docs/URL_STRUCTURE.md) — routing table, territorial vs commercial URLs, slug rules
-- [Data Model](docs/DATA_MODEL.md) — entities for phases 2-6 (monuments, accommodation, real estate, users)
-- [Modules](docs/MODULES.md) — functional specification of all modules
-- [Business Model](docs/BUSINESS_MODEL.md) — monetization channels, Previo integration, economics
-- [UI Wireframes](docs/UI_WIREFRAMES.md) — ASCII wireframes for key page types
-- [CLAUDE.md](CLAUDE.md) — instructions for Claude Code AI agent
+- [Development Workflow](docs/DEVELOPMENT.md) — local setup, testing, deployment
+- [Project Blueprint](docs/BLUEPRINT.md) — architecture, database model, conventions
+- [URL Structure](docs/URL_STRUCTURE.md) — routing, territorial vs commercial URLs
+- [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development
 
 ---
 
 ## Data Sources
 
-- [ČSÚ — Territorial Codebooks](https://www.czso.cz/csu/czso/i_zakladni_uzemni_ciselniky_na_uzemi_cr_a_klasifikace_cz_nuts)
-- [ČSÚ — Geodata Portal](https://geodata.csu.gov.cz/)
-- [ČÚZK — RÚIAN](https://www.cuzk.cz/ruian/)
+- [ČSÚ — Territorial Codebooks](https://www.czso.cz/csu/czso/i_zakladni_uzemni_ciselniky_na_uzemi_cr_a_klasifikace_cz_nuts) — regions, districts, ORP, municipalities
+- [NPÚ — Památkový katalog](https://pamatkovykatalog.cz/) — cultural monuments, photos, descriptions
+- [Czech Wikipedia](https://cs.wikipedia.org/) — municipality photos and texts
+- [jduplavat.cz](https://www.jduplavat.cz/) — swimming facilities
 
 ---
 
@@ -116,4 +123,4 @@ MIT
 
 ---
 
-**Author:** [Olbrasoft](https://github.com/Olbrasoft)
+**Created by [Olbrasoft](https://github.com/Olbrasoft)** · [ceskarepublika.wiki](https://ceskarepublika.wiki)
