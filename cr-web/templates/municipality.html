@@ -126,7 +126,7 @@
     }).addTo(map);
 
     fetch('/api/geojson/municipality/' + muniCode)
-        .then(function(r){return r.json();})
+        .then(function(r){ if (!r.ok) throw new Error('GeoJSON not found'); return r.json(); })
         .then(function(data){
             var layer = L.geoJSON(data, {
                 style: {color: '#d62728', weight: 2.5, fillColor: '#d62728', fillOpacity: 0.12}
