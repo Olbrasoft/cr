@@ -124,6 +124,15 @@ pub(crate) async fn render_orp(
         Vec::new()
     });
 
+    let photo = fetch_municipality_photo(
+        &state.db,
+        &state.image_base_url,
+        &main_municipality.municipality_code,
+        orp_slug,
+        &main_municipality.slug,
+    )
+    .await;
+
     let tmpl = OrpTemplate {
         img: state.image_base_url.clone(),
         region: region_row,
@@ -134,6 +143,7 @@ pub(crate) async fn render_orp(
         other_landmarks,
         landmarks_count,
         pools,
+        photo,
     };
     match tmpl.render() {
         Ok(html) => (StatusCode::OK, Html(html)),
