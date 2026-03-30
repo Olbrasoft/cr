@@ -84,11 +84,13 @@
         path.addEventListener('click', function() { window.location.href = '/' + slug + '/'; });
     });
 
-    // List hover → highlight SVG region
+    // List hover/focus → highlight SVG region
     links.forEach(function(link) {
         var slug = link.getAttribute('data-region-slug');
         link.addEventListener('mouseenter', function() { highlightRegion(slug); });
         link.addEventListener('mouseleave', function() { unhighlightRegion(slug); });
+        link.addEventListener('focus', function() { highlightRegion(slug); });
+        link.addEventListener('blur', function() { unhighlightRegion(slug); });
     });
 })();
 </script>
