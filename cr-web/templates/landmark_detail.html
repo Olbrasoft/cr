@@ -58,18 +58,11 @@
             <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
             {% endfor %}
             {% when None %}
-            {% match landmark.description %}
-            {% when Some with (desc) %}
-            {% for paragraph in desc.split("\n\n") %}
-            <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
-            {% endfor %}
-            {% when None %}
             {% match landmark.municipality_name %}
             {% when Some with (mname) %}
             <p class="lead-text">{{ landmark.name }} se nachází v obci {{ mname }}, {{ region.name }}.</p>
             {% when None %}
             <p class="lead-text">{{ landmark.name }}, {{ region.name }}.</p>
-            {% endmatch %}
             {% endmatch %}
             {% endmatch %}
         </div>

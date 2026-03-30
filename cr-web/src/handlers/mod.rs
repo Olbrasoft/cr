@@ -79,6 +79,7 @@ pub(crate) struct LandmarkRow {
     pub(crate) slug: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
+    #[allow(dead_code)]
     pub(crate) description: Option<String>,
     pub(crate) wikipedia_url: Option<String>,
     #[allow(dead_code)]
