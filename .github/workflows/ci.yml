@@ -45,11 +45,7 @@ jobs:
           POSTGRES_DB: cr_test
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U test -d cr_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
+        options: --health-cmd "pg_isready -U test -d cr_test" --health-interval 5s --health-timeout 5s --health-retries 5
     env:
       DATABASE_URL: postgres://test:test@localhost:5432/cr_test
     steps:
@@ -58,7 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+        run: cargo install sqlx-cli@0.8 --no-default-features --features postgres --locked
 
       - name: Run migrations
         run: sqlx migrate run --source cr-infra/migrations
