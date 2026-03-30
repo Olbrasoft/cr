@@ -319,7 +319,7 @@ pub(crate) async fn fetch_municipality_photo(
     let row = sqlx::query_as::<_, MunicipalityPhotoRow>(
         "SELECT slug, description, object_name FROM municipality_photos \
          WHERE municipality_code = $1 AND is_primary = true \
-         LIMIT 1",
+         ORDER BY photo_index LIMIT 1",
     )
     .bind(municipality_code)
     .fetch_optional(db)

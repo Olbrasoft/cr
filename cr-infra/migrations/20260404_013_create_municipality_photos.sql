@@ -1,7 +1,7 @@
 -- Municipality photos from Wikipedia
 -- Stores metadata for photos displayed on municipality pages.
 
-CREATE TABLE IF NOT EXISTS municipality_photos (
+CREATE TABLE municipality_photos (
     id SERIAL PRIMARY KEY,
     municipality_code TEXT NOT NULL,
     photo_index SMALLINT NOT NULL DEFAULT 1,

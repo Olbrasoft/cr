@@ -43,7 +43,7 @@
             {% match photo %}
             {% when Some with (p) %}
             <div class="photo-inline" data-gallery-open="municipality" data-index="0" data-gallery-photos="[&quot;{{ p.url }}&quot;]">
-                <img src="{{ p.thumb_url }}" alt="{{ p.description }}" loading="lazy">
+                <img src="{{ p.thumb_url }}" alt="{% if p.description.is_empty() %}{{ municipality.name }}{% else %}{{ p.description }}{% endif %}" loading="lazy">
             </div>
             {% when None %}
             {% endmatch %}
