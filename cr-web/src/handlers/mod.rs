@@ -32,7 +32,9 @@ pub(crate) struct RegionRow {
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) region_code: String,
+    #[allow(dead_code)]
     pub(crate) latitude: Option<f64>,
+    #[allow(dead_code)]
     pub(crate) longitude: Option<f64>,
     pub(crate) coat_of_arms_ext: Option<String>,
     pub(crate) flag_ext: Option<String>,
