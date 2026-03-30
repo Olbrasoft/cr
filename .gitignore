@@ -49,3 +49,4 @@ data/wikidata_municipalities.json
 data/images/
 data/scripts/__pycache__/
 data/npu/*.csv
+data/prototypes/
