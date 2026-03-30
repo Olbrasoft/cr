@@ -43,6 +43,23 @@
     stroke-width: 1.5;
 }
 
+/* ORP city dot markers */
+.orp-dot {
+    fill: var(--color-gold, #C5A059);
+    stroke: #333;
+    stroke-width: 0.5;
+    pointer-events: none;
+}
+
+/* ORP city name labels */
+.orp-label {
+    font-size: 9px;
+    font-family: 'Inter', sans-serif;
+    fill: #333;
+    text-anchor: middle;
+    pointer-events: none;
+}
+
 /* List item highlighted when map region/ORP is hovered */
 .nav-link.map-hover {
     color: var(--color-link);
