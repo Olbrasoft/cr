@@ -39,6 +39,7 @@ pub(crate) struct RegionRow {
     pub(crate) coat_of_arms_ext: Option<String>,
     pub(crate) flag_ext: Option<String>,
     pub(crate) description: Option<String>,
+    pub(crate) hero_photo_url: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]

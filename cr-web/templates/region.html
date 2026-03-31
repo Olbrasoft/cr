@@ -39,6 +39,13 @@
         {% match region.description %}
         {% when Some with (desc) %}
         <div class="description" style="line-height: 1.7; color: #333; margin-bottom: 1rem;">
+            {% match region.hero_photo_url %}
+            {% when Some with (photo_url) %}
+            <div class="photo-inline">
+                <img src="{{ photo_url }}?w=360" alt="{{ region.name }}" loading="lazy">
+            </div>
+            {% when None %}
+            {% endmatch %}
             {% for paragraph in desc.split("\n\n") %}
             {% if loop.index0 == 0 %}
             <p style="margin-bottom: 0.8rem;">{{ paragraph }}</p>
