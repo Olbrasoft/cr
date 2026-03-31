@@ -97,6 +97,10 @@ pub(crate) struct LandmarkRow {
     pub(crate) orp_slug: Option<String>,
     #[allow(dead_code)]
     pub(crate) region_slug: Option<String>,
+    #[sqlx(default)]
+    pub(crate) municipality_code: Option<String>,
+    #[sqlx(default)]
+    pub(crate) municipality_coat_of_arms_ext: Option<String>,
 }
 
 pub(crate) struct LandmarkTypeCount {
@@ -155,6 +159,8 @@ impl From<cr_domain::repository::LandmarkRecord> for LandmarkRow {
             municipality_slug: r.municipality_slug,
             orp_slug: r.orp_slug,
             region_slug: r.region_slug,
+            municipality_code: r.municipality_code,
+            municipality_coat_of_arms_ext: r.municipality_coat_of_arms_ext,
         }
     }
 }
