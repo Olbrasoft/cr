@@ -5,6 +5,7 @@ use super::*;
 
 impl From<cr_domain::repository::RegionRecord> for RegionRow {
     fn from(r: cr_domain::repository::RegionRecord) -> Self {
+        let hero_photo_url = r.hero_photo_r2_key.map(|k| format!("/img/{}", k));
         Self {
             id: r.id,
             name: r.name,
@@ -15,7 +16,7 @@ impl From<cr_domain::repository::RegionRecord> for RegionRow {
             coat_of_arms_ext: r.coat_of_arms_ext,
             flag_ext: r.flag_ext,
             description: r.description,
-            hero_photo_url: None,
+            hero_photo_url,
         }
     }
 }
@@ -53,8 +54,8 @@ pub(crate) async fn render_region(
     let region_id = region.id;
     let mut region_row: RegionRow = region.into();
 
-    // Fetch hero photo URL from landmark_photos if region has hero_landmark_id
-    let hero_url = sqlx::query_scalar::<_, String>(
+    // Override hero_photo_url with landmark photo if hero_landmark_id is set
+    let landmark_hero = sqlx::query_scalar::<_, String>(
         "SELECT lp.r2_key FROM landmark_photos lp \
          JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
          JOIN regions r ON r.hero_landmark_id = l.id \
@@ -67,7 +68,7 @@ pub(crate) async fn render_region(
         tracing::error!("render_region hero photo query failed: {e}");
         None
     });
-    if let Some(r2_key) = hero_url {
+    if let Some(r2_key) = landmark_hero {
         region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
 

@@ -85,6 +85,7 @@ pub struct RegionRecord {
     pub coat_of_arms_ext: Option<String>,
     pub flag_ext: Option<String>,
     pub description: Option<String>,
+    pub hero_photo_r2_key: Option<String>,
 }
 
 /// ORP data as stored in the database.

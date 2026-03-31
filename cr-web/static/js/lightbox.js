@@ -184,6 +184,13 @@
         open(group, index);
     });
 
+    // Ensure body overflow is reset on page show (back/forward cache, new tab)
+    window.addEventListener('pageshow', function () {
+        if (!overlay || !overlay.classList.contains('open')) {
+            document.body.style.overflow = '';
+        }
+    });
+
     // --- Right-column slideshow ---
     document.addEventListener('DOMContentLoaded', function () {
         var slideshows = document.querySelectorAll('[data-slideshow]');
