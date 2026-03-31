@@ -5,7 +5,6 @@ use super::*;
 
 impl From<cr_domain::repository::RegionRecord> for RegionRow {
     fn from(r: cr_domain::repository::RegionRecord) -> Self {
-        let hero_photo_url = r.hero_photo_r2_key.map(|k| format!("/img/{}", k));
         Self {
             id: r.id,
             name: r.name,
@@ -16,7 +15,7 @@ impl From<cr_domain::repository::RegionRecord> for RegionRow {
             coat_of_arms_ext: r.coat_of_arms_ext,
             flag_ext: r.flag_ext,
             description: r.description,
-            hero_photo_url,
+            hero_photo_url: None,
         }
     }
 }
@@ -52,10 +51,14 @@ pub(crate) async fn render_region(
     };
 
     let region_id = region.id;
+    let hero_r2_direct = region.hero_photo_r2_key.clone();
+    let hero_muni_code = region.hero_municipality_code.clone();
+    let hero_muni_idx = region.hero_municipality_photo_index;
     let mut region_row: RegionRow = region.into();
 
-    // Override hero_photo_url with landmark photo if hero_landmark_id is set
-    let landmark_hero = sqlx::query_scalar::<_, String>(
+    // Resolve hero photo URL — priority: landmark → municipality → direct r2_key
+    // Try landmark photo
+    let landmark_r2 = sqlx::query_scalar::<_, String>(
         "SELECT lp.r2_key FROM landmark_photos lp \
          JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
          JOIN regions r ON r.hero_landmark_id = l.id \
@@ -65,10 +68,30 @@ pub(crate) async fn render_region(
     .fetch_optional(&state.db)
     .await
     .unwrap_or_else(|e| {
-        tracing::error!("render_region hero photo query failed: {e}");
+        tracing::error!("render_region hero landmark query failed: {e}");
         None
     });
-    if let Some(r2_key) = landmark_hero {
+
+    if let Some(r2_key) = landmark_r2 {
+        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+    } else if let Some(muni_code) = &hero_muni_code {
+        // Try municipality photo
+        let muni_r2 = sqlx::query_scalar::<_, String>(
+            "SELECT mp.r2_key FROM municipality_photos mp \
+             WHERE mp.municipality_code = $1 AND mp.photo_index = $2::smallint",
+        )
+        .bind(muni_code)
+        .bind(hero_muni_idx.unwrap_or(2))
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_region hero municipality query failed: {e}");
+            None
+        });
+        if let Some(r2_key) = muni_r2 {
+            region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+        }
+    } else if let Some(r2_key) = hero_r2_direct {
         region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
 
