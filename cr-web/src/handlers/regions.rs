@@ -51,16 +51,25 @@ pub(crate) async fn render_region(
     };
 
     let region_id = region.id;
-    let hero_r2_direct = region.hero_photo_r2_key.clone();
-    let hero_muni_code = region.hero_municipality_code.clone();
-    let hero_muni_idx = region.hero_municipality_photo_index;
+    let region_slug_owned = region.slug.clone();
+    let has_direct_photo = region.hero_photo_r2_key.is_some();
     let mut region_row: RegionRow = region.into();
 
-    // Resolve hero photo URL — priority: landmark → municipality → direct r2_key
-    // Try landmark photo
-    let landmark_r2 = sqlx::query_scalar::<_, String>(
-        "SELECT lp.r2_key FROM landmark_photos lp \
+    // Resolve hero photo SEO URL — priority: landmark → municipality → direct
+    // Landmark hero: /{orp}/{muni}/{landmark}/{photo-slug}.webp
+    #[derive(sqlx::FromRow)]
+    struct LandmarkHero {
+        orp_slug: String,
+        muni_slug: String,
+        landmark_slug: String,
+        photo_slug: String,
+    }
+    let landmark_hero = sqlx::query_as::<_, LandmarkHero>(
+        "SELECT o.slug as orp_slug, m.slug as muni_slug, l.slug as landmark_slug, lp.slug as photo_slug \
+         FROM landmark_photos lp \
          JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
+         JOIN municipalities m ON l.municipality_id = m.id \
+         JOIN orp o ON m.orp_id = o.id \
          JOIN regions r ON r.hero_landmark_id = l.id \
          WHERE r.id = $1 AND lp.photo_index = r.hero_photo_index",
     )
@@ -72,27 +81,51 @@ pub(crate) async fn render_region(
         None
     });
 
-    if let Some(r2_key) = landmark_r2 {
-        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
-    } else if let Some(muni_code) = &hero_muni_code {
-        // Try municipality photo
-        let muni_r2 = sqlx::query_scalar::<_, String>(
-            "SELECT mp.r2_key FROM municipality_photos mp \
-             WHERE mp.municipality_code = $1 AND mp.photo_index = $2::smallint",
+    if let Some(h) = landmark_hero {
+        let url = if h.orp_slug == h.muni_slug {
+            format!("/{}/{}/{}.webp", h.orp_slug, h.landmark_slug, h.photo_slug)
+        } else {
+            format!(
+                "/{}/{}/{}/{}.webp",
+                h.orp_slug, h.muni_slug, h.landmark_slug, h.photo_slug
+            )
+        };
+        region_row.hero_photo_url = Some(url);
+    } else {
+        // Municipality hero: /{orp}/{photo-slug}.webp or /{orp}/{muni}/{photo-slug}.webp
+        #[derive(sqlx::FromRow)]
+        struct MuniHero {
+            orp_slug: String,
+            muni_slug: String,
+            photo_slug: String,
+        }
+        let muni_hero = sqlx::query_as::<_, MuniHero>(
+            "SELECT o.slug as orp_slug, m.slug as muni_slug, mp.slug as photo_slug \
+             FROM municipality_photos mp \
+             JOIN municipalities m ON m.municipality_code = mp.municipality_code \
+             JOIN orp o ON m.orp_id = o.id \
+             JOIN regions r ON r.hero_municipality_code = mp.municipality_code \
+             WHERE r.id = $1 AND mp.photo_index = r.hero_municipality_photo_index",
         )
-        .bind(muni_code)
-        .bind(hero_muni_idx.unwrap_or(2))
+        .bind(region_id)
         .fetch_optional(&state.db)
         .await
         .unwrap_or_else(|e| {
             tracing::error!("render_region hero municipality query failed: {e}");
             None
         });
-        if let Some(r2_key) = muni_r2 {
-            region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+
+        if let Some(h) = muni_hero {
+            let url = if h.orp_slug == h.muni_slug {
+                format!("/{}/{}.webp", h.orp_slug, h.photo_slug)
+            } else {
+                format!("/{}/{}/{}.webp", h.orp_slug, h.muni_slug, h.photo_slug)
+            };
+            region_row.hero_photo_url = Some(url);
+        } else if has_direct_photo {
+            // Direct region photo: /{region-slug}.webp
+            region_row.hero_photo_url = Some(format!("/{}.webp", region_slug_owned));
         }
-    } else if let Some(r2_key) = hero_r2_direct {
-        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
 
     let orps: Vec<OrpRow> = state

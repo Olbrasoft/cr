@@ -248,14 +248,10 @@ async fn serve_image_inner(
 /// Translate SEO-friendly image paths to R2 storage paths.
 ///
 /// Supported patterns:
-/// - `{orp}/{landmark-slug}.webp` (landmark in main municipality)
-///   → `landmarks/{npu_catalog_id}.webp`
-/// - `{orp}/{photo-slug}.webp` (municipality photo, main municipality)
-///   → `municipalities/{municipality_code}/{photo-slug}.webp`
-/// - `{orp}/{municipality}/{landmark-slug}.webp` (landmark in specific municipality)
-///   → `landmarks/{npu_catalog_id}.webp`
-/// - `{orp}/{municipality}/{photo-slug}.webp` (municipality photo)
-///   → `municipalities/{municipality_code}/{photo-slug}.webp`
+/// - 1 segment: `{region-slug}.webp` → `regions/{region-slug}.webp`
+/// - 2 segments: `{orp}/{slug}.webp` → landmark (primary) or municipality photo
+/// - 3 segments: `{orp}/{municipality}/{slug}.webp` → landmark or municipality photo
+/// - 4 segments: `{orp}/{municipality}/{landmark}/{photo-slug}.webp` → landmark_photos (index 2+)
 ///
 /// Known prefixes (municipalities/, landmarks/, pools/, regions/) pass through unchanged.
 async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
@@ -266,56 +262,110 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
 
     let segments: Vec<&str> = path.split('/').collect();
 
-    let (orp_slug, muni_slug, file_with_ext) = match segments.len() {
-        2 => (segments[0], segments[0], segments[1]),
-        3 => (segments[0], segments[1], segments[2]),
-        _ => return path.to_string(),
-    };
-
-    // Strip extension to get the slug
-    let slug = file_with_ext
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(file_with_ext);
-
-    // Single query: try landmark photo first, always return municipality_code for fallback
-    #[derive(sqlx::FromRow)]
-    struct SeoLookup {
-        municipality_code: String,
-        landmark_r2_key: Option<String>,
-    }
-
-    let lookup = sqlx::query_as::<_, SeoLookup>(
-        "SELECT m.municipality_code, \
-         (SELECT pm.r2_key FROM photo_metadata pm \
-          JOIN landmarks l ON pm.entity_type = 'landmark' AND pm.entity_id = l.id \
-          WHERE l.municipality_id = m.id AND l.slug = $3 AND pm.photo_index = 1 \
-          LIMIT 1) as landmark_r2_key \
-         FROM municipalities m \
-         JOIN orp o ON m.orp_id = o.id \
-         WHERE o.slug = $1 AND m.slug = $2",
-    )
-    .bind(orp_slug)
-    .bind(muni_slug)
-    .bind(slug)
-    .fetch_optional(db)
-    .await;
-
-    match lookup {
-        Ok(Some(row)) => {
-            if let Some(r2_key) = row.landmark_r2_key {
-                // Sanitize: ensure r2_key has no path traversal
-                if !r2_key.contains("..") {
-                    return r2_key;
-                }
+    match segments.len() {
+        // 1 segment: {region-slug}.webp → regions/{region-slug}.webp
+        1 => {
+            let file = segments[0];
+            let slug = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM regions WHERE slug = $1)",
+            )
+            .bind(slug)
+            .fetch_one(db)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("DB error resolving 1-seg region path '{path}': {e}");
+                false
+            });
+            if exists {
+                return format!("regions/{file}");
             }
-            // Municipality photo fallback
-            format!("municipalities/{}/{file_with_ext}", row.municipality_code)
-        }
-        Ok(None) => path.to_string(),
-        Err(e) => {
-            tracing::error!("DB error resolving SEO path '{path}': {e}");
             path.to_string()
         }
+        // 4 segments: {orp}/{municipality}/{landmark-slug}/{photo-slug}.webp
+        // → landmark_photos r2_key
+        4 => {
+            let orp_slug = segments[0];
+            let muni_slug = segments[1];
+            let landmark_slug = segments[2];
+            let photo_file = segments[3];
+            let photo_slug = photo_file
+                .rsplit_once('.')
+                .map(|(s, _)| s)
+                .unwrap_or(photo_file);
+
+            let r2_key = sqlx::query_scalar::<_, String>(
+                "SELECT lp.r2_key FROM landmark_photos lp \
+                 JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
+                 JOIN municipalities m ON l.municipality_id = m.id \
+                 JOIN orp o ON m.orp_id = o.id \
+                 WHERE o.slug = $1 AND m.slug = $2 AND l.slug = $3 AND lp.slug = $4",
+            )
+            .bind(orp_slug)
+            .bind(muni_slug)
+            .bind(landmark_slug)
+            .bind(photo_slug)
+            .fetch_optional(db)
+            .await;
+
+            match r2_key {
+                Ok(Some(key)) if !key.contains("..") => key,
+                Ok(_) => path.to_string(),
+                Err(e) => {
+                    tracing::error!("DB error resolving 4-seg SEO path '{path}': {e}");
+                    path.to_string()
+                }
+            }
+        }
+        // 2 or 3 segments: existing logic
+        2 | 3 => {
+            let (orp_slug, muni_slug, file_with_ext) = if segments.len() == 2 {
+                (segments[0], segments[0], segments[1])
+            } else {
+                (segments[0], segments[1], segments[2])
+            };
+
+            let slug = file_with_ext
+                .rsplit_once('.')
+                .map(|(s, _)| s)
+                .unwrap_or(file_with_ext);
+
+            #[derive(sqlx::FromRow)]
+            struct SeoLookup {
+                municipality_code: String,
+                landmark_r2_key: Option<String>,
+            }
+
+            let lookup = sqlx::query_as::<_, SeoLookup>(
+                "SELECT m.municipality_code, \
+                 (SELECT pm.r2_key FROM photo_metadata pm \
+                  JOIN landmarks l ON pm.entity_type = 'landmark' AND pm.entity_id = l.id \
+                  WHERE l.municipality_id = m.id AND l.slug = $3 AND pm.photo_index = 1 \
+                  LIMIT 1) as landmark_r2_key \
+                 FROM municipalities m \
+                 JOIN orp o ON m.orp_id = o.id \
+                 WHERE o.slug = $1 AND m.slug = $2",
+            )
+            .bind(orp_slug)
+            .bind(muni_slug)
+            .bind(slug)
+            .fetch_optional(db)
+            .await;
+
+            match lookup {
+                Ok(Some(row)) => {
+                    if let Some(r2_key) = row.landmark_r2_key.filter(|k| !k.contains("..")) {
+                        return r2_key;
+                    }
+                    format!("municipalities/{}/{file_with_ext}", row.municipality_code)
+                }
+                Ok(None) => path.to_string(),
+                Err(e) => {
+                    tracing::error!("DB error resolving SEO path '{path}': {e}");
+                    path.to_string()
+                }
+            }
+        }
+        _ => path.to_string(),
     }
 }
