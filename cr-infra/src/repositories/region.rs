@@ -22,6 +22,7 @@ struct RegionRow {
     coat_of_arms_ext: Option<String>,
     flag_ext: Option<String>,
     description: Option<String>,
+    hero_photo_r2_key: Option<String>,
 }
 
 impl From<RegionRow> for RegionRecord {
@@ -36,6 +37,7 @@ impl From<RegionRow> for RegionRecord {
             coat_of_arms_ext: r.coat_of_arms_ext,
             flag_ext: r.flag_ext,
             description: r.description,
+            hero_photo_r2_key: r.hero_photo_r2_key,
         }
     }
 }
@@ -46,7 +48,7 @@ impl RegionRepository for PgRegionRepository {
     async fn find_all(&self) -> Result<Vec<RegionRecord>, Self::Error> {
         let rows = sqlx::query_as::<_, RegionRow>(
             "SELECT id, name, slug, region_code, latitude, longitude, \
-             coat_of_arms_ext, flag_ext, description \
+             coat_of_arms_ext, flag_ext, description, hero_photo_r2_key \
              FROM regions ORDER BY name",
         )
         .fetch_all(&self.pool)
@@ -58,7 +60,7 @@ impl RegionRepository for PgRegionRepository {
     async fn find_by_slug(&self, slug: &str) -> Result<Option<RegionRecord>, Self::Error> {
         let row = sqlx::query_as::<_, RegionRow>(
             "SELECT id, name, slug, region_code, latitude, longitude, \
-             coat_of_arms_ext, flag_ext, description \
+             coat_of_arms_ext, flag_ext, description, hero_photo_r2_key \
              FROM regions WHERE slug = $1",
         )
         .bind(slug)
