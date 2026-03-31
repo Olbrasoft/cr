@@ -629,11 +629,9 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
         || path.ends_with(".jpeg")
         || path.ends_with(".png")
     {
-        let width: Option<u32> = uri.query().and_then(|q| {
-            q.split('&')
-                .filter_map(|p| p.strip_prefix("w="))
-                .next()
-                .and_then(|v| v.parse().ok())
+        let width: Option<u32> = uri.query().unwrap_or("").split('&').find_map(|param| {
+            let (k, v) = param.split_once('=')?;
+            if k == "w" { v.parse().ok() } else { None }
         });
         return Ok(crate::img_proxy::serve_image(&state, path, width)
             .await

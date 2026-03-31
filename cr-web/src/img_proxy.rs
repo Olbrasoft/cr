@@ -21,7 +21,7 @@ const CACHE_DIR: &str = "/tmp/cr-img-cache";
 
 #[derive(serde::Deserialize)]
 pub struct ResizeParams {
-    w: Option<u32>,
+    pub w: Option<u32>,
 }
 
 /// Handler for `/img/*` route.
@@ -247,8 +247,11 @@ async fn serve_image_inner(
 
 /// Translate SEO-friendly image paths to R2 storage paths.
 ///
-/// Pattern: `{orp-slug}/{municipality-slug}/{photo-slug}.webp`
-/// → `municipalities/{municipality_code}/{photo-slug}.webp`
+/// Supported patterns:
+/// - `{orp-slug}/{photo-slug}.webp` (main municipality, orp slug = municipality slug)
+///   → `municipalities/{municipality_code}/{photo-slug}.webp`
+/// - `{orp-slug}/{municipality-slug}/{photo-slug}.webp` (specific municipality)
+///   → `municipalities/{municipality_code}/{photo-slug}.webp`
 ///
 /// Known prefixes (municipalities/, landmarks/, pools/, regions/) pass through unchanged.
 async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
