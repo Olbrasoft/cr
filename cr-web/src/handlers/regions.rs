@@ -68,7 +68,7 @@ pub(crate) async fn render_region(
         None
     });
     if let Some(r2_key) = hero_url {
-        region_row.hero_photo_url = Some(format!("{}/img/{}", state.image_base_url, r2_key));
+        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
 
     let orps: Vec<OrpRow> = state
