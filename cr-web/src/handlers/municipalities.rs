@@ -90,7 +90,6 @@ pub(crate) async fn render_municipality(
 
     let photo = fetch_municipality_photo(
         &state.db,
-        &state.image_base_url,
         &municipality_row.municipality_code,
         orp_slug,
         municipality_slug,

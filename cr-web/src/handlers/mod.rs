@@ -319,7 +319,6 @@ struct MunicipalityPhotoRow {
 
 pub(crate) async fn fetch_municipality_photo(
     db: &sqlx::PgPool,
-    img_base: &str,
     municipality_code: &str,
     orp_slug: &str,
     municipality_slug: &str,
@@ -337,10 +336,11 @@ pub(crate) async fn fetch_municipality_photo(
         None
     })?;
 
-    let url = format!(
-        "{}/img/{}/{}/{}.webp",
-        img_base, orp_slug, municipality_slug, row.slug
-    );
+    let url = if orp_slug == municipality_slug {
+        format!("/{}/{}.webp", orp_slug, row.slug)
+    } else {
+        format!("/{}/{}/{}.webp", orp_slug, municipality_slug, row.slug)
+    };
     let thumb_url = format!("{}?w=360", &url);
     let description = row.description.or(row.object_name).unwrap_or_default();
 
@@ -622,6 +622,22 @@ pub async fn homepage(State(state): State<AppState>) -> WebResult<impl IntoRespo
 
 pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<Response> {
     let path = uri.path().trim_matches('/');
+
+    // Detect image requests by file extension — serve via img proxy
+    if path.ends_with(".webp")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".png")
+    {
+        let width: Option<u32> = uri.query().unwrap_or("").split('&').find_map(|param| {
+            let (k, v) = param.split_once('=')?;
+            if k == "w" { v.parse().ok() } else { None }
+        });
+        return Ok(crate::img_proxy::serve_image(&state, path, width)
+            .await
+            .into_response());
+    }
+
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     match segments.len() {

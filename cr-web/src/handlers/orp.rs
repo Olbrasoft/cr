@@ -126,7 +126,6 @@ pub(crate) async fn render_orp(
 
     let photo = fetch_municipality_photo(
         &state.db,
-        &state.image_base_url,
         &main_municipality.municipality_code,
         orp_slug,
         &main_municipality.slug,

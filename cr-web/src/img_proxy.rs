@@ -21,9 +21,10 @@ const CACHE_DIR: &str = "/tmp/cr-img-cache";
 
 #[derive(serde::Deserialize)]
 pub struct ResizeParams {
-    w: Option<u32>,
+    pub w: Option<u32>,
 }
 
+/// Handler for `/img/*` route.
 pub async fn img_proxy(
     State(state): State<AppState>,
     uri: Uri,
@@ -37,6 +38,19 @@ pub async fn img_proxy(
     }
 
     let img_path = &path[5..]; // strip "/img/"
+    serve_image_inner(&state, img_path, params.w).await
+}
+
+/// Serve an image by path. Called from resolve_path for SEO URLs without /img/ prefix.
+pub async fn serve_image(state: &AppState, img_path: &str, width: Option<u32>) -> Response {
+    serve_image_inner(state, img_path, width).await
+}
+
+async fn serve_image_inner(
+    state: &AppState,
+    img_path: &str,
+    target_width: Option<u32>,
+) -> Response {
     if img_path.is_empty() || img_path.contains("..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -60,7 +74,6 @@ pub async fn img_proxy(
     let img_path = img_path.as_str();
 
     let is_svg = img_path.ends_with(".svg");
-    let target_width = params.w;
 
     // SVGs cannot be raster-resized
     if target_width.is_some() && is_svg {
@@ -234,8 +247,11 @@ pub async fn img_proxy(
 
 /// Translate SEO-friendly image paths to R2 storage paths.
 ///
-/// Pattern: `{orp-slug}/{municipality-slug}/{photo-slug}.webp`
-/// → `municipalities/{municipality_code}/{photo-slug}.webp`
+/// Supported patterns:
+/// - `{orp-slug}/{photo-slug}.webp` (main municipality, orp slug = municipality slug)
+///   → `municipalities/{municipality_code}/{photo-slug}.webp`
+/// - `{orp-slug}/{municipality-slug}/{photo-slug}.webp` (specific municipality)
+///   → `municipalities/{municipality_code}/{photo-slug}.webp`
 ///
 /// Known prefixes (municipalities/, landmarks/, pools/, regions/) pass through unchanged.
 async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
@@ -245,13 +261,14 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
     }
 
     let segments: Vec<&str> = path.split('/').collect();
-    if segments.len() != 3 {
-        return path.to_string();
-    }
 
-    let orp_slug = segments[0];
-    let muni_slug = segments[1];
-    let photo_file = segments[2];
+    let (orp_slug, muni_slug, photo_file) = match segments.len() {
+        // /{orp}/{photo}.webp → main municipality (orp slug = municipality slug)
+        2 => (segments[0], segments[0], segments[1]),
+        // /{orp}/{municipality}/{photo}.webp → specific municipality
+        3 => (segments[0], segments[1], segments[2]),
+        _ => return path.to_string(),
+    };
 
     // Look up municipality code by ORP slug + municipality slug
     let code = sqlx::query_scalar::<_, String>(
