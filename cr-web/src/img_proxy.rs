@@ -46,7 +46,11 @@ pub async fn serve_image(state: &AppState, img_path: &str, width: Option<u32>) -
     serve_image_inner(state, img_path, width).await
 }
 
-async fn serve_image_inner(state: &AppState, img_path: &str, target_width: Option<u32>) -> Response {
+async fn serve_image_inner(
+    state: &AppState,
+    img_path: &str,
+    target_width: Option<u32>,
+) -> Response {
     if img_path.is_empty() || img_path.contains("..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
