@@ -52,11 +52,10 @@ pub(crate) async fn render_region(
     };
 
     let region_id = region.id;
-    let hero_r2_key_direct = region.hero_photo_r2_key.clone();
     let mut region_row: RegionRow = region.into();
 
-    // Fetch hero photo URL: try landmark_photos first, then region-direct r2_key
-    let hero_url = sqlx::query_scalar::<_, String>(
+    // Override hero_photo_url with landmark photo if hero_landmark_id is set
+    let landmark_hero = sqlx::query_scalar::<_, String>(
         "SELECT lp.r2_key FROM landmark_photos lp \
          JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
          JOIN regions r ON r.hero_landmark_id = l.id \
@@ -69,9 +68,7 @@ pub(crate) async fn render_region(
         tracing::error!("render_region hero photo query failed: {e}");
         None
     });
-    if let Some(r2_key) = hero_url {
-        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
-    } else if let Some(r2_key) = hero_r2_key_direct {
+    if let Some(r2_key) = landmark_hero {
         region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
 
