@@ -359,6 +359,35 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
                     }
                     format!("municipalities/{}/{file_with_ext}", row.municipality_code)
                 }
+                Ok(None) if segments.len() == 3 => {
+                    // 3 segments but middle is not a municipality — try as landmark photo:
+                    // /{orp}/{landmark-slug}/{photo-slug}.webp (main municipality)
+                    let lm_slug = segments[1];
+                    let lp_slug = file_with_ext
+                        .rsplit_once('.')
+                        .map(|(s, _)| s)
+                        .unwrap_or(file_with_ext);
+                    let lp_r2 = sqlx::query_scalar::<_, String>(
+                        "SELECT lp.r2_key FROM landmark_photos lp \
+                         JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
+                         JOIN municipalities m ON l.municipality_id = m.id \
+                         JOIN orp o ON m.orp_id = o.id \
+                         WHERE o.slug = $1 AND m.slug = $1 AND l.slug = $2 AND lp.slug = $3",
+                    )
+                    .bind(orp_slug)
+                    .bind(lm_slug)
+                    .bind(lp_slug)
+                    .fetch_optional(db)
+                    .await;
+                    match lp_r2 {
+                        Ok(Some(key)) if !key.contains("..") => key,
+                        Ok(_) => path.to_string(),
+                        Err(e) => {
+                            tracing::error!("DB error resolving 3-seg landmark path '{path}': {e}");
+                            path.to_string()
+                        }
+                    }
+                }
                 Ok(None) => path.to_string(),
                 Err(e) => {
                     tracing::error!("DB error resolving SEO path '{path}': {e}");
