@@ -14,6 +14,8 @@ CREATE TABLE landmark_photos (
     UNIQUE(npu_catalog_id, photo_index)
 );
 
+CREATE INDEX idx_landmark_photos_catalog ON landmark_photos(npu_catalog_id);
+
 -- Hero photo reference on regions
 ALTER TABLE regions ADD COLUMN hero_landmark_id INTEGER REFERENCES landmarks(id);
-ALTER TABLE regions ADD COLUMN hero_photo_index SMALLINT DEFAULT 1;
+ALTER TABLE regions ADD COLUMN hero_photo_index SMALLINT DEFAULT 2;
