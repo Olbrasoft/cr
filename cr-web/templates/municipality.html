@@ -51,6 +51,14 @@
         </div>
     </div>
     <aside class="content-right">
+        {% if !gallery_photos.is_empty() %}
+        <div class="photo-slideshow" data-slideshow="municipality" data-gallery-photos="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.url }}&quot;{% endfor %}]" data-gallery-thumbs="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.thumb_url }}&quot;{% endfor %}]" data-slide-start="0">
+            <img src="{{ gallery_photos[0].thumb_url }}" alt="{{ gallery_photos[0].description }}" loading="lazy" data-index="0">
+            <button class="slide-nav slide-prev" aria-label="Předchozí">&#8249;</button>
+            <button class="slide-nav slide-next" aria-label="Další">&#8250;</button>
+            <span class="slide-counter">1 / {{ gallery_photos.len() }}</span>
+        </div>
+        {% endif %}
         <div id="map" style="width:100%;height:300px;border-radius:12px;margin-bottom:1rem;" data-name="{{ municipality.name }}"></div>
         <div class="premium-infobox">
             <div class="infobox-top">

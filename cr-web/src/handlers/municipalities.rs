@@ -96,6 +96,14 @@ pub(crate) async fn render_municipality(
     )
     .await;
 
+    let gallery_photos = fetch_municipality_gallery(
+        &state.db,
+        &municipality_row.municipality_code,
+        orp_slug,
+        municipality_slug,
+    )
+    .await;
+
     let tmpl = MunicipalityTemplate {
         img: state.image_base_url.clone(),
         region: region_row,
@@ -103,6 +111,7 @@ pub(crate) async fn render_municipality(
         municipality: municipality_row,
         landmarks,
         photo,
+        gallery_photos,
     };
     match tmpl.render() {
         Ok(html) => (StatusCode::OK, Html(html)),
