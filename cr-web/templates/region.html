@@ -36,6 +36,13 @@
 {% block content %}
 <section class="active-hub">
     <div class="active-left">
+        {% match region.hero_photo_url %}
+        {% when Some with (photo_url) %}
+        <div class="photo-inline">
+            <img src="{{ photo_url }}?w=360" alt="{{ region.name }}" loading="lazy">
+        </div>
+        {% when None %}
+        {% endmatch %}
         {% match region.description %}
         {% when Some with (desc) %}
         <div class="description" style="line-height: 1.7; color: #333; margin-bottom: 1rem;">

@@ -15,6 +15,7 @@ impl From<cr_domain::repository::RegionRecord> for RegionRow {
             coat_of_arms_ext: r.coat_of_arms_ext,
             flag_ext: r.flag_ext,
             description: r.description,
+            hero_photo_url: None,
         }
     }
 }
@@ -50,7 +51,25 @@ pub(crate) async fn render_region(
     };
 
     let region_id = region.id;
-    let region_row: RegionRow = region.into();
+    let mut region_row: RegionRow = region.into();
+
+    // Fetch hero photo URL from landmark_photos if region has hero_landmark_id
+    let hero_url = sqlx::query_scalar::<_, String>(
+        "SELECT lp.r2_key FROM landmark_photos lp \
+         JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
+         JOIN regions r ON r.hero_landmark_id = l.id \
+         WHERE r.id = $1 AND lp.photo_index = r.hero_photo_index",
+    )
+    .bind(region_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("render_region hero photo query failed: {e}");
+        None
+    });
+    if let Some(r2_key) = hero_url {
+        region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+    }
 
     let orps: Vec<OrpRow> = state
         .orp_repo
