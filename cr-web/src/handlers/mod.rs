@@ -321,6 +321,7 @@ pub(crate) struct MunicipalityTemplate {
     pub(crate) municipality: MunicipalityRow,
     pub(crate) landmarks: Vec<MunicipalityLandmarkRow>,
     pub(crate) photo: Option<MunicipalityPhotoInfo>,
+    pub(crate) gallery_photos: Vec<MunicipalityPhotoInfo>,
 }
 
 pub(crate) struct MunicipalityPhotoInfo {
@@ -368,6 +369,43 @@ pub(crate) async fn fetch_municipality_photo(
         thumb_url,
         description,
     })
+}
+
+pub(crate) async fn fetch_municipality_gallery(
+    db: &sqlx::PgPool,
+    municipality_code: &str,
+    orp_slug: &str,
+    municipality_slug: &str,
+) -> Vec<MunicipalityPhotoInfo> {
+    let rows = sqlx::query_as::<_, MunicipalityPhotoRow>(
+        "SELECT slug, description, object_name FROM municipality_photos \
+         WHERE municipality_code = $1 AND is_primary = false \
+         ORDER BY photo_index",
+    )
+    .bind(municipality_code)
+    .fetch_all(db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("fetch_municipality_gallery query failed: {e}");
+        Vec::new()
+    });
+
+    rows.into_iter()
+        .map(|row| {
+            let url = if orp_slug == municipality_slug {
+                format!("/{}/{}.webp", orp_slug, row.slug)
+            } else {
+                format!("/{}/{}/{}.webp", orp_slug, municipality_slug, row.slug)
+            };
+            let thumb_url = format!("{}?w=360", &url);
+            let description = row.description.or(row.object_name).unwrap_or_default();
+            MunicipalityPhotoInfo {
+                url,
+                thumb_url,
+                description,
+            }
+        })
+        .collect()
 }
 
 #[derive(sqlx::FromRow)]
