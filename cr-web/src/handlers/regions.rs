@@ -52,6 +52,7 @@ pub(crate) async fn render_region(
 
     let region_id = region.id;
     let region_slug_owned = region.slug.clone();
+    let has_direct_photo = region.hero_photo_r2_key.is_some();
     let mut region_row: RegionRow = region.into();
 
     // Resolve hero photo SEO URL — priority: landmark → municipality → direct
@@ -121,18 +122,9 @@ pub(crate) async fn render_region(
                 format!("/{}/{}/{}.webp", h.orp_slug, h.muni_slug, h.photo_slug)
             };
             region_row.hero_photo_url = Some(url);
-        } else {
+        } else if has_direct_photo {
             // Direct region photo: /{region-slug}.webp
-            let has_direct = sqlx::query_scalar::<_, bool>(
-                "SELECT hero_photo_r2_key IS NOT NULL FROM regions WHERE id = $1",
-            )
-            .bind(region_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(false);
-            if has_direct {
-                region_row.hero_photo_url = Some(format!("/{}.webp", region_slug_owned));
-            }
+            region_row.hero_photo_url = Some(format!("/{}.webp", region_slug_owned));
         }
     }
 

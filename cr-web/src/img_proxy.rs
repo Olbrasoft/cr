@@ -273,7 +273,10 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
             .bind(slug)
             .fetch_one(db)
             .await
-            .unwrap_or(false);
+            .unwrap_or_else(|e| {
+                tracing::error!("DB error resolving 1-seg region path '{path}': {e}");
+                false
+            });
             if exists {
                 return format!("regions/{file}");
             }
