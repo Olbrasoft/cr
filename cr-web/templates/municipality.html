@@ -52,8 +52,8 @@
     </div>
     <aside class="content-right">
         {% if !gallery_photos.is_empty() %}
-        <div class="photo-slideshow" data-slideshow="municipality" data-gallery-photos="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.url }}&quot;{% endfor %}]" data-gallery-thumbs="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.thumb_url }}&quot;{% endfor %}]" data-slide-start="0">
-            <img src="{{ gallery_photos[0].thumb_url }}" alt="{{ gallery_photos[0].description }}" loading="lazy" data-index="0">
+        <div class="photo-slideshow" data-slideshow="municipality-gallery" data-gallery-photos="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.url }}&quot;{% endfor %}]" data-gallery-thumbs="[{% for p in gallery_photos %}{% if !loop.first %},{% endif %}&quot;{{ p.thumb_url }}&quot;{% endfor %}]" data-slide-start="0">
+            <img src="{{ gallery_photos[0].thumb_url }}" alt="{% if gallery_photos[0].description.is_empty() %}{{ municipality.name }}{% else %}{{ gallery_photos[0].description }}{% endif %}" loading="lazy" data-index="0">
             <button class="slide-nav slide-prev" aria-label="Předchozí">&#8249;</button>
             <button class="slide-nav slide-next" aria-label="Další">&#8250;</button>
             <span class="slide-counter">1 / {{ gallery_photos.len() }}</span>

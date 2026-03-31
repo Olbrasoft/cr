@@ -379,7 +379,7 @@ pub(crate) async fn fetch_municipality_gallery(
 ) -> Vec<MunicipalityPhotoInfo> {
     let rows = sqlx::query_as::<_, MunicipalityPhotoRow>(
         "SELECT slug, description, object_name FROM municipality_photos \
-         WHERE municipality_code = $1 AND (is_primary = false OR photo_index > 1) \
+         WHERE municipality_code = $1 AND is_primary = false \
          ORDER BY photo_index",
     )
     .bind(municipality_code)
