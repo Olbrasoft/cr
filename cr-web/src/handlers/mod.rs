@@ -201,6 +201,8 @@ pub(crate) async fn fetch_photos(
     entity_type: &str,
     entity_id: i32,
     slug: &str,
+    orp_slug: Option<&str>,
+    municipality_slug: Option<&str>,
 ) -> Vec<PhotoInfo> {
     let records = state
         .photo_repo
@@ -215,14 +217,24 @@ pub(crate) async fn fetch_photos(
         .into_iter()
         .map(|r| {
             let url = if entity_type == "landmark" {
-                // SEO URL: /img/landmarks/{slug}-{r2_filename}
-                let filename = r.r2_key.strip_prefix("landmarks/").unwrap_or(&r.r2_key);
-                format!(
-                    "{}/img/landmarks/{}-{}",
-                    state.image_base_url, slug, filename
-                )
+                if let (Some(orp), Some(muni)) = (orp_slug, municipality_slug) {
+                    // SEO URL: /{orp}/{municipality}/{landmark-slug}.webp
+                    // or /{orp}/{landmark-slug}.webp for main municipality
+                    if orp == muni {
+                        format!("/{}/{}.webp", orp, slug)
+                    } else {
+                        format!("/{}/{}/{}.webp", orp, muni, slug)
+                    }
+                } else {
+                    // Fallback to old URL pattern
+                    let filename = r.r2_key.strip_prefix("landmarks/").unwrap_or(&r.r2_key);
+                    format!(
+                        "{}/img/landmarks/{}-{}",
+                        state.image_base_url, slug, filename
+                    )
+                }
             } else {
-                // Pools: /img/{r2_key} (slug already in filename)
+                // Pools: /img/{r2_key}
                 format!("{}/img/{}", state.image_base_url, r.r2_key)
             };
             let thumb_url = format!("{}?w=360", &url);

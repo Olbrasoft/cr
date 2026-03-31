@@ -81,7 +81,15 @@ pub(crate) async fn render_landmark(
 
     let landmark_row: LandmarkRow = landmark.into();
 
-    let photos = fetch_photos(state, "landmark", landmark_row.id, &landmark_row.slug).await;
+    let photos = fetch_photos(
+        state,
+        "landmark",
+        landmark_row.id,
+        &landmark_row.slug,
+        Some(&orp_row.slug),
+        landmark_row.municipality_slug.as_deref(),
+    )
+    .await;
 
     let tmpl = LandmarkDetailTemplate {
         img: state.image_base_url.clone(),
