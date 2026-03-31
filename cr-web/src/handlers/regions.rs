@@ -57,28 +57,40 @@ pub(crate) async fn render_region(
     let mut region_row: RegionRow = region.into();
 
     // Resolve hero photo URL — priority: landmark → municipality → direct r2_key
-    let hero_r2 = sqlx::query_scalar::<_, String>(
-        "SELECT COALESCE( \
-           (SELECT lp.r2_key FROM landmark_photos lp \
-            JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
-            JOIN regions r ON r.hero_landmark_id = l.id \
-            WHERE r.id = $1 AND lp.photo_index = r.hero_photo_index), \
-           (SELECT mp.r2_key FROM municipality_photos mp \
-            WHERE mp.municipality_code = $2 AND mp.photo_index = $3) \
-         )",
+    // Try landmark photo
+    let landmark_r2 = sqlx::query_scalar::<_, String>(
+        "SELECT lp.r2_key FROM landmark_photos lp \
+         JOIN landmarks l ON l.npu_catalog_id = lp.npu_catalog_id \
+         JOIN regions r ON r.hero_landmark_id = l.id \
+         WHERE r.id = $1 AND lp.photo_index = r.hero_photo_index",
     )
     .bind(region_id)
-    .bind(&hero_muni_code)
-    .bind(hero_muni_idx.unwrap_or(2) as i32)
     .fetch_optional(&state.db)
     .await
     .unwrap_or_else(|e| {
-        tracing::error!("render_region hero photo query failed: {e}");
+        tracing::error!("render_region hero landmark query failed: {e}");
         None
     });
 
-    if let Some(r2_key) = hero_r2 {
+    if let Some(r2_key) = landmark_r2 {
         region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+    } else if let Some(muni_code) = &hero_muni_code {
+        // Try municipality photo
+        let muni_r2 = sqlx::query_scalar::<_, String>(
+            "SELECT mp.r2_key FROM municipality_photos mp \
+             WHERE mp.municipality_code = $1 AND mp.photo_index = $2::smallint",
+        )
+        .bind(muni_code)
+        .bind(hero_muni_idx.unwrap_or(2))
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("render_region hero municipality query failed: {e}");
+            None
+        });
+        if let Some(r2_key) = muni_r2 {
+            region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
+        }
     } else if let Some(r2_key) = hero_r2_direct {
         region_row.hero_photo_url = Some(format!("/img/{}", r2_key));
     }
