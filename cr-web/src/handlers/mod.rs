@@ -228,7 +228,10 @@ pub(crate) async fn fetch_photos(
                 } else {
                     // Fallback to old URL pattern
                     let filename = r.r2_key.strip_prefix("landmarks/").unwrap_or(&r.r2_key);
-                    format!("/img/landmarks/{}-{}", slug, filename)
+                    format!(
+                        "{}/img/landmarks/{}-{}",
+                        state.image_base_url, slug, filename
+                    )
                 }
             } else {
                 // Pools: /img/{r2_key}

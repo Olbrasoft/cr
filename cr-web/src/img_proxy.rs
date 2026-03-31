@@ -278,13 +278,22 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
         .map(|(s, _)| s)
         .unwrap_or(file_with_ext);
 
-    // Try landmark photo first: look up by landmark slug in municipality of this ORP
-    let landmark_r2 = sqlx::query_scalar::<_, String>(
-        "SELECT pm.r2_key FROM photo_metadata pm \
-         JOIN landmarks l ON pm.entity_type = 'landmark' AND pm.entity_id = l.id \
-         JOIN municipalities m ON l.municipality_id = m.id \
+    // Single query: try landmark photo first, always return municipality_code for fallback
+    #[derive(sqlx::FromRow)]
+    struct SeoLookup {
+        municipality_code: String,
+        landmark_r2_key: Option<String>,
+    }
+
+    let lookup = sqlx::query_as::<_, SeoLookup>(
+        "SELECT m.municipality_code, \
+         (SELECT pm.r2_key FROM photo_metadata pm \
+          JOIN landmarks l ON pm.entity_type = 'landmark' AND pm.entity_id = l.id \
+          WHERE l.municipality_id = m.id AND l.slug = $3 AND pm.photo_index = 1 \
+          LIMIT 1) as landmark_r2_key \
+         FROM municipalities m \
          JOIN orp o ON m.orp_id = o.id \
-         WHERE o.slug = $1 AND m.slug = $2 AND l.slug = $3 AND pm.photo_index = 1",
+         WHERE o.slug = $1 AND m.slug = $2",
     )
     .bind(orp_slug)
     .bind(muni_slug)
@@ -292,27 +301,17 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
     .fetch_optional(db)
     .await;
 
-    match landmark_r2 {
-        Ok(Some(r2_key)) => return r2_key,
-        Ok(None) => {} // not a landmark, try municipality photo
-        Err(e) => {
-            tracing::error!("DB error resolving landmark SEO path '{path}': {e}");
+    match lookup {
+        Ok(Some(row)) => {
+            if let Some(r2_key) = row.landmark_r2_key {
+                // Sanitize: ensure r2_key has no path traversal
+                if !r2_key.contains("..") {
+                    return r2_key;
+                }
+            }
+            // Municipality photo fallback
+            format!("municipalities/{}/{file_with_ext}", row.municipality_code)
         }
-    }
-
-    // Fall back to municipality photo
-    let code = sqlx::query_scalar::<_, String>(
-        "SELECT m.municipality_code FROM municipalities m \
-         JOIN orp o ON m.orp_id = o.id \
-         WHERE o.slug = $1 AND m.slug = $2",
-    )
-    .bind(orp_slug)
-    .bind(muni_slug)
-    .fetch_optional(db)
-    .await;
-
-    match code {
-        Ok(Some(code)) => format!("municipalities/{code}/{file_with_ext}"),
         Ok(None) => path.to_string(),
         Err(e) => {
             tracing::error!("DB error resolving SEO path '{path}': {e}");
