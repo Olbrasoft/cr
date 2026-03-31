@@ -31,7 +31,7 @@ struct LandmarkRow {
     orp_slug: Option<String>,
     region_slug: Option<String>,
     municipality_code: Option<String>,
-    coat_of_arms_ext: Option<String>,
+    municipality_coat_of_arms_ext: Option<String>,
 }
 
 impl From<LandmarkRow> for LandmarkRecord {
@@ -54,7 +54,7 @@ impl From<LandmarkRow> for LandmarkRecord {
             orp_slug: r.orp_slug,
             region_slug: r.region_slug,
             municipality_code: r.municipality_code,
-            coat_of_arms_ext: r.coat_of_arms_ext,
+            municipality_coat_of_arms_ext: r.municipality_coat_of_arms_ext,
         }
     }
 }
@@ -96,7 +96,7 @@ impl LandmarkRepository for PgLandmarkRepository {
              lt.slug as type_slug, lt.name as type_name, \
              m.name as municipality_name, m.slug as municipality_slug, \
              o2.slug as orp_slug, r2.slug as region_slug, \
-             m.municipality_code, m.coat_of_arms_ext \
+             m.municipality_code, m.coat_of_arms_ext as municipality_coat_of_arms_ext \
              FROM landmarks l \
              JOIN landmark_types lt ON l.type_id = lt.id \
              LEFT JOIN municipalities m ON l.municipality_id = m.id \

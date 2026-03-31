@@ -147,7 +147,7 @@ pub struct LandmarkRecord {
     pub orp_slug: Option<String>,
     pub region_slug: Option<String>,
     pub municipality_code: Option<String>,
-    pub coat_of_arms_ext: Option<String>,
+    pub municipality_coat_of_arms_ext: Option<String>,
 }
 
 /// Pool summary for listings.

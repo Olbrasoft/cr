@@ -100,7 +100,7 @@ pub(crate) struct LandmarkRow {
     #[sqlx(default)]
     pub(crate) municipality_code: Option<String>,
     #[sqlx(default)]
-    pub(crate) coat_of_arms_ext: Option<String>,
+    pub(crate) municipality_coat_of_arms_ext: Option<String>,
 }
 
 pub(crate) struct LandmarkTypeCount {
@@ -160,7 +160,7 @@ impl From<cr_domain::repository::LandmarkRecord> for LandmarkRow {
             orp_slug: r.orp_slug,
             region_slug: r.region_slug,
             municipality_code: r.municipality_code,
-            coat_of_arms_ext: r.coat_of_arms_ext,
+            municipality_coat_of_arms_ext: r.municipality_coat_of_arms_ext,
         }
     }
 }

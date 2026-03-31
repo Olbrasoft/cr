@@ -5,11 +5,11 @@
 {% block header_left %}
 <div class="logo-group">
     <div style="display:flex;align-items:center;gap:0.5rem;">
-        {% match landmark.coat_of_arms_ext %}
+        {% match landmark.municipality_coat_of_arms_ext %}
         {% when Some with (ext) %}
         {% match landmark.municipality_code %}
         {% when Some with (code) %}
-        <img src="{{ img }}/img/municipalities/{{ code }}/coat-of-arms.{{ ext }}" alt="Znak obce" class="header-emblem">
+        <img src="{{ img }}/img/municipalities/{{ code }}/coat-of-arms.{{ ext }}" alt="Znak {% match landmark.municipality_name %}{% when Some with (mname) %}{{ mname }}{% when None %}obce{% endmatch %}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         {% when None %}
