@@ -38,7 +38,7 @@
     <div class="active-left">
         {% match region.hero_photo_url %}
         {% when Some with (photo_url) %}
-        <div class="photo-inline">
+        <div class="photo-inline" data-gallery-open="region" data-index="0" data-gallery-photos="[&quot;{{ photo_url }}&quot;]">
             <img src="{{ photo_url }}?w=360" alt="{{ region.name }}" loading="lazy">
         </div>
         {% when None %}
