@@ -17,10 +17,16 @@ Instructions for Claude Code when working in this repository.
 **After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
 This is NOT optional. The CronCreate runs the full pipeline autonomously (CI → review → merge → deploy → Playwright verify) without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
 
+**NEVER close a GitHub issue before production verification.** Closing an issue means the work is DONE and verified on production. The sequence is:
+1. PR merged → deploy runs → Playwright verifies → THEN close issue
+2. If Playwright shows the changes are NOT visible or broken → fix, push, new PR → repeat
+
+**NEVER use `gh issue close` before Playwright confirms the changes work on production.**
+
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
 - After merge: "PR mergnut, sleduji deploy." (NOT "Issue hotová")
-- After deploy + verify: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" (THIS is when it's done)
+- After deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
 
 ## What This Is
 
