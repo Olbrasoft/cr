@@ -100,20 +100,7 @@ async fn serve_image_inner(
     if cache_path.exists()
         && let Ok(data) = tokio::fs::read(&cache_path).await
     {
-        // Resized images are always JPEG
-        let content_type = if target_width.is_some() {
-            "image/jpeg"
-        } else if img_path.ends_with(".webp") {
-            "image/webp"
-        } else if img_path.ends_with(".jpg") || img_path.ends_with(".jpeg") {
-            "image/jpeg"
-        } else if img_path.ends_with(".png") {
-            "image/png"
-        } else if img_path.ends_with(".svg") {
-            "image/svg+xml"
-        } else {
-            "application/octet-stream"
-        };
+        let content_type = content_type_for(img_path, target_width.is_some());
 
         return (
             StatusCode::OK,
@@ -219,19 +206,7 @@ async fn serve_image_inner(
         let _ = tokio::fs::write(&cache_path_clone, &output_clone).await;
     });
 
-    let content_type = if is_resized {
-        "image/jpeg"
-    } else if img_path.ends_with(".webp") {
-        "image/webp"
-    } else if img_path.ends_with(".jpg") || img_path.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if img_path.ends_with(".png") {
-        "image/png"
-    } else if img_path.ends_with(".svg") {
-        "image/svg+xml"
-    } else {
-        "application/octet-stream"
-    };
+    let content_type = content_type_for(img_path, is_resized);
 
     (
         StatusCode::OK,
@@ -245,6 +220,23 @@ async fn serve_image_inner(
         output_bytes,
     )
         .into_response()
+}
+
+/// Determine Content-Type from file extension. Resized images are always JPEG.
+fn content_type_for(path: &str, is_resized: bool) -> &'static str {
+    if is_resized {
+        "image/jpeg"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// Translate SEO-friendly image paths to R2 storage paths.
