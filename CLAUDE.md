@@ -23,13 +23,13 @@ This is NOT optional. The CronCreate runs the full pipeline autonomously (CI →
 
 **NEVER use `gh issue close` before Playwright confirms the changes work on production.**
 
-**NEVER merge a PR when Copilot code review hasn't arrived yet.**
-Copilot review takes ~3-5 minutes. If `reviews: []` (empty) — that means review is STILL RUNNING, not that there are no comments. You MUST wait for at least one review to appear before merging.
+**Branch protection is enabled on main.** Required status checks: Check & Clippy, Format, Test, Agent (Copilot code review). `gh pr merge` will FAIL if any check hasn't passed — this is by design. If merge fails with "required status checks", just wait and retry on next CronCreate tick.
+
+**Merge strategy:** Simply attempt `gh pr merge` — if it succeeds, checks passed. If it fails, wait. No need to manually check review status. Also check for review comments to fix while waiting.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
-- CI passed, reviews empty: "CI prošlo, čekám na Copilot review." (NOT "merguju")
-- CI passed, review done: "Review hotov, [opravuji komentáře / žádné komentáře] → merguju."
+- Merge blocked: "Merge blokován — čekám na dokončení checks." (NOT "merguju")
 - After merge: "PR mergnut, sleduji deploy." (NOT "Issue hotová")
 - After deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
 
