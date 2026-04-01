@@ -2,12 +2,25 @@
 
 Instructions for Claude Code when working in this repository.
 
-## CRITICAL — Autonomous CI/CD Feedback (MANDATORY)
+## CRITICAL — Issue Completion Rules (MANDATORY)
+
+**An issue is NOT done after creating a PR.** An issue is done ONLY after ALL of these:
+1. PR created and pushed
+2. CI passes (build, tests, clippy, format)
+3. Code review addressed
+4. PR merged to main
+5. Deploy to production succeeds
+6. **Playwright verifies the specific changes from the issue are visible on production**
+
+**NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — production verification confirms the changes work as described in the issue.
 
 **After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
-This is NOT optional. See "Development Workflow" section for the full template.
+This is NOT optional. The CronCreate runs the full pipeline autonomously (CI → review → merge → deploy → Playwright verify) without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
 
-The workflow is fully autonomous: CI → review → merge → deploy → Playwright verify — all without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
+**Progress notifications should say:**
+- After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
+- After merge: "PR mergnut, sleduji deploy." (NOT "Issue hotová")
+- After deploy + verify: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" (THIS is when it's done)
 
 ## What This Is
 
