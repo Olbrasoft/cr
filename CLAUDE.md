@@ -2,6 +2,13 @@
 
 Instructions for Claude Code when working in this repository.
 
+## CRITICAL — Autonomous CI/CD Feedback (MANDATORY)
+
+**After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
+This is NOT optional. See "Development Workflow" section for the full template.
+
+The workflow is fully autonomous: CI → review → merge → deploy → Playwright verify — all without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
+
 ## What This Is
 
 **Olbrasoft/cr** — Modern SEO portal about the Czech Republic. Hierarchical territorial navigation: Regions → Districts → ORP → Municipalities, with AI features and high performance.
