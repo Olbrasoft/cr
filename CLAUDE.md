@@ -10,9 +10,11 @@ Instructions for Claude Code when working in this repository.
 3. Code review addressed
 4. PR merged to main
 5. Deploy to production succeeds
-6. **Playwright verifies the specific changes from the issue are visible on production**
+6. **Playwright opens the production page, takes a screenshot, and you VISUALLY confirm the changes are correct**
 
-**NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — production verification confirms the changes work as described in the issue.
+**Production verification MUST use Playwright (not curl).** curl only checks HTTP status — it cannot detect broken images, missing flags, or layout issues. You MUST take a screenshot and look at it to confirm everything renders correctly.
+
+**NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — you have SEEN a Playwright screenshot confirming the changes work as described in the issue.
 
 **After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
 This is NOT optional. The CronCreate runs the full pipeline autonomously (CI → review → merge → deploy → Playwright verify) without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
