@@ -210,6 +210,7 @@ pub(crate) async fn fetch_photos(
     slug: &str,
     orp_slug: Option<&str>,
     municipality_slug: Option<&str>,
+    npu_catalog_id: Option<&str>,
 ) -> Vec<PhotoInfo> {
     let records = state
         .photo_repo
@@ -220,7 +221,7 @@ pub(crate) async fn fetch_photos(
             Vec::new()
         });
 
-    records
+    let mut photos: Vec<PhotoInfo> = records
         .into_iter()
         .map(|r| {
             let url = if entity_type == "landmark" {
@@ -250,6 +251,67 @@ pub(crate) async fn fetch_photos(
                 thumb_url,
                 width: r.width,
                 height: r.height,
+            }
+        })
+        .collect();
+
+    // Fetch additional landmark photos from landmark_photos table (index 2+)
+    if entity_type == "landmark"
+        && let Some(catalog_id) = npu_catalog_id
+    {
+        let extra =
+            fetch_landmark_additional_photos(state, catalog_id, slug, orp_slug, municipality_slug)
+                .await;
+        photos.extend(extra);
+    }
+
+    photos
+}
+
+#[derive(sqlx::FromRow)]
+struct LandmarkPhotoRow {
+    slug: String,
+    width: Option<i16>,
+    height: Option<i16>,
+}
+
+async fn fetch_landmark_additional_photos(
+    state: &AppState,
+    npu_catalog_id: &str,
+    landmark_slug: &str,
+    orp_slug: Option<&str>,
+    municipality_slug: Option<&str>,
+) -> Vec<PhotoInfo> {
+    let rows = sqlx::query_as::<_, LandmarkPhotoRow>(
+        "SELECT slug, width, height FROM landmark_photos \
+         WHERE npu_catalog_id = $1 ORDER BY photo_index",
+    )
+    .bind(npu_catalog_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("fetch_landmark_additional_photos query failed: {e}");
+        Vec::new()
+    });
+
+    rows.into_iter()
+        .map(|r| {
+            let url = if let (Some(orp), Some(muni)) = (orp_slug, municipality_slug) {
+                // SEO URL: /{orp}/{landmark}/{photo}.webp or /{orp}/{muni}/{landmark}/{photo}.webp
+                if orp == muni {
+                    format!("/{}/{}/{}.webp", orp, landmark_slug, r.slug)
+                } else {
+                    format!("/{}/{}/{}/{}.webp", orp, muni, landmark_slug, r.slug)
+                }
+            } else {
+                format!("/{}/{}.webp", landmark_slug, r.slug)
+            };
+            let thumb_url = format!("{}?w=360", &url);
+            PhotoInfo {
+                url,
+                thumb_url,
+                width: r.width.unwrap_or(0),
+                height: r.height.unwrap_or(0),
             }
         })
         .collect()
