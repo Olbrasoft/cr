@@ -325,6 +325,11 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
                 (segments[0], segments[1], segments[2])
             };
 
+            // Check for coat-of-arms/flag SEO URLs: znak-{slug}.ext or vlajka-{slug}.ext
+            if let Some(r2_path) = resolve_coat_flag(db, &segments, file_with_ext, path).await {
+                return r2_path;
+            }
+
             let slug = file_with_ext
                 .rsplit_once('.')
                 .map(|(s, _)| s)
@@ -397,4 +402,81 @@ async fn resolve_seo_path(db: &sqlx::PgPool, path: &str) -> String {
         }
         _ => path.to_string(),
     }
+}
+
+/// Resolve coat-of-arms/flag SEO URLs to R2 keys.
+///
+/// Patterns:
+/// - 2 seg: `/{slug}/znak-{slug}.ext` → region or ORP main municipality
+/// - 3 seg: `/{orp}/{muni}/znak-{muni}.ext` → municipality
+async fn resolve_coat_flag(
+    db: &sqlx::PgPool,
+    segments: &[&str],
+    file_with_ext: &str,
+    path: &str,
+) -> Option<String> {
+    let (file_stem, ext) = file_with_ext.rsplit_once('.')?;
+    let image_type = if file_stem.starts_with("znak-") {
+        "coat-of-arms"
+    } else if file_stem.starts_with("vlajka-") {
+        "flag"
+    } else {
+        return None;
+    };
+
+    if segments.len() == 2 {
+        // Try region first: /jihomoravsky-kraj/znak-jihomoravsky-kraj.svg
+        let region_code =
+            sqlx::query_scalar::<_, String>("SELECT region_code FROM regions WHERE slug = $1")
+                .bind(segments[0])
+                .fetch_optional(db)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("DB error resolving coat/flag region '{path}': {e}");
+                    None
+                });
+
+        if let Some(code) = region_code {
+            return Some(format!("regions/{code}/{image_type}.{ext}"));
+        }
+
+        // Try ORP (main municipality): /benesov/znak-benesov.svg
+        let muni_code = sqlx::query_scalar::<_, String>(
+            "SELECT m.municipality_code FROM municipalities m \
+             JOIN orp o ON m.orp_id = o.id \
+             WHERE o.slug = $1 AND m.slug = $1",
+        )
+        .bind(segments[0])
+        .fetch_optional(db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("DB error resolving coat/flag ORP '{path}': {e}");
+            None
+        });
+
+        if let Some(code) = muni_code {
+            return Some(format!("municipalities/{code}/{image_type}.{ext}"));
+        }
+    } else {
+        // 3 segments: /votice/olbramovice/znak-olbramovice.webp
+        let muni_code = sqlx::query_scalar::<_, String>(
+            "SELECT m.municipality_code FROM municipalities m \
+             JOIN orp o ON m.orp_id = o.id \
+             WHERE o.slug = $1 AND m.slug = $2",
+        )
+        .bind(segments[0])
+        .bind(segments[1])
+        .fetch_optional(db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("DB error resolving coat/flag municipality '{path}': {e}");
+            None
+        });
+
+        if let Some(code) = muni_code {
+            return Some(format!("municipalities/{code}/{image_type}.{ext}"));
+        }
+    }
+
+    None
 }

@@ -7,9 +7,9 @@
     <div style="display:flex;align-items:center;gap:0.5rem;">
         {% match landmark.municipality_coat_of_arms_ext %}
         {% when Some with (ext) %}
-        {% match landmark.municipality_code %}
-        {% when Some with (code) %}
-        <img src="{{ img }}/img/municipalities/{{ code }}/coat-of-arms.{{ ext }}" alt="Znak {% match landmark.municipality_name %}{% when Some with (mname) %}{{ mname }}{% when None %}obce{% endmatch %}" class="header-emblem">
+        {% match landmark.municipality_slug %}
+        {% when Some with (mslug) %}
+        <img src="/{{ orp.slug }}/{{ mslug }}/znak-{{ mslug }}.{{ ext }}" alt="Znak {% match landmark.municipality_name %}{% when Some with (mname) %}{{ mname }}{% when None %}obce{% endmatch %}" title="Znak {% match landmark.municipality_name %}{% when Some with (mname) %}{{ mname }}{% when None %}obce{% endmatch %}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         {% when None %}
@@ -25,7 +25,7 @@
 {% match region.flag_ext %}
 {% when Some with (ext) %}
 <div class="context-emblem">
-    <img src="{{ img }}/img/regions/{{ region.region_code }}/flag.{{ ext }}" alt="Vlajka {{ region.name }}" class="context-emblem-img">
+    <img src="/{{ region.slug }}/vlajka-{{ region.slug }}.{{ ext }}" alt="Vlajka {{ region.name }}" title="Vlajka {{ region.name }}" class="context-emblem-img">
 </div>
 {% when None %}
 {% endmatch %}

@@ -7,7 +7,7 @@
     <div style="display:flex;align-items:center;gap:0.5rem;">
         {% match main_municipality.coat_of_arms_ext %}
         {% when Some with (ext) %}
-        <img src="{{ img }}/img/municipalities/{{ main_municipality.municipality_code }}/coat-of-arms.{{ ext }}" alt="Znak {{ orp.name }}" class="header-emblem">
+        <img src="/{{ orp.slug }}/znak-{{ orp.slug }}.{{ ext }}" alt="Znak {{ orp.name }}" title="Znak {{ orp.name }}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         <h1>{{ orp.name }}</h1>
@@ -21,7 +21,7 @@
 {% match main_municipality.flag_ext %}
 {% when Some with (ext) %}
 <div class="context-emblem">
-    <img src="{{ img }}/img/municipalities/{{ main_municipality.municipality_code }}/flag.{{ ext }}" alt="Vlajka {{ orp.name }}" class="context-emblem-img">
+    <img src="/{{ orp.slug }}/vlajka-{{ orp.slug }}.{{ ext }}" alt="Vlajka {{ orp.name }}" title="Vlajka {{ orp.name }}" class="context-emblem-img">
 </div>
 {% when None %}
 {% endmatch %}
