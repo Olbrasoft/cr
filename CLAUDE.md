@@ -159,23 +159,56 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 ## Development Workflow
 
-### Issue-Driven Development
+### Issue-Driven Development with Autonomous CI/CD Feedback
 
-All work follows this cycle:
+All work is **issue-driven** and the CI/CD pipeline runs **fully autonomously** — never ask the user, just act.
+
+**After creating a PR, ALWAYS set up CronCreate monitoring.** This is mandatory, not optional.
+
+#### Full Lifecycle (automated after PR creation)
 
 1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
 2. **Implement** — Create feature branch, write code, test locally
-3. **PR + Review** — Push branch, create PR, wait for GitHub Copilot code review
-4. **Fix** — Address review comments, push fixes
-5. **Merge** — Merge PR → **automatic deploy** to production via GitHub Actions
-6. **Verify** — Check production health
+3. **PR** — Push branch, create PR
+4. **CronCreate** — Immediately set up autonomous pipeline monitor (see below)
+5. **Continue working** — Start next issue while CI/review runs (pipeline processing)
+6. *(Autonomous)* CI fails → analyze logs, fix, push
+7. *(Autonomous)* Review has comments → fix all, push
+8. *(Autonomous)* CI passes + review done → merge PR
+9. *(Autonomous)* Deploy completes → verify production
+10. *(Autonomous)* Read issue description → verify issue-specific changes on production via Playwright/curl
+11. *(Autonomous)* Notify result → CronDelete
 
-### Parallel vs Sequential Work
+#### CronCreate Setup (MANDATORY after every PR)
 
-When working on multiple sub-issues of a parent issue:
-- **Independent sub-issues** (no code dependency): start next issue while waiting for review on current PR
-- **Dependent sub-issues** (next builds on previous): MUST wait for previous PR to be reviewed, fixed, and merged before starting the next one
-- When blocked waiting for review: check review status periodically, fix comments as soon as review arrives, merge, then proceed
+After creating a PR, immediately run CronCreate with the template from `ci-workflow-monitor` skill. Example:
+
+```
+CronCreate({
+  cron: "*/2 * * * *",
+  prompt: "AUTONOMOUS issue-driven CI/CD monitor for Olbrasoft/cr. Working on issue #<NUM>, PR #<NUM>...",
+  recurring: true
+})
+```
+
+The CronCreate prompt must:
+- Monitor CI status (`gh pr checks`)
+- Monitor review status (`gh pr view --json reviewDecision`)
+- **Autonomously merge** when ready (no asking!)
+- **Autonomously fix** CI failures and review comments
+- Monitor deploy after merge (`gh run list --branch main`)
+- **Verify production** — health check + issue-specific changes on `https://ceskarepublika.wiki`
+- CronDelete when pipeline complete
+
+**Full template:** See `ci-workflow-monitor` skill in `.claude/skills/` or `~/GitHub/Olbrasoft/GitHub.Actions.Notify/skills/ci-workflow-monitor/SKILL.md`
+
+#### Parent Issues with Sub-Issues (Pipeline Processing)
+
+Follow [Continuous PR Processing Workflow](~/GitHub/Olbrasoft/engineering-handbook/development-guidelines/workflow/continuous-pr-processing-workflow.md):
+- **Independent sub-issues**: start next issue immediately after creating PR (don't wait for review)
+- **Dependent sub-issues**: wait for previous PR to be merged before starting next
+- Multiple PRs run in parallel with separate CronCreate monitors
+- After ALL sub-issues done: verify all changes on production
 
 ### Branch Naming
 
@@ -197,13 +230,15 @@ cargo run -p cr-web    # Listens on port 3000
 
 ### Deploy to Production
 
-**Automatic:** Merge PR to main → GitHub Actions CI → rsync → docker build → health check.
+**Automatic:** Merge PR to main → GitHub Actions CI (cloud) → Deploy on self-hosted runner → TTS notification → Playwright verify.
 
-No manual deployment needed. The CI pipeline handles everything:
-1. Check & Clippy
-2. Format check
-3. Tests
-4. Rsync to server + docker compose build + restart + health check
+Pipeline:
+1. Check & Clippy (cloud)
+2. Format check (cloud)
+3. Tests (cloud)
+4. Deploy: rsync + docker build + health check (self-hosted runner)
+5. **Notify**: TTS notification via VirtualAssistant (self-hosted runner)
+6. **Verify**: Playwright health + homepage check (self-hosted runner)
 
 **Manual deploy (emergency only):**
 ```bash
