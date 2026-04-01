@@ -227,6 +227,8 @@ async fn serve_image_inner(
         "image/jpeg"
     } else if img_path.ends_with(".png") {
         "image/png"
+    } else if img_path.ends_with(".svg") {
+        "image/svg+xml"
     } else {
         "application/octet-stream"
     };
