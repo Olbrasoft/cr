@@ -88,6 +88,7 @@ pub(crate) async fn render_landmark(
         &landmark_row.slug,
         Some(&orp_row.slug),
         landmark_row.municipality_slug.as_deref(),
+        landmark_row.npu_catalog_id.as_deref(),
     )
     .await;
 
