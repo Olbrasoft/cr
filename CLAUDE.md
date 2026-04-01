@@ -23,17 +23,18 @@ This is NOT optional. The CronCreate runs the full pipeline autonomously (CI →
 
 **NEVER use `gh issue close` before Playwright confirms the changes work on production.**
 
-**Branch protection is enabled on main.** Required CI checks: Check & Clippy, Format, Test. `gh pr merge` will FAIL if CI hasn't passed.
+**Branch protection is enabled on main.** Required CI checks: Check & Clippy, Format, Test.
 
-**Copilot code review is optional** — if subscribed, it runs automatically. Before merging, check:
+**Before merging, ALWAYS check Copilot review status:**
 ```bash
-gh run list --repo Olbrasoft/cr --workflow "Copilot code review" --branch <BRANCH> --limit 1 --json status --jq '.[0].status'
+HEAD=$(gh pr view <PR> --repo Olbrasoft/cr --json headRefOid --jq '.headRefOid')
+gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" --jq '.check_runs[] | select(.name == "Agent") | .status'
 ```
-- `in_progress`/`queued` → wait for it to finish, then check for comments
-- `completed` → check comments, fix if needed, then merge
-- No output (Copilot not active) → merge after CI passes
+- `in_progress`/`queued` → Copilot review still running → WAIT, do NOT merge
+- `completed` → read review comments, fix ALL, push. Then merge.
+- empty (no output) → Copilot not active → merge after CI passes
 
-**Merge strategy:** Attempt `gh pr merge`. If blocked by CI, wait. If CI passed, check Copilot status before merging.
+**NEVER merge before Copilot review finishes.** Copilot almost always finds something to fix (~92%). Read comments, fix them, push. Only then merge.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
