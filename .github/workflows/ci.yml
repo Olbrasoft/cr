@@ -66,7 +66,7 @@ jobs:
 
   deploy:
     name: Deploy to production
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [check, fmt, test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
@@ -115,3 +115,25 @@ jobs:
             done
             echo "Health check failed after 60 seconds"
             exit 1
+
+      - name: Notify deploy result
+        if: always()
+        uses: Olbrasoft/GitHub.Actions.Notify/actions/deploy-status@v1
+        with:
+          job-status: ${{ job.status }}
+          repository: ${{ github.repository }}
+
+  verify:
+    name: Verify production
+    runs-on: self-hosted
+    needs: [deploy]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Wait for deployment propagation
+        run: sleep 10
+
+      - name: Verify production
+        uses: Olbrasoft/GitHub.Actions.Notify/actions/playwright-verify@v1
+        with:
+          url: https://ceskarepublika.wiki
+          checks: health,homepage
