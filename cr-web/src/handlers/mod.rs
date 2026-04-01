@@ -31,6 +31,7 @@ pub(crate) struct RegionRow {
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
+    #[allow(dead_code)]
     pub(crate) region_code: String,
     #[allow(dead_code)]
     pub(crate) latitude: Option<f64>,
@@ -98,6 +99,7 @@ pub(crate) struct LandmarkRow {
     pub(crate) orp_slug: Option<String>,
     #[allow(dead_code)]
     pub(crate) region_slug: Option<String>,
+    #[allow(dead_code)]
     #[sqlx(default)]
     pub(crate) municipality_code: Option<String>,
     #[sqlx(default)]
@@ -747,6 +749,7 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
         || path.ends_with(".jpg")
         || path.ends_with(".jpeg")
         || path.ends_with(".png")
+        || path.ends_with(".svg")
     {
         let width: Option<u32> = uri.query().unwrap_or("").split('&').find_map(|param| {
             let (k, v) = param.split_once('=')?;
