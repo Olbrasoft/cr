@@ -7,7 +7,7 @@
     <div style="display:flex;align-items:center;gap:0.5rem;">
         {% match region.coat_of_arms_ext %}
         {% when Some with (ext) %}
-        <img src="/{{ region.slug }}/znak-{{ region.slug }}.{{ ext }}?v=2" alt="Znak {{ region.name }}" title="Znak {{ region.name }}" class="header-emblem">
+        <img src="/{{ region.slug }}/znak-{{ region.slug }}.{{ ext }}" alt="Znak {{ region.name }}" title="Znak {{ region.name }}" class="header-emblem">
         {% when None %}
         {% endmatch %}
         <h1>{{ region.name }}</h1>
@@ -21,7 +21,7 @@
 {% match region.flag_ext %}
 {% when Some with (ext) %}
 <div class="context-emblem">
-    <img src="/{{ region.slug }}/vlajka-{{ region.slug }}.{{ ext }}?v=2" alt="Vlajka {{ region.name }}" title="Vlajka {{ region.name }}" class="context-emblem-img">
+    <img src="/{{ region.slug }}/vlajka-{{ region.slug }}.{{ ext }}" alt="Vlajka {{ region.name }}" title="Vlajka {{ region.name }}" class="context-emblem-img">
 </div>
 {% when None %}
 {% endmatch %}
