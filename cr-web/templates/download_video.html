@@ -297,6 +297,11 @@
     </div>
 </div>
 
+<div class="recent-downloads" id="recent-downloads" style="display:none;">
+    <h3 style="font-size:0.95rem;font-weight:600;color:var(--color-black);margin-bottom:0.5rem;">Naposledy stažené</h3>
+    <ul id="recent-list" style="list-style:none;padding:0;margin:0;font-size:0.85rem;color:#555;"></ul>
+</div>
+
 <div class="supported-services">
     <a href="https://www.seznamzpravy.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link supported">
         <img src="/static/img/services/seznam-zpravy.svg" alt="Logo Seznam Zprávy" title="Seznam Zprávy" class="service-logo" height="20">
@@ -437,6 +442,7 @@
         .then(function(data) {
             showStatus('Stahování začíná\u2026 (' + (data.size_mb || '?') + ' MB)', false);
             window.location.href = '/api/video/file/' + data.token;
+            setTimeout(loadRecent, 2000);
         })
         .catch(function(err) {
             showStatus('Stažení se nezdařilo: ' + err.message, true);
@@ -513,6 +519,31 @@
             selectedQuality = best.getAttribute('data-quality');
         }
     }
+
+    function loadRecent() {
+        fetch('/api/video/recent')
+            .then(function(r) { return r.json(); })
+            .then(function(files) {
+                var container = document.getElementById('recent-downloads');
+                var list = document.getElementById('recent-list');
+                if (!files || files.length === 0) {
+                    container.style.display = 'none';
+                    return;
+                }
+                list.innerHTML = '';
+                files.forEach(function(f) {
+                    var li = document.createElement('li');
+                    li.style.padding = '0.3rem 0';
+                    li.style.borderBottom = '1px solid var(--color-gray-border)';
+                    li.textContent = f.filename + ' (' + f.size_mb + ' MB, ' + f.created + ')';
+                    list.appendChild(li);
+                });
+                container.style.display = 'block';
+            })
+            .catch(function() {});
+    }
+
+    loadRecent();
 })();
 </script>
 {% endblock %}

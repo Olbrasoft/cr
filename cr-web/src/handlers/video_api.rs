@@ -249,6 +249,87 @@ pub async fn video_file(
         .into_response()
 }
 
+// --- Recent downloads + Cleanup ---
+
+#[derive(Serialize)]
+pub struct RecentFile {
+    filename: String,
+    size_mb: f64,
+    created: String,
+}
+
+#[derive(Serialize)]
+pub struct CleanupResponse {
+    deleted: usize,
+    freed_mb: f64,
+}
+
+pub async fn video_recent(State(state): State<AppState>) -> Json<Vec<RecentFile>> {
+    let downloads = state.video_downloads.lock().await;
+    let mut files = Vec::new();
+
+    let tmp_dir = std::path::PathBuf::from("/tmp/cr-videos");
+    if let Ok(mut entries) = tokio::fs::read_dir(&tmp_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                let filename = downloads
+                    .values()
+                    .find(|p| p.file_path == entry.path())
+                    .map(|p| p.filename.clone())
+                    .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+
+                let size_mb = meta.len() as f64 / (1024.0 * 1024.0);
+                let created = meta
+                    .created()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| {
+                        chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                            .map(|dt| dt.format("%H:%M:%S").to_string())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+
+                files.push(RecentFile {
+                    filename,
+                    size_mb: (size_mb * 10.0).round() / 10.0,
+                    created,
+                });
+            }
+        }
+    }
+
+    Json(files)
+}
+
+pub async fn video_cleanup(State(state): State<AppState>) -> Json<CleanupResponse> {
+    let mut downloads = state.video_downloads.lock().await;
+    downloads.clear();
+
+    let tmp_dir = std::path::PathBuf::from("/tmp/cr-videos");
+    let mut deleted = 0;
+    let mut freed: u64 = 0;
+
+    if let Ok(mut entries) = tokio::fs::read_dir(&tmp_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                freed += meta.len();
+            }
+            if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                deleted += 1;
+            }
+        }
+    }
+
+    let freed_mb = freed as f64 / (1024.0 * 1024.0);
+    tracing::info!("Cleanup: deleted {deleted} files, freed {freed_mb:.1} MB");
+
+    Json(CleanupResponse {
+        deleted,
+        freed_mb: (freed_mb * 10.0).round() / 10.0,
+    })
+}
+
 /// Sanitize yt-dlp error messages into user-friendly Czech text.
 fn sanitize_error(raw: &str) -> String {
     if raw.contains("Sign in to confirm")

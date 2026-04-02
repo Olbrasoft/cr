@@ -89,6 +89,11 @@ async fn main() -> Result<()> {
             "/video/file/{token}",
             axum::routing::get(handlers::video_file),
         )
+        .route("/video/recent", axum::routing::get(handlers::video_recent))
+        .route(
+            "/video/cleanup",
+            axum::routing::delete(handlers::video_cleanup),
+        )
         .layer(cors);
 
     let app = Router::new()
