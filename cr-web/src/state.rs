@@ -7,6 +7,8 @@ use cr_infra::repositories::{
 };
 use sqlx::PgPool;
 
+use crate::handlers::video_api::VideoDownloads;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -23,6 +25,8 @@ pub struct AppState {
     pub landmark_repo: Arc<PgLandmarkRepository>,
     pub pool_repo: Arc<PgPoolRepository>,
     pub photo_repo: Arc<PgPhotoRepository>,
+    /// Prepared video downloads waiting to be served.
+    pub video_downloads: VideoDownloads,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.

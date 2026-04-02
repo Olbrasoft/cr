@@ -13,3 +13,4 @@
 //! - `github` (planned) - GitHub integration (Octocrab)
 
 pub mod repositories;
+pub mod video;
