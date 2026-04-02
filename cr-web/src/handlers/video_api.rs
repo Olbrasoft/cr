@@ -92,11 +92,10 @@ pub async fn video_info(
         .await
         .map_err(|e| {
             tracing::error!("Video extraction failed for {url}: {e}");
+            let msg = sanitize_error(&e.to_string());
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(VideoErrorResponse {
-                    error: format!("Nepodařilo se získat info o videu: {e}"),
-                }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(VideoErrorResponse { error: msg }),
             )
         })?;
 
@@ -243,4 +242,29 @@ pub async fn video_file(
         bytes,
     )
         .into_response()
+}
+
+/// Sanitize yt-dlp error messages into user-friendly Czech text.
+fn sanitize_error(raw: &str) -> String {
+    if raw.contains("Sign in to confirm") || raw.contains("not a bot") {
+        return "Tento server vyžaduje ověření a momentálně není podporován. Zkuste jiný odkaz."
+            .to_string();
+    }
+    if raw.contains("Unsupported URL") {
+        return "Nepodporovaná URL — tento server zatím neumíme zpracovat.".to_string();
+    }
+    if raw.contains("Video unavailable") || raw.contains("not available") {
+        return "Video není dostupné — mohlo být smazáno nebo je omezené.".to_string();
+    }
+    if raw.contains("Private video") {
+        return "Toto video je soukromé a nelze ho stáhnout.".to_string();
+    }
+    if raw.contains("No video found") || raw.contains("could not find SDN") {
+        return "Na této stránce nebylo nalezeno žádné video.".to_string();
+    }
+    if raw.contains("Failed to parse video manifest") {
+        return "Nepodařilo se načíst video — server nevrátil platná data.".to_string();
+    }
+    // Generic fallback — don't expose raw yt-dlp output
+    "Nepodařilo se získat informace o videu. Zkuste jiný odkaz.".to_string()
 }
