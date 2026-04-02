@@ -48,10 +48,10 @@ pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
     format_id: &str,
+    resolution: &str,
     output_path: &std::path::Path,
 ) -> Result<u64> {
     if is_seznam_url(url) {
-        // For Seznam: extract info to get the direct MP4 URL, then download
         let info = seznam_extract_info(client, url).await?;
         let fmt = info
             .formats
@@ -61,7 +61,7 @@ pub async fn download_video(
             .context("No format available")?;
         download_direct(client, &fmt.url, output_path).await
     } else {
-        ytdlp_download(url, format_id, output_path).await
+        ytdlp_download(url, resolution, output_path).await
     }
 }
 
@@ -211,11 +211,37 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
 }
 
 /// Download a video using yt-dlp subprocess.
-async fn ytdlp_download(url: &str, format_id: &str, output_path: &std::path::Path) -> Result<u64> {
+/// Uses format selector that merges video+audio (YouTube serves them separately).
+async fn ytdlp_download(url: &str, resolution: &str, output_path: &std::path::Path) -> Result<u64> {
     let output_str = output_path.to_str().context("Invalid output path")?;
 
+    // YouTube splits video and audio into separate streams.
+    // Use a format selector that downloads both and merges via ffmpeg.
+    // Extract height from resolution (e.g., "1080p" → 1080, "720p" → 720)
+    let height: String = resolution
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+
+    let format_selector = if !height.is_empty() {
+        format!(
+            "bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/best"
+        )
+    } else {
+        "best".to_string()
+    };
+
     let output = ytdlp_command()
-        .args(["-f", format_id, "-o", output_str, "--no-warnings", url])
+        .args([
+            "-f",
+            &format_selector,
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            output_str,
+            "--no-warnings",
+            url,
+        ])
         .output()
         .await
         .context("Failed to run yt-dlp download")?;
