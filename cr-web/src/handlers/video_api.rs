@@ -177,17 +177,18 @@ pub async fn video_prepare(
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
     // Download the video
-    let size = cr_infra::video::download_video(&state.http_client, &format.url, &file_path)
-        .await
-        .map_err(|e| {
-            tracing::error!("Video download failed: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(VideoErrorResponse {
-                    error: format!("Stažení se nezdařilo: {e}"),
-                }),
-            )
-        })?;
+    let size =
+        cr_infra::video::download_video(&state.http_client, &url, &format.format_id, &file_path)
+            .await
+            .map_err(|e| {
+                tracing::error!("Video download failed: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(VideoErrorResponse {
+                        error: format!("Stažení se nezdařilo: {e}"),
+                    }),
+                )
+            })?;
 
     let size_mb = size as f64 / (1024.0 * 1024.0);
 
