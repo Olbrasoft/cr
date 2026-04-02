@@ -10,11 +10,39 @@ Instructions for Claude Code when working in this repository.
 3. Code review addressed
 4. PR merged to main
 5. Deploy to production succeeds
-6. **curl checks (URLs, HTML attributes) + Playwright screenshot (visual confirmation)**
+6. **Playwright end-to-end test against production (see below)**
 
-**Production verification has two steps:** First curl checks (HTTP status, HTML grep). Then Playwright opens the page, takes a screenshot, and you VISUALLY confirm images render, layout is correct, and no elements are broken. Both steps are mandatory — curl alone cannot detect broken images.
+**Production verification — Playwright interactive testing (MANDATORY):**
 
-**NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — you have SEEN a Playwright screenshot confirming the changes work as described in the issue.
+After deploy, you MUST open the production URL in Playwright **from our local PC** and perform a FULL end-to-end test. This is NOT just a screenshot — you must **interact with the page** as a real user would:
+
+- **Static pages** (displaying data): navigate to URL, verify content is visible, take screenshot
+- **Interactive features** (forms, buttons, downloads): fill inputs, click buttons, wait for results, verify the feature actually works end-to-end, take screenshot of the result
+- **API features**: call the API, verify correct JSON response, then test via the UI too
+
+**Example for a video download page:**
+1. Open `https://ceskarepublika.wiki/stahnout-video/` in Playwright
+2. Fill the URL input with a test URL
+3. Click "Načíst info"
+4. Wait for video preview to appear — verify title, thumbnail, duration are shown
+5. Click "Stáhnout"
+6. Verify the download starts (response with Content-Disposition header)
+7. Take screenshot at each step
+8. If ANY step fails → fix, new PR, repeat
+
+**curl checks alone are NOT sufficient.** They only verify the API works. The full user flow through the UI must be tested.
+
+**NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — you have performed a full Playwright interactive test confirming the feature works as described in the issue.
+
+## Playwright Testing Rules
+
+**Playwright runs ONLY from our local PC, NEVER on the server.**
+
+- Playwright + Chromium is installed locally on our development machine
+- Tests run against the production URL (`https://ceskarepublika.wiki`)
+- The Docker image / VPS server MUST NOT contain Playwright, Chromium, or any testing tools
+- Docker image must be minimal — only production binary + static assets + data
+- No Python, no test frameworks, no browsers on the server
 
 **After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
 This is NOT optional. The CronCreate runs the full pipeline autonomously (CI → review → merge → deploy → Playwright verify) without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
