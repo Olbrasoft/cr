@@ -10,6 +10,7 @@ use crate::error::WebResult;
 use crate::state::AppState;
 
 mod audiobooks;
+mod download_video;
 mod geojson;
 mod landmarks;
 mod municipalities;
@@ -19,6 +20,7 @@ mod regions;
 
 // Re-export all public handlers so main.rs doesn't need changes
 pub use audiobooks::audiobooks;
+pub use download_video::download_video;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
@@ -532,6 +534,12 @@ pub(crate) struct AudiobookRow {
 pub(crate) struct AudiobooksTemplate {
     pub(crate) img: String,
     pub(crate) audiobooks: Vec<AudiobookRow>,
+}
+
+#[derive(Template)]
+#[template(path = "download_video.html")]
+pub(crate) struct DownloadVideoTemplate {
+    pub(crate) img: String,
 }
 
 // --- Pool types ---
