@@ -246,8 +246,12 @@ pub async fn video_file(
 
 /// Sanitize yt-dlp error messages into user-friendly Czech text.
 fn sanitize_error(raw: &str) -> String {
-    if raw.contains("Sign in to confirm") || raw.contains("not a bot") {
-        return "Tento server vyžaduje ověření a momentálně není podporován. Zkuste jiný odkaz."
+    if raw.contains("Sign in to confirm")
+        || raw.contains("not a bot")
+        || raw.contains("login required")
+        || raw.contains("rate-limit reached")
+    {
+        return "Tento server vyžaduje přihlášení a momentálně není podporován. Zkuste jiný odkaz."
             .to_string();
     }
     if raw.contains("Unsupported URL") {
