@@ -50,3 +50,4 @@ data/images/
 data/scripts/__pycache__/
 data/npu/*.csv
 data/prototypes/
+data/scripts/
