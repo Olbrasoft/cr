@@ -84,64 +84,6 @@
     background: #ccc;
     cursor: default;
 }
-/* Format toggle switch */
-.format-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-}
-.format-toggle-label {
-    font-size: 0.9rem;
-    font-weight: 500;
-    color: #555;
-}
-.format-toggle-label.active {
-    color: var(--color-black);
-    font-weight: 600;
-}
-.toggle-switch {
-    position: relative;
-    width: 48px;
-    height: 26px;
-    flex-shrink: 0;
-}
-.toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-.toggle-slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: var(--color-red);
-    border-radius: 26px;
-    transition: background 0.3s;
-}
-.toggle-slider::before {
-    content: "";
-    position: absolute;
-    height: 20px;
-    width: 20px;
-    left: 3px;
-    bottom: 3px;
-    background: white;
-    border-radius: 50%;
-    transition: transform 0.3s;
-}
-.toggle-switch input:checked + .toggle-slider {
-    background: var(--color-blue);
-}
-.toggle-switch input:checked + .toggle-slider::before {
-    transform: translateX(22px);
-}
-.toggle-switch input:focus-visible + .toggle-slider {
-    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.3);
-}
 .quality-selector {
     display: none;
     gap: 0.5rem;
@@ -328,27 +270,13 @@
 <div class="download-form-card">
     <div class="url-input-group">
         <label for="video-url" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">URL videa</label>
-        <input type="url" inputmode="url" class="url-input" id="video-url"
+        <input type="url" inputmode="url" class="url-input" id="video-url" name="url"
                placeholder="https://www.seznamzpravy.cz/clanek/&hellip;"
                autocomplete="off" spellcheck="false">
         <button class="btn-primary" id="btn-fetch-info">Načíst info</button>
     </div>
 
-    <div class="format-toggle">
-        <span class="format-toggle-label active" id="label-video">Video</span>
-        <label class="toggle-switch">
-            <input type="checkbox" id="format-toggle" aria-label="Přepnout mezi Video a Audio">
-            <span class="toggle-slider"></span>
-        </label>
-        <span class="format-toggle-label" id="label-audio">Audio (MP3)</span>
-    </div>
-
-    <div class="quality-selector visible" id="quality-selector">
-        <button class="quality-btn active" data-quality="best">Nejlepší</button>
-        <button class="quality-btn" data-quality="480p">480p</button>
-        <button class="quality-btn" data-quality="360p">360p</button>
-        <button class="quality-btn" data-quality="240p">240p</button>
-        <button class="quality-btn" data-quality="144p">144p</button>
+    <div class="quality-selector" id="quality-selector">
     </div>
 
     <div class="video-preview" id="video-preview">
@@ -413,31 +341,8 @@
     var statusEl = document.getElementById('status-message');
     var actionsEl = document.getElementById('download-actions');
     var qualityEl = document.getElementById('quality-selector');
-    var formatToggle = document.getElementById('format-toggle');
-    var labelVideo = document.getElementById('label-video');
-    var labelAudio = document.getElementById('label-audio');
     var selectedFormat = 'video';
     var selectedQuality = 'best';
-
-    // Format toggle switch — audio not yet supported by backend
-    formatToggle.disabled = true;
-    formatToggle.title = 'Stažení audia zatím není podporováno.';
-    formatToggle.addEventListener('change', function() {
-        selectedFormat = 'video';
-        formatToggle.checked = false;
-        labelVideo.classList.add('active');
-        labelAudio.classList.remove('active');
-        qualityEl.classList.add('visible');
-    });
-
-    // Quality toggle
-    document.querySelectorAll('.quality-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
-            btn.classList.add('active');
-            selectedQuality = btn.getAttribute('data-quality');
-        });
-    });
 
     // Fetch info
     btnFetch.addEventListener('click', function() {
@@ -579,6 +484,9 @@
             });
             container.appendChild(btn);
         });
+
+        // Show the quality selector now that we have formats
+        container.classList.add('visible');
 
         // Select the best quality by default (last = highest)
         var buttons = container.querySelectorAll('.quality-btn');
