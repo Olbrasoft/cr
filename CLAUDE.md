@@ -32,6 +32,18 @@ After deploy, you MUST open the production URL in Playwright **from our local PC
 
 **curl checks alone are NOT sufficient.** They only verify the API works. The full user flow through the UI must be tested.
 
+**Console errors check (MANDATORY):**
+Every Playwright test MUST also capture and verify browser console. There must be ZERO errors, warnings, or DevTools issues on page load and during interaction. Use Playwright's `page.on('console')` and `page.on('pageerror')` to capture all messages. If any console error is found, the test FAILS — fix before marking done.
+
+**ALL UI elements MUST be tested (MANDATORY):**
+Before marking any UI change as done, EVERY visible element on the page must be tested:
+- Every button must be clicked and its effect verified
+- Every toggle/switch must be toggled and both states verified
+- Every input must be filled and its validation tested
+- Every link must be verified (href, target, opens correctly)
+- Disabled elements must be verified as intentionally disabled with proper UX (or hidden)
+- If a control doesn't work or is not needed → it must NOT be shown on the page
+
 **NEVER say "Issue done" or "Hotovo" after just creating a PR.** That is only ~20% of the work. The issue is complete only after step 6 — you have performed a full Playwright interactive test confirming the feature works as described in the issue.
 
 ## Playwright Testing Rules
