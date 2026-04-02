@@ -126,6 +126,12 @@ fn ytdlp_command() -> tokio::process::Command {
             cmd.arg("--proxy").arg(proxy);
         }
     }
+    if let Ok(cookies) = std::env::var("YTDLP_COOKIES") {
+        let cookies = cookies.trim();
+        if !cookies.is_empty() {
+            cmd.arg("--cookies").arg(cookies);
+        }
+    }
     cmd
 }
 

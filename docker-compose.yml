@@ -23,6 +23,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       RUST_LOG: info
       STATIC_DIR: /app/static
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+      YTDLP_COOKIES: ${YTDLP_COOKIES:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
