@@ -211,11 +211,37 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
 }
 
 /// Download a video using yt-dlp subprocess.
+/// Uses format selector that merges video+audio (YouTube serves them separately).
 async fn ytdlp_download(url: &str, format_id: &str, output_path: &std::path::Path) -> Result<u64> {
     let output_str = output_path.to_str().context("Invalid output path")?;
 
+    // YouTube splits video and audio into separate streams.
+    // Use a format selector that downloads both and merges via ffmpeg.
+    // Extract height from format_id (e.g., "1080p-mp4" → 1080, "480p" → 480)
+    let height = format_id
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+
+    let format_selector = if !height.is_empty() {
+        format!(
+            "bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/best"
+        )
+    } else {
+        format_id.to_string()
+    };
+
     let output = ytdlp_command()
-        .args(["-f", format_id, "-o", output_str, "--no-warnings", url])
+        .args([
+            "-f",
+            &format_selector,
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            output_str,
+            "--no-warnings",
+            url,
+        ])
         .output()
         .await
         .context("Failed to run yt-dlp download")?;
