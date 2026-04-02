@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Red rounded square background -->
+  <rect width="200" height="200" rx="32" fill="#D7141A"/>
+
+  <!-- Inner arc - full closed circle -->
+  <circle cx="100" cy="100" r="52" fill="none" stroke="#FFF" stroke-width="5.5"/>
+
+  <!-- Outer arc r=70, wider gap with red space around arrow -->
+  <path d="M 132.8 161.8 A 70 70 0 1 1 169.3 109.7"
+        fill="none" stroke="#FFF" stroke-width="6.5" stroke-linecap="round"/>
+
+  <!-- White center circle -->
+  <circle cx="100" cy="100" r="38" fill="#FFF"/>
+
+  <!-- Blue play triangle (larger) -->
+  <polygon points="84,79 84,121 122,100" fill="#11457E"/>
+
+  <!-- White down arrow (shifted more right and down) -->
+  <path d="M 157,130 L 157,148 L 145,148 L 164,176 L 183,148 L 171,148 L 171,130 Z" fill="#FFF"/>
+</svg>

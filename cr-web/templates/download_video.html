@@ -7,7 +7,8 @@
 {% block header_left %}
 <div class="logo-group">
     <a href="/stahnout-video/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
-        <span style="font-size:2rem;line-height:1;">&#9655;</span>
+        <img src="/static/img/logo-stahnout-video.svg"
+            alt="Logo Stáhnout video" title="Stáhnout video" class="header-emblem">
         <h1>Stáhnout video</h1>
     </a>
 </div>
@@ -26,7 +27,7 @@
 .download-hero h2 {
     font-size: 2rem;
     font-weight: 800;
-    color: var(--color-blue);
+    color: var(--color-black);
 }
 .download-hero p {
     color: #555;
@@ -50,7 +51,7 @@
     flex: 1;
     padding: 0.85rem 1rem;
     border: 2px solid var(--color-gray-border);
-    border-radius: 8px;
+    border-radius: 24px;
     font-size: 1rem;
     font-family: 'Inter', sans-serif;
     transition: border-color 0.2s;
@@ -58,15 +59,16 @@
 .url-input:focus {
     outline: none;
     border-color: var(--color-blue);
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
 }
 .url-input::placeholder {
     color: #aaa;
 }
 .btn-primary {
-    background: var(--color-blue);
+    background: var(--color-red);
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 24px;
     padding: 0.85rem 1.5rem;
     font-size: 1rem;
     font-weight: 600;
@@ -76,37 +78,69 @@
     white-space: nowrap;
 }
 .btn-primary:hover {
-    background: #0d3a6a;
+    background: #b5141a;
 }
 .btn-primary:disabled {
     background: #ccc;
     cursor: default;
 }
+/* Format toggle switch */
 .format-toggle {
     display: flex;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 0.75rem;
     margin-bottom: 1.25rem;
 }
-.format-btn {
-    padding: 0.55rem 1.2rem;
-    border: 2px solid var(--color-gray-border);
-    border-radius: 8px;
-    background: white;
+.format-toggle-label {
     font-size: 0.9rem;
-    font-weight: 600;
-    font-family: 'Inter', sans-serif;
-    cursor: pointer;
-    transition: all 0.15s;
+    font-weight: 500;
     color: #555;
 }
-.format-btn.active {
-    border-color: var(--color-blue);
-    background: var(--color-blue);
-    color: white;
+.format-toggle-label.active {
+    color: var(--color-black);
+    font-weight: 600;
 }
-.format-btn:hover:not(.active) {
-    border-color: var(--color-blue);
-    color: var(--color-blue);
+.toggle-switch {
+    position: relative;
+    width: 48px;
+    height: 26px;
+    flex-shrink: 0;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--color-red);
+    border-radius: 26px;
+    transition: background 0.3s;
+}
+.toggle-slider::before {
+    content: "";
+    position: absolute;
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.3s;
+}
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--color-blue);
+}
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(22px);
+}
+.toggle-switch input:focus-visible + .toggle-slider {
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.3);
 }
 .quality-selector {
     display: none;
@@ -120,13 +154,13 @@
 .quality-btn {
     padding: 0.4rem 0.9rem;
     border: 2px solid var(--color-gray-border);
-    border-radius: 6px;
+    border-radius: 20px;
     background: white;
     font-size: 0.85rem;
     font-weight: 500;
     font-family: 'Inter', sans-serif;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
     color: #555;
 }
 .quality-btn.active {
@@ -223,7 +257,7 @@
     background: var(--color-red);
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 24px;
     padding: 0.85rem 2.5rem;
     font-size: 1.05rem;
     font-weight: 700;
@@ -238,27 +272,37 @@
     background: #ccc;
     cursor: default;
 }
-/* Supported sites */
-.supported-sites {
+/* Supported services */
+.supported-services {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 1.25rem;
     justify-content: center;
+    align-items: center;
     padding: 1rem 0 2rem;
 }
-.site-tag {
-    padding: 0.35rem 0.75rem;
-    background: #f1f5f9;
-    border: 1px solid var(--color-gray-border);
-    border-radius: 20px;
-    font-size: 0.82rem;
+.service-link {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    text-decoration: none;
     color: #555;
+    font-size: 0.85rem;
     font-weight: 500;
+    opacity: 0.7;
+    transition: opacity 0.15s;
 }
-.site-tag.highlight {
-    background: var(--color-blue);
-    border-color: var(--color-blue);
-    color: white;
+.service-link:hover {
+    opacity: 1;
+}
+.service-link.supported {
+    opacity: 1;
+    font-weight: 600;
+    color: var(--color-black);
+}
+.service-logo {
+    height: 20px;
+    width: auto;
 }
 @media (max-width: 600px) {
     .url-input-group { flex-direction: column; }
@@ -283,18 +327,23 @@
 
 <div class="download-form-card">
     <div class="url-input-group">
-        <input type="text" class="url-input" id="video-url"
-               placeholder="https://www.seznamzpravy.cz/clanek/..."
-               autocomplete="off" spellcheck="false">
+        <label for="video-url" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">URL videa</label>
+        <input type="url" inputmode="url" class="url-input" id="video-url"
+               placeholder="https://www.seznamzpravy.cz/clanek/&hellip;"
+               autocomplete="off" spellcheck="false" aria-label="URL videa">
         <button class="btn-primary" id="btn-fetch-info">Načíst info</button>
     </div>
 
     <div class="format-toggle">
-        <button class="format-btn active" data-format="video">Video</button>
-        <button class="format-btn" data-format="audio">Audio (MP3)</button>
+        <span class="format-toggle-label active" id="label-video">Video</span>
+        <label class="toggle-switch">
+            <input type="checkbox" id="format-toggle" aria-label="Přepnout mezi Video a Audio">
+            <span class="toggle-slider"></span>
+        </label>
+        <span class="format-toggle-label" id="label-audio">Audio (MP3)</span>
     </div>
 
-    <div class="quality-selector" id="quality-selector">
+    <div class="quality-selector visible" id="quality-selector">
         <button class="quality-btn active" data-quality="best">Nejlepší</button>
         <button class="quality-btn" data-quality="480p">480p</button>
         <button class="quality-btn" data-quality="360p">360p</button>
@@ -303,7 +352,7 @@
     </div>
 
     <div class="video-preview" id="video-preview">
-        <img class="preview-thumb" id="preview-thumb" src="" alt="">
+        <img class="preview-thumb" id="preview-thumb" src="" alt="" width="200" height="112">
         <div class="preview-info">
             <h3 id="preview-title"></h3>
             <div class="preview-meta">
@@ -320,18 +369,34 @@
     </div>
 </div>
 
-<div class="supported-sites">
-    <span class="site-tag highlight">Seznam Zprávy</span>
-    <span class="site-tag highlight">Stream.cz</span>
-    <span class="site-tag highlight">Novinky.cz</span>
-    <span class="site-tag">YouTube</span>
-    <span class="site-tag">TikTok</span>
-    <span class="site-tag">Instagram</span>
-    <span class="site-tag">Facebook</span>
-    <span class="site-tag">Reddit</span>
-    <span class="site-tag">Vimeo</span>
-    <span class="site-tag">Twitch</span>
-    <span class="site-tag">a 1000+ dalších</span>
+<div class="supported-services">
+    <a href="https://www.seznamzpravy.cz" target="_blank" rel="nofollow" class="service-link supported">
+        <img src="/static/img/services/seznam-zpravy.svg" alt="Seznam Zprávy" title="Seznam Zprávy" class="service-logo" height="20">
+    </a>
+    <a href="https://www.novinky.cz" target="_blank" rel="nofollow" class="service-link supported">
+        <img src="/static/img/services/novinky-cz.svg" alt="Novinky.cz" title="Novinky.cz" class="service-logo" height="20">
+    </a>
+    <a href="https://www.youtube.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/youtube.svg" alt="YouTube" title="YouTube" class="service-logo" height="20">
+    </a>
+    <a href="https://www.tiktok.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/tiktok.svg" alt="TikTok" title="TikTok" class="service-logo" height="20">
+    </a>
+    <a href="https://www.instagram.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/instagram.svg" alt="Instagram" title="Instagram" class="service-logo" height="20">
+    </a>
+    <a href="https://www.facebook.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/facebook.svg" alt="Facebook" title="Facebook" class="service-logo" height="20">
+    </a>
+    <a href="https://www.reddit.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/reddit.svg" alt="Reddit" title="Reddit" class="service-logo" height="20">
+    </a>
+    <a href="https://www.vimeo.com" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/vimeo.svg" alt="Vimeo" title="Vimeo" class="service-logo" height="20">
+    </a>
+    <a href="https://www.twitch.tv" target="_blank" rel="nofollow" class="service-link">
+        <img src="/static/img/services/twitch.svg" alt="Twitch" title="Twitch" class="service-logo" height="20">
+    </a>
 </div>
 {% endblock %}
 
@@ -345,21 +410,25 @@
     var statusEl = document.getElementById('status-message');
     var actionsEl = document.getElementById('download-actions');
     var qualityEl = document.getElementById('quality-selector');
+    var formatToggle = document.getElementById('format-toggle');
+    var labelVideo = document.getElementById('label-video');
+    var labelAudio = document.getElementById('label-audio');
     var selectedFormat = 'video';
     var selectedQuality = 'best';
 
-    // Format toggle
-    document.querySelectorAll('.format-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            document.querySelectorAll('.format-btn').forEach(function(b) { b.classList.remove('active'); });
-            btn.classList.add('active');
-            selectedFormat = btn.getAttribute('data-format');
-            if (selectedFormat === 'video') {
-                qualityEl.classList.add('visible');
-            } else {
-                qualityEl.classList.remove('visible');
-            }
-        });
+    // Format toggle switch
+    formatToggle.addEventListener('change', function() {
+        if (formatToggle.checked) {
+            selectedFormat = 'audio';
+            labelVideo.classList.remove('active');
+            labelAudio.classList.add('active');
+            qualityEl.classList.remove('visible');
+        } else {
+            selectedFormat = 'video';
+            labelVideo.classList.add('active');
+            labelAudio.classList.remove('active');
+            qualityEl.classList.add('visible');
+        }
     });
 
     // Quality toggle
@@ -370,9 +439,6 @@
             selectedQuality = btn.getAttribute('data-quality');
         });
     });
-
-    // Show quality selector by default for video
-    qualityEl.classList.add('visible');
 
     // Fetch info
     btnFetch.addEventListener('click', function() {
@@ -386,7 +452,7 @@
             urlInput.value = url;
         }
 
-        showStatus('<span class="spinner"></span> Načítám informace o videu…', false);
+        showStatus('<span class="spinner"></span> Načítám informace o videu\u2026', false);
         previewEl.classList.remove('visible');
         actionsEl.classList.remove('visible');
         btnFetch.disabled = true;
@@ -431,7 +497,7 @@
         var url = urlInput.value.trim();
         if (!url) return;
 
-        showStatus('<span class="spinner"></span> Připravuji stažení…', false);
+        showStatus('<span class="spinner"></span> Připravuji stažení\u2026', false);
         btnDownload.disabled = true;
 
         fetch('/api/video/prepare', {
@@ -448,7 +514,7 @@
             return r.json();
         })
         .then(function(data) {
-            showStatus('Stahování začíná… (' + (data.size_mb || '?') + ' MB)', false);
+            showStatus('Stahování začíná\u2026 (' + (data.size_mb || '?') + ' MB)', false);
             window.location.href = '/api/video/file/' + data.token;
         })
         .catch(function(err) {
