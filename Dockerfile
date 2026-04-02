@@ -37,7 +37,10 @@ RUN cargo build --release -p cr-web && \
 # Stage 2: Runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip ffmpeg && \
+    pip install --no-cache-dir --break-system-packages yt-dlp && \
+    apt-get purge -y python3-pip && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -r -s /bin/false appuser
 

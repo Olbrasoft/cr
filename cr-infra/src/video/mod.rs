@@ -24,6 +24,186 @@ pub struct VideoFormat {
 // Consent cookie value for bypassing Seznam CMP consent wall
 const CONSENT_COOKIE: &str = "euconsent-v2=CPzqWAAPzqWAAAGABCCSC5CgAP_gAEPgACiQKZNB9G7WTXFneXp2YPskOYUX0VBJ4CUAAwgBwAIAIBoBKBECAAAAAKAAEIIAAAABBAAICIAAgBIBAAMBAgMNAEAMgAYCASgBIAKIEACEAAOECAAAJAgCBDAQIJCgBMATEACAAJAQEBBQBUCgAAAACAAAAAmAUYmAgAILAAiKAGAAQAAoACAAAABIAAAAAIgAAAAYAAAAYiAAAAAAAAAAAAAABAAAAAAAAAAAAgAAAAAQAAAIAAAAAAAIAAAAAAAAAAAAAAAAIAGAgAAAAABDQAEBAAIABgIAAAAAAAAAAAAAAAAAAAAAABAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAIAIAAAAAIAAAAYgAAAAAAAAAAAAAAEAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQ";
 
+/// Domains handled by our own Rust extractor (Seznam ecosystem).
+const SEZNAM_DOMAINS: &[&str] = &["novinky.cz", "seznamzpravy.cz"];
+
+/// Check if a URL is handled by our own Seznam extractor.
+fn is_seznam_url(url: &str) -> bool {
+    SEZNAM_DOMAINS.iter().any(|d| url.contains(d))
+}
+
+// ─── Public API ─────────────────────────────────────────────────────
+
+/// Extract video info. Tries our Seznam extractor first, falls back to yt-dlp.
+pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
+    if is_seznam_url(url) {
+        seznam_extract_info(client, url).await
+    } else {
+        ytdlp_extract_info(url).await
+    }
+}
+
+/// Download a video file. Uses direct HTTP for Seznam, yt-dlp for others.
+pub async fn download_video(
+    client: &reqwest::Client,
+    url: &str,
+    format_id: &str,
+    output_path: &std::path::Path,
+) -> Result<u64> {
+    if is_seznam_url(url) {
+        // For Seznam: extract info to get the direct MP4 URL, then download
+        let info = seznam_extract_info(client, url).await?;
+        let fmt = info
+            .formats
+            .iter()
+            .find(|f| f.format_id == format_id)
+            .or(info.formats.last())
+            .context("No format available")?;
+        download_direct(client, &fmt.url, output_path).await
+    } else {
+        ytdlp_download(url, format_id, output_path).await
+    }
+}
+
+/// Extract audio from a downloaded video file using yt-dlp + ffmpeg.
+pub async fn extract_audio(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+) -> Result<u64> {
+    let input_str = input_path.to_str().context("Invalid input path")?;
+    let output_str = output_path.to_str().context("Invalid output path")?;
+
+    let output = tokio::process::Command::new("yt-dlp")
+        .args(["-x", "--audio-format", "mp3", "-o", output_str, input_str])
+        .output()
+        .await
+        .context("Failed to run yt-dlp for audio extraction")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Audio extraction failed: {stderr}");
+    }
+
+    let metadata = tokio::fs::metadata(output_str)
+        .await
+        .context("Audio output file not found")?;
+    Ok(metadata.len())
+}
+
+// ─── yt-dlp subprocess ──────────────────────────────────────────────
+
+/// yt-dlp JSON output structure (subset of fields we need).
+#[derive(Deserialize)]
+struct YtDlpInfo {
+    title: Option<String>,
+    thumbnail: Option<String>,
+    duration: Option<f64>,
+    uploader: Option<String>,
+    formats: Option<Vec<YtDlpFormat>>,
+    url: Option<String>,
+    ext: Option<String>,
+    height: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct YtDlpFormat {
+    format_id: Option<String>,
+    ext: Option<String>,
+    url: Option<String>,
+    height: Option<u32>,
+    filesize: Option<u64>,
+    filesize_approx: Option<u64>,
+    #[serde(default)]
+    vcodec: Option<String>,
+}
+
+/// Extract video info using yt-dlp subprocess.
+async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
+    let output = tokio::process::Command::new("yt-dlp")
+        .args(["--dump-json", "--no-download", "--no-warnings", url])
+        .output()
+        .await
+        .context("Failed to run yt-dlp — is it installed?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("yt-dlp failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let raw: YtDlpInfo =
+        serde_json::from_str(&stdout).context("Failed to parse yt-dlp JSON output")?;
+
+    let formats = if let Some(fmts) = &raw.formats {
+        fmts.iter()
+            .filter(|f| {
+                f.url.is_some()
+                    && f.height.is_some()
+                    && f.vcodec.as_deref() != Some("none")
+                    && f.ext.as_deref() == Some("mp4")
+            })
+            .map(|f| {
+                let height = f.height.unwrap_or(0);
+                VideoFormat {
+                    format_id: f.format_id.clone().unwrap_or_default(),
+                    resolution: format!("{height}p"),
+                    ext: f.ext.clone().unwrap_or_else(|| "mp4".to_string()),
+                    url: f.url.clone().unwrap_or_default(),
+                    filesize_approx: f.filesize.or(f.filesize_approx),
+                }
+            })
+            .collect()
+    } else if let Some(url) = &raw.url {
+        vec![VideoFormat {
+            format_id: "default".to_string(),
+            resolution: raw
+                .height
+                .map(|h| format!("{h}p"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            ext: raw.ext.clone().unwrap_or_else(|| "mp4".to_string()),
+            url: url.clone(),
+            filesize_approx: None,
+        }]
+    } else {
+        Vec::new()
+    };
+
+    if formats.is_empty() {
+        anyhow::bail!("No downloadable video formats found");
+    }
+
+    Ok(VideoInfo {
+        title: raw.title.unwrap_or_else(|| "Untitled".to_string()),
+        thumbnail: raw.thumbnail,
+        duration: raw.duration,
+        uploader: raw.uploader,
+        formats,
+    })
+}
+
+/// Download a video using yt-dlp subprocess.
+async fn ytdlp_download(url: &str, format_id: &str, output_path: &std::path::Path) -> Result<u64> {
+    let output_str = output_path.to_str().context("Invalid output path")?;
+
+    let output = tokio::process::Command::new("yt-dlp")
+        .args(["-f", format_id, "-o", output_str, "--no-warnings", url])
+        .output()
+        .await
+        .context("Failed to run yt-dlp download")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("yt-dlp download failed: {stderr}");
+    }
+
+    let metadata = tokio::fs::metadata(output_str)
+        .await
+        .context("Downloaded file not found")?;
+    Ok(metadata.len())
+}
+
+// ─── Seznam Rust extractor ──────────────────────────────────────────
+
 /// SDN manifest response structure.
 #[derive(Deserialize)]
 struct SdnManifest {
@@ -45,15 +225,8 @@ struct SdnMp4Format {
     duration: Option<u64>,
 }
 
-/// Extract video info from a Seznam ecosystem URL (Novinky.cz, Seznam Zprávy).
-///
-/// Algorithm:
-/// 1. Fetch page HTML with consent cookie
-/// 2. Extract SDN video URL from embedded JSON: `"sdn":"https://...vmd/..."`
-/// 3. Append `spl2,2,VOD` to get JSON manifest
-/// 4. Parse MP4 format URLs from manifest
-pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
-    // Step 1: Fetch the page with consent cookies
+/// Extract video info from Seznam ecosystem (Novinky.cz, Seznam Zprávy).
+async fn seznam_extract_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
     let html = client
         .get(url)
         .header(
@@ -68,17 +241,14 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
         .await
         .context("Failed to read page body")?;
 
-    // Step 2: Extract SDN video URL from page
     let sdn_url = extract_sdn_url(&html)
         .context("No video found on this page — could not find SDN video URL")?;
 
-    // Extract title from page
     let title = extract_title(&html);
     let thumbnail = extract_thumbnail(&html);
     let duration = extract_duration(&html);
     let uploader = extract_domain(url);
 
-    // Step 3: Fetch SDN manifest (append spl2,2,VOD)
     let manifest_url = format!("{sdn_url}spl2,2,VOD");
     let manifest: SdnManifest = client
         .get(&manifest_url)
@@ -90,7 +260,6 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
         .await
         .context("Failed to parse video manifest JSON")?;
 
-    // Step 4: Build absolute MP4 URLs from relative paths
     let base_url = sdn_url
         .rfind("/vmd")
         .map(|i| &sdn_url[..i])
@@ -102,11 +271,9 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
         .iter()
         .map(|(quality, fmt): (&String, &SdnMp4Format)| {
             let relative = &fmt.url;
-            // Relative path starts with "../" — resolve against base
             let absolute = if let Some(stripped) = relative.strip_prefix("../") {
                 format!("{base_url}/{stripped}")
             } else if relative.starts_with('/') {
-                // Extract host from sdn_url
                 let host = sdn_url
                     .find("//")
                     .and_then(|i| sdn_url[i + 2..].find('/').map(|j| &sdn_url[..i + 2 + j]))
@@ -122,7 +289,6 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
                 ext: "mp4".to_string(),
                 url: absolute,
                 filesize_approx: fmt.bandwidth.map(|bw| {
-                    // Estimate: bandwidth (bps) * duration (ms) / 8 / 1000
                     let dur_ms = fmt.duration.unwrap_or(0);
                     bw * dur_ms / 8 / 1000
                 }),
@@ -130,7 +296,6 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
         })
         .collect();
 
-    // Sort by resolution (numeric part)
     formats.sort_by_key(|f| {
         f.resolution
             .trim_end_matches('p')
@@ -151,8 +316,8 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
     })
 }
 
-/// Download a video file to a specified path.
-pub async fn download_video(
+/// Download a file directly via HTTP.
+async fn download_direct(
     client: &reqwest::Client,
     video_url: &str,
     output_path: &std::path::Path,
@@ -181,9 +346,9 @@ pub async fn download_video(
     Ok(size)
 }
 
-/// Extract the first SDN video URL from page HTML.
+// ─── Helper functions ───────────────────────────────────────────────
+
 fn extract_sdn_url(html: &str) -> Option<String> {
-    // Pattern: "sdn":"https://...vmd/..."
     let marker = "\"sdn\":\"";
     let start = html.find(marker)? + marker.len();
     let end = html[start..].find('"')? + start;
@@ -196,19 +361,9 @@ fn extract_sdn_url(html: &str) -> Option<String> {
     }
 }
 
-/// Strip SEC1 token prefix from SDN URL.
-///
-/// Some videos have geo-restricted SEC1 tokens (e.g. `~geo-cz~`) that block
-/// access from non-Czech IPs. The SDN manifest and MP4 files work without
-/// the SEC1 prefix, so we strip it to avoid geo-restriction issues.
-///
-/// Before: `https://v39-a.sdn.cz/~SEC1~expire-...~scope-video~.../v_39/vmd/...`
-/// After:  `https://v39-a.sdn.cz/v_39/vmd/...`
 fn strip_sec1_prefix(url: &str) -> String {
     if let Some(sec1_start) = url.find("/~SEC1~") {
-        // Find the end of SEC1 token (next path segment after the token)
-        // Pattern: /~SEC1~...~.../rest_of_path
-        let after_sec1 = &url[sec1_start + 1..]; // skip the leading /
+        let after_sec1 = &url[sec1_start + 1..];
         if let Some(slash_pos) = after_sec1.find('/') {
             let host = &url[..sec1_start];
             let path = &after_sec1[slash_pos..];
@@ -218,29 +373,23 @@ fn strip_sec1_prefix(url: &str) -> String {
     url.to_string()
 }
 
-/// Extract page title.
 fn extract_title(html: &str) -> String {
-    // Try "captionTitle":"..." first (Seznam Zprávy)
     if let Some(title) = extract_json_string(html, "captionTitle")
         && !title.is_empty()
     {
         return title;
     }
-    // Try <title> tag
     if let Some(start) = html.find("<title>") {
         let s = start + 7;
         if let Some(end) = html[s..].find("</title>") {
             let title = &html[s..s + end];
-            // Remove " | Novinky.cz" etc.
             return title.split('|').next().unwrap_or(title).trim().to_string();
         }
     }
     "Untitled".to_string()
 }
 
-/// Extract thumbnail URL from JSON-LD or og:image.
 fn extract_thumbnail(html: &str) -> Option<String> {
-    // Try "thumbnailUrl":"..."
     if let Some(thumb) = extract_json_string(html, "thumbnailUrl") {
         let url = if thumb.starts_with("//") {
             format!("https:{thumb}")
@@ -249,7 +398,6 @@ fn extract_thumbnail(html: &str) -> Option<String> {
         };
         return Some(url);
     }
-    // Try og:image
     let marker = "property=\"og:image\" content=\"";
     if let Some(start) = html.find(marker) {
         let s = start + marker.len();
@@ -260,9 +408,7 @@ fn extract_thumbnail(html: &str) -> Option<String> {
     None
 }
 
-/// Extract video duration from embedded data.
 fn extract_duration(html: &str) -> Option<f64> {
-    // Try "durationS":NNN
     let marker = "\"durationS\":";
     let start = html.find(marker)? + marker.len();
     let end = html[start..]
@@ -271,7 +417,6 @@ fn extract_duration(html: &str) -> Option<f64> {
     html[start..start + end].parse::<f64>().ok()
 }
 
-/// Extract domain from URL.
 fn extract_domain(url: &str) -> String {
     url.split("//")
         .nth(1)
@@ -281,13 +426,11 @@ fn extract_domain(url: &str) -> String {
         .to_string()
 }
 
-/// Extract a JSON string value by key from HTML.
 fn extract_json_string(html: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{key}\":\"");
     let start = html.find(&pattern)? + pattern.len();
     let end = html[start..].find('"')? + start;
     let value = html[start..end].to_string();
-    // Unescape basic JSON escapes
     let value = value
         .replace("\\\"", "\"")
         .replace("\\/", "/")
