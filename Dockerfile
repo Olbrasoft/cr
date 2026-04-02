@@ -37,20 +37,9 @@ RUN cargo build --release -p cr-web && \
 # Stage 2: Runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && \
-    apt-get install -y ca-certificates python3 python3-pip python3-venv && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -r -s /bin/false appuser
-
-# Install Playwright in a venv (avoids PEP 668 externally-managed error)
-# Set PLAYWRIGHT_BROWSERS_PATH so browsers are installed in a shared location
-# accessible by appuser (not in /root/.cache which is inaccessible)
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN python3 -m venv /opt/playwright-venv && \
-    /opt/playwright-venv/bin/pip install --no-cache-dir playwright requests && \
-    /opt/playwright-venv/bin/playwright install --with-deps chromium && \
-    chmod -R o+rx /opt/pw-browsers
-ENV PATH="/opt/playwright-venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -62,7 +51,6 @@ COPY --from=builder /app/target/release/import-csv /app/import-csv
 COPY cr-web/static /app/static
 COPY cr-web/templates /app/templates
 COPY data/ /app/data/
-COPY scripts/ /app/scripts/
 
 ENV STATIC_DIR=/app/static
 ENV RUST_LOG=info
