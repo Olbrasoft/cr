@@ -495,7 +495,29 @@
     }
 
     function updateQualityButtons(formats) {
-        // Future: dynamically populate quality options from API response
+        var container = document.getElementById('quality-selector');
+        container.innerHTML = '';
+
+        formats.forEach(function(fmt) {
+            var btn = document.createElement('button');
+            btn.className = 'quality-btn';
+            btn.setAttribute('data-quality', fmt.format_id);
+            btn.textContent = fmt.resolution;
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                selectedQuality = fmt.format_id;
+            });
+            container.appendChild(btn);
+        });
+
+        // Select the best quality by default (last = highest)
+        var buttons = container.querySelectorAll('.quality-btn');
+        if (buttons.length > 0) {
+            var best = buttons[buttons.length - 1];
+            best.classList.add('active');
+            selectedQuality = best.getAttribute('data-quality');
+        }
     }
 })();
 </script>
