@@ -37,8 +37,16 @@ RUN cargo build --release -p cr-web && \
 # Stage 2: Runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && \
+    apt-get install -y ca-certificates python3 python3-pip python3-venv && \
+    rm -rf /var/lib/apt/lists/* && \
     useradd -r -s /bin/false appuser
+
+# Install Playwright in a venv (avoids PEP 668 externally-managed error)
+RUN python3 -m venv /opt/playwright-venv && \
+    /opt/playwright-venv/bin/pip install --no-cache-dir playwright requests && \
+    /opt/playwright-venv/bin/playwright install --with-deps chromium
+ENV PATH="/opt/playwright-venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -50,9 +58,13 @@ COPY --from=builder /app/target/release/import-csv /app/import-csv
 COPY cr-web/static /app/static
 COPY cr-web/templates /app/templates
 COPY data/ /app/data/
+COPY scripts/ /app/scripts/
 
 ENV STATIC_DIR=/app/static
 ENV RUST_LOG=info
+
+# Create temp video directory
+RUN mkdir -p /tmp/cr-videos && chown appuser:appuser /tmp/cr-videos
 
 USER appuser
 

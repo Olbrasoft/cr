@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
         geojson_index: Arc::new(geojson_index),
         image_base_url,
         http_client: reqwest::Client::new(),
+        video_downloads: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // API routes with CORS
@@ -79,6 +80,15 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::geojson_orp),
         )
         .route("/landmarks", axum::routing::get(handlers::api_landmarks))
+        .route("/video/info", axum::routing::post(handlers::video_info))
+        .route(
+            "/video/prepare",
+            axum::routing::post(handlers::video_prepare),
+        )
+        .route(
+            "/video/file/{token}",
+            axum::routing::get(handlers::video_file),
+        )
         .layer(cors);
 
     let app = Router::new()

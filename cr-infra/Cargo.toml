@@ -13,10 +13,13 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 csv = { workspace = true }
 tracing = { workspace = true }
 dotenvy = { workspace = true }
 tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+scraper = { workspace = true }
 
 [[bin]]
 name = "import-csv"
