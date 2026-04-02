@@ -73,7 +73,7 @@ pub async fn extract_audio(
     let input_str = input_path.to_str().context("Invalid input path")?;
     let output_str = output_path.to_str().context("Invalid output path")?;
 
-    let output = tokio::process::Command::new("yt-dlp")
+    let output = ytdlp_command()
         .args(["-x", "--audio-format", "mp3", "-o", output_str, input_str])
         .output()
         .await
@@ -117,9 +117,21 @@ struct YtDlpFormat {
     vcodec: Option<String>,
 }
 
+/// Build yt-dlp command with optional proxy from YTDLP_PROXY env var.
+fn ytdlp_command() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("yt-dlp");
+    if let Ok(proxy) = std::env::var("YTDLP_PROXY") {
+        let proxy = proxy.trim();
+        if !proxy.is_empty() {
+            cmd.arg("--proxy").arg(proxy);
+        }
+    }
+    cmd
+}
+
 /// Extract video info using yt-dlp subprocess.
 async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
-    let output = tokio::process::Command::new("yt-dlp")
+    let output = ytdlp_command()
         .args(["--dump-json", "--no-download", "--no-warnings", url])
         .output()
         .await
@@ -196,7 +208,7 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
 async fn ytdlp_download(url: &str, format_id: &str, output_path: &std::path::Path) -> Result<u64> {
     let output_str = output_path.to_str().context("Invalid output path")?;
 
-    let output = tokio::process::Command::new("yt-dlp")
+    let output = ytdlp_command()
         .args(["-f", format_id, "-o", output_str, "--no-warnings", url])
         .output()
         .await
