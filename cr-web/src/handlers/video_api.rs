@@ -88,17 +88,7 @@ pub async fn video_info(
         ));
     }
 
-    if !cr_infra::video::is_supported_url(&url) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(VideoErrorResponse {
-                error: "Nepodporovaná URL — podporujeme Novinky.cz, Seznam Zprávy a Stream.cz"
-                    .to_string(),
-            }),
-        ));
-    }
-
-    let info = cr_infra::video::extract_video_info(&url)
+    let info = cr_infra::video::extract_video_info(&state.http_client, &url)
         .await
         .map_err(|e| {
             tracing::error!("Video extraction failed for {url}: {e}");
@@ -109,8 +99,6 @@ pub async fn video_info(
                 }),
             )
         })?;
-
-    let _ = state; // AppState available for future use
 
     Ok(Json(VideoInfoResponse {
         title: info.title,
@@ -136,7 +124,7 @@ pub async fn video_prepare(
     let url = req.url.trim().to_string();
 
     // Extract video info to get download URL
-    let info = cr_infra::video::extract_video_info(&url)
+    let info = cr_infra::video::extract_video_info(&state.http_client, &url)
         .await
         .map_err(|e| {
             tracing::error!("Video extraction failed for {url}: {e}");
@@ -189,7 +177,7 @@ pub async fn video_prepare(
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
     // Download the video
-    let size = cr_infra::video::download_video_file(&state.http_client, &format.url, &file_path)
+    let size = cr_infra::video::download_video(&state.http_client, &format.url, &file_path)
         .await
         .map_err(|e| {
             tracing::error!("Video download failed: {e}");
