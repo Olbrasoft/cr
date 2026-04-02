@@ -370,7 +370,14 @@
             body: JSON.stringify({ url: url })
         })
         .then(function(r) {
-            if (!r.ok) throw new Error('Server vrátil chybu ' + r.status);
+            if (!r.ok) {
+                return r.json().then(function(err) {
+                    throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                }).catch(function(e) {
+                    if (e.message && !e.message.startsWith('Server vrátil')) throw e;
+                    throw new Error('Server vrátil chybu ' + r.status);
+                });
+            }
             return r.json();
         })
         .then(function(data) {
@@ -417,7 +424,14 @@
             })
         })
         .then(function(r) {
-            if (!r.ok) throw new Error('Server vrátil chybu ' + r.status);
+            if (!r.ok) {
+                return r.json().then(function(err) {
+                    throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                }).catch(function(e) {
+                    if (e.message && !e.message.startsWith('Server vrátil')) throw e;
+                    throw new Error('Server vrátil chybu ' + r.status);
+                });
+            }
             return r.json();
         })
         .then(function(data) {

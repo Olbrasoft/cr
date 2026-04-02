@@ -135,7 +135,8 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
         serde_json::from_str(&stdout).context("Failed to parse yt-dlp JSON output")?;
 
     let formats = if let Some(fmts) = &raw.formats {
-        fmts.iter()
+        let all_fmts: Vec<_> = fmts
+            .iter()
             .filter(|f| {
                 f.url.is_some()
                     && f.height.is_some()
@@ -152,7 +153,17 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
                     filesize_approx: f.filesize.or(f.filesize_approx),
                 }
             })
-            .collect()
+            .collect();
+
+        // Deduplicate: keep only the best format per resolution (largest filesize)
+        let mut seen = std::collections::HashMap::new();
+        for fmt in &all_fmts {
+            let entry = seen.entry(fmt.resolution.clone()).or_insert(fmt.clone());
+            if fmt.filesize_approx > entry.filesize_approx {
+                *entry = fmt.clone();
+            }
+        }
+        seen.into_values().collect()
     } else if let Some(url) = &raw.url {
         vec![VideoFormat {
             format_id: "default".to_string(),
