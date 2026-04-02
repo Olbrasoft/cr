@@ -359,6 +359,9 @@
         showStatus('Načítám informace o videu\u2026', false, true);
         previewEl.classList.remove('visible');
         actionsEl.classList.remove('visible');
+        qualityEl.classList.remove('visible');
+        qualityEl.innerHTML = '';
+        selectedQuality = 'best';
         btnFetch.disabled = true;
 
         fetch('/api/video/info', {
