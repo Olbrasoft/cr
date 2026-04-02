@@ -190,10 +190,32 @@ fn extract_sdn_url(html: &str) -> Option<String> {
     let url = &html[start..end];
 
     if url.contains("vmd") {
-        Some(url.to_string())
+        Some(strip_sec1_prefix(url))
     } else {
         None
     }
+}
+
+/// Strip SEC1 token prefix from SDN URL.
+///
+/// Some videos have geo-restricted SEC1 tokens (e.g. `~geo-cz~`) that block
+/// access from non-Czech IPs. The SDN manifest and MP4 files work without
+/// the SEC1 prefix, so we strip it to avoid geo-restriction issues.
+///
+/// Before: `https://v39-a.sdn.cz/~SEC1~expire-...~scope-video~.../v_39/vmd/...`
+/// After:  `https://v39-a.sdn.cz/v_39/vmd/...`
+fn strip_sec1_prefix(url: &str) -> String {
+    if let Some(sec1_start) = url.find("/~SEC1~") {
+        // Find the end of SEC1 token (next path segment after the token)
+        // Pattern: /~SEC1~...~.../rest_of_path
+        let after_sec1 = &url[sec1_start + 1..]; // skip the leading /
+        if let Some(slash_pos) = after_sec1.find('/') {
+            let host = &url[..sec1_start];
+            let path = &after_sec1[slash_pos..];
+            return format!("{host}{path}");
+        }
+    }
+    url.to_string()
 }
 
 /// Extract page title.
