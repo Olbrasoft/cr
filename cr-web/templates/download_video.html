@@ -1,0 +1,502 @@
+{% extends "base.html" %}
+
+{% block title %}Stáhnout video{% endblock %}
+
+{% block meta_description %}Stáhněte videa z českých serverů — Seznam Zprávy, Stream.cz, Novinky.cz, YouTube, TikTok, Instagram a dalších. Zdarma, bez registrace.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/stahnout-video/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <span style="font-size:2rem;line-height:1;">&#9655;</span>
+        <h1>Stáhnout video</h1>
+    </a>
+</div>
+{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem"></div>
+{% endblock %}
+
+{% block head %}
+<style>
+.download-hero {
+    text-align: center;
+    padding: 2.5rem 0 1.5rem;
+}
+.download-hero h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-blue);
+}
+.download-hero p {
+    color: #555;
+    margin-top: 0.5rem;
+    font-size: 1.05rem;
+}
+.download-form-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    border: 1px solid var(--color-gray-border);
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+.url-input-group {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+.url-input {
+    flex: 1;
+    padding: 0.85rem 1rem;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: 'Inter', sans-serif;
+    transition: border-color 0.2s;
+}
+.url-input:focus {
+    outline: none;
+    border-color: var(--color-blue);
+}
+.url-input::placeholder {
+    color: #aaa;
+}
+.btn-primary {
+    background: var(--color-blue);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.85rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+.btn-primary:hover {
+    background: #0d3a6a;
+}
+.btn-primary:disabled {
+    background: #ccc;
+    cursor: default;
+}
+.format-toggle {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+}
+.format-btn {
+    padding: 0.55rem 1.2rem;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 8px;
+    background: white;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: #555;
+}
+.format-btn.active {
+    border-color: var(--color-blue);
+    background: var(--color-blue);
+    color: white;
+}
+.format-btn:hover:not(.active) {
+    border-color: var(--color-blue);
+    color: var(--color-blue);
+}
+.quality-selector {
+    display: none;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+}
+.quality-selector.visible {
+    display: flex;
+}
+.quality-btn {
+    padding: 0.4rem 0.9rem;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 6px;
+    background: white;
+    font-size: 0.85rem;
+    font-weight: 500;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: #555;
+}
+.quality-btn.active {
+    border-color: var(--color-gold);
+    background: var(--color-gold);
+    color: white;
+}
+.quality-btn:hover:not(.active) {
+    border-color: var(--color-gold);
+    color: var(--color-gold);
+}
+/* Preview card */
+.video-preview {
+    display: none;
+    background: #f8fafc;
+    border-radius: 10px;
+    border: 1px solid var(--color-gray-border);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+.video-preview.visible {
+    display: flex;
+    gap: 1.25rem;
+}
+.preview-thumb {
+    width: 200px;
+    height: 112px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: #e8e8e8;
+}
+.preview-info {
+    flex: 1;
+    min-width: 0;
+}
+.preview-info h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--color-black);
+    margin-bottom: 0.35rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.preview-meta {
+    color: #666;
+    font-size: 0.88rem;
+    line-height: 1.7;
+}
+.preview-meta strong {
+    color: var(--color-black);
+}
+/* Status / loading */
+.status-message {
+    display: none;
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.95rem;
+    color: #555;
+}
+.status-message.visible {
+    display: block;
+}
+.status-message.error {
+    color: var(--color-red);
+}
+.spinner {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--color-gray-border);
+    border-top-color: var(--color-blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+/* Download button */
+.download-actions {
+    display: none;
+    text-align: center;
+    padding-top: 0.5rem;
+}
+.download-actions.visible {
+    display: block;
+}
+.btn-download {
+    background: var(--color-red);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.85rem 2.5rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.btn-download:hover {
+    background: #b5141a;
+}
+.btn-download:disabled {
+    background: #ccc;
+    cursor: default;
+}
+/* Supported sites */
+.supported-sites {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: center;
+    padding: 1rem 0 2rem;
+}
+.site-tag {
+    padding: 0.35rem 0.75rem;
+    background: #f1f5f9;
+    border: 1px solid var(--color-gray-border);
+    border-radius: 20px;
+    font-size: 0.82rem;
+    color: #555;
+    font-weight: 500;
+}
+.site-tag.highlight {
+    background: var(--color-blue);
+    border-color: var(--color-blue);
+    color: white;
+}
+@media (max-width: 600px) {
+    .url-input-group { flex-direction: column; }
+    .video-preview.visible { flex-direction: column; }
+    .preview-thumb { width: 100%; height: auto; aspect-ratio: 16/9; }
+    .download-hero h2 { font-size: 1.5rem; }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Stáhnout video</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="download-hero">
+    <h2>Stáhnout video</h2>
+    <p>Vložte odkaz na video z českých i zahraničních serverů</p>
+</section>
+
+<div class="download-form-card">
+    <div class="url-input-group">
+        <input type="text" class="url-input" id="video-url"
+               placeholder="https://www.seznamzpravy.cz/clanek/..."
+               autocomplete="off" spellcheck="false">
+        <button class="btn-primary" id="btn-fetch-info">Načíst info</button>
+    </div>
+
+    <div class="format-toggle">
+        <button class="format-btn active" data-format="video">Video</button>
+        <button class="format-btn" data-format="audio">Audio (MP3)</button>
+    </div>
+
+    <div class="quality-selector" id="quality-selector">
+        <button class="quality-btn active" data-quality="best">Nejlepší</button>
+        <button class="quality-btn" data-quality="480p">480p</button>
+        <button class="quality-btn" data-quality="360p">360p</button>
+        <button class="quality-btn" data-quality="240p">240p</button>
+        <button class="quality-btn" data-quality="144p">144p</button>
+    </div>
+
+    <div class="video-preview" id="video-preview">
+        <img class="preview-thumb" id="preview-thumb" src="" alt="">
+        <div class="preview-info">
+            <h3 id="preview-title"></h3>
+            <div class="preview-meta">
+                <strong>Zdroj:</strong> <span id="preview-source"></span><br>
+                <strong>Délka:</strong> <span id="preview-duration"></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-message" id="status-message"></div>
+
+    <div class="download-actions" id="download-actions">
+        <button class="btn-download" id="btn-download">Stáhnout</button>
+    </div>
+</div>
+
+<div class="supported-sites">
+    <span class="site-tag highlight">Seznam Zprávy</span>
+    <span class="site-tag highlight">Stream.cz</span>
+    <span class="site-tag highlight">Novinky.cz</span>
+    <span class="site-tag">YouTube</span>
+    <span class="site-tag">TikTok</span>
+    <span class="site-tag">Instagram</span>
+    <span class="site-tag">Facebook</span>
+    <span class="site-tag">Reddit</span>
+    <span class="site-tag">Vimeo</span>
+    <span class="site-tag">Twitch</span>
+    <span class="site-tag">a 1000+ dalších</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    var urlInput = document.getElementById('video-url');
+    var btnFetch = document.getElementById('btn-fetch-info');
+    var btnDownload = document.getElementById('btn-download');
+    var previewEl = document.getElementById('video-preview');
+    var statusEl = document.getElementById('status-message');
+    var actionsEl = document.getElementById('download-actions');
+    var qualityEl = document.getElementById('quality-selector');
+    var selectedFormat = 'video';
+    var selectedQuality = 'best';
+
+    // Format toggle
+    document.querySelectorAll('.format-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.format-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            selectedFormat = btn.getAttribute('data-format');
+            if (selectedFormat === 'video') {
+                qualityEl.classList.add('visible');
+            } else {
+                qualityEl.classList.remove('visible');
+            }
+        });
+    });
+
+    // Quality toggle
+    document.querySelectorAll('.quality-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            selectedQuality = btn.getAttribute('data-quality');
+        });
+    });
+
+    // Show quality selector by default for video
+    qualityEl.classList.add('visible');
+
+    // Fetch info
+    btnFetch.addEventListener('click', function() {
+        var url = urlInput.value.trim();
+        if (!url) {
+            showStatus('Vložte odkaz na video.', true);
+            return;
+        }
+        if (!url.startsWith('http')) {
+            url = 'https://' + url;
+            urlInput.value = url;
+        }
+
+        showStatus('<span class="spinner"></span> Načítám informace o videu…', false);
+        previewEl.classList.remove('visible');
+        actionsEl.classList.remove('visible');
+        btnFetch.disabled = true;
+
+        fetch('/api/video/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url })
+        })
+        .then(function(r) {
+            if (!r.ok) throw new Error('Server vrátil chybu ' + r.status);
+            return r.json();
+        })
+        .then(function(data) {
+            document.getElementById('preview-title').textContent = data.title || 'Bez názvu';
+            document.getElementById('preview-source').textContent = data.uploader || data.extractor || extractDomain(url);
+            document.getElementById('preview-duration').textContent = formatDuration(data.duration);
+            var thumb = document.getElementById('preview-thumb');
+            if (data.thumbnail) {
+                thumb.src = data.thumbnail;
+                thumb.alt = data.title || '';
+            }
+            previewEl.classList.add('visible');
+            actionsEl.classList.add('visible');
+            hideStatus();
+
+            // Update quality buttons from available formats
+            if (data.formats && data.formats.length > 0) {
+                updateQualityButtons(data.formats);
+            }
+        })
+        .catch(function(err) {
+            showStatus('Nepodařilo se načíst info: ' + err.message, true);
+        })
+        .finally(function() {
+            btnFetch.disabled = false;
+        });
+    });
+
+    // Download
+    btnDownload.addEventListener('click', function() {
+        var url = urlInput.value.trim();
+        if (!url) return;
+
+        showStatus('<span class="spinner"></span> Připravuji stažení…', false);
+        btnDownload.disabled = true;
+
+        fetch('/api/video/prepare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url: url,
+                format: selectedFormat,
+                quality: selectedQuality
+            })
+        })
+        .then(function(r) {
+            if (!r.ok) throw new Error('Server vrátil chybu ' + r.status);
+            return r.json();
+        })
+        .then(function(data) {
+            showStatus('Stahování začíná… (' + (data.size_mb || '?') + ' MB)', false);
+            window.location.href = '/api/video/file/' + data.token;
+        })
+        .catch(function(err) {
+            showStatus('Stažení se nezdařilo: ' + err.message, true);
+        })
+        .finally(function() {
+            btnDownload.disabled = false;
+        });
+    });
+
+    // Enter key in input
+    urlInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            btnFetch.click();
+        }
+    });
+
+    function showStatus(html, isError) {
+        statusEl.innerHTML = html;
+        statusEl.classList.add('visible');
+        statusEl.classList.toggle('error', !!isError);
+    }
+
+    function hideStatus() {
+        statusEl.classList.remove('visible');
+        statusEl.classList.remove('error');
+    }
+
+    function formatDuration(seconds) {
+        if (!seconds) return 'neznámá';
+        var h = Math.floor(seconds / 3600);
+        var m = Math.floor((seconds % 3600) / 60);
+        var s = Math.floor(seconds % 60);
+        if (h > 0) return h + ':' + pad(m) + ':' + pad(s);
+        return m + ':' + pad(s);
+    }
+
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function extractDomain(url) {
+        try { return new URL(url).hostname.replace('www.', ''); }
+        catch(e) { return url; }
+    }
+
+    function updateQualityButtons(formats) {
+        // Future: dynamically populate quality options from API response
+    }
+})();
+</script>
+{% endblock %}

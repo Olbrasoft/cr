@@ -89,6 +89,14 @@ async fn main() -> Result<()> {
         .route("/pamatky/", axum::routing::get(handlers::landmarks_index))
         .route("/audioknihy", axum::routing::get(handlers::audiobooks))
         .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
+        .route(
+            "/stahnout-video",
+            axum::routing::get(handlers::download_video),
+        )
+        .route(
+            "/stahnout-video/",
+            axum::routing::get(handlers::download_video),
+        )
         .route("/koupani", axum::routing::get(handlers::pools_hub))
         .route("/koupani/", axum::routing::get(handlers::pools_hub))
         .route(
