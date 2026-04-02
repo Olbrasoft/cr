@@ -2,7 +2,7 @@
 
 {% block title %}Stáhnout video{% endblock %}
 
-{% block meta_description %}Stáhněte videa z českých serverů — Seznam Zprávy, Stream.cz, Novinky.cz, YouTube, TikTok, Instagram a dalších. Zdarma, bez registrace.{% endblock %}
+{% block meta_description %}Stáhněte videa z českých serverů — Seznam Zprávy, Novinky.cz a dalších. Zdarma, bez registrace.{% endblock %}
 
 {% block header_left %}
 <div class="logo-group">
@@ -327,10 +327,10 @@
 
 <div class="download-form-card">
     <div class="url-input-group">
-        <label for="video-url" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">URL videa</label>
+        <label for="video-url" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">URL videa</label>
         <input type="url" inputmode="url" class="url-input" id="video-url"
                placeholder="https://www.seznamzpravy.cz/clanek/&hellip;"
-               autocomplete="off" spellcheck="false" aria-label="URL videa">
+               autocomplete="off" spellcheck="false">
         <button class="btn-primary" id="btn-fetch-info">Načíst info</button>
     </div>
 
@@ -362,7 +362,7 @@
         </div>
     </div>
 
-    <div class="status-message" id="status-message"></div>
+    <div class="status-message" id="status-message"><span class="spinner" id="status-spinner" style="display:none;"></span> <span id="status-text"></span></div>
 
     <div class="download-actions" id="download-actions">
         <button class="btn-download" id="btn-download">Stáhnout</button>
@@ -370,32 +370,35 @@
 </div>
 
 <div class="supported-services">
-    <a href="https://www.seznamzpravy.cz" target="_blank" rel="nofollow" class="service-link supported">
-        <img src="/static/img/services/seznam-zpravy.svg" alt="Seznam Zprávy" title="Seznam Zprávy" class="service-logo" height="20">
+    <a href="https://www.seznamzpravy.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link supported">
+        <img src="/static/img/services/seznam-zpravy.svg" alt="Logo Seznam Zprávy" title="Seznam Zprávy" class="service-logo" height="20">
     </a>
-    <a href="https://www.novinky.cz" target="_blank" rel="nofollow" class="service-link supported">
-        <img src="/static/img/services/novinky-cz.svg" alt="Novinky.cz" title="Novinky.cz" class="service-logo" height="20">
+    <a href="https://www.novinky.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link supported">
+        <img src="/static/img/services/novinky-cz.svg" alt="Logo Novinky.cz" title="Novinky.cz" class="service-logo" height="20">
     </a>
-    <a href="https://www.youtube.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/youtube.svg" alt="YouTube" title="YouTube" class="service-logo" height="20">
+    <a href="https://www.stream.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/stream-cz.svg" alt="Logo Stream.cz" title="Stream.cz" class="service-logo" height="20">
     </a>
-    <a href="https://www.tiktok.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/tiktok.svg" alt="TikTok" title="TikTok" class="service-logo" height="20">
+    <a href="https://www.youtube.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/youtube.svg" alt="Logo YouTube" title="YouTube" class="service-logo" height="20">
     </a>
-    <a href="https://www.instagram.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/instagram.svg" alt="Instagram" title="Instagram" class="service-logo" height="20">
+    <a href="https://www.tiktok.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/tiktok.svg" alt="Logo TikTok" title="TikTok" class="service-logo" height="20">
     </a>
-    <a href="https://www.facebook.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/facebook.svg" alt="Facebook" title="Facebook" class="service-logo" height="20">
+    <a href="https://www.instagram.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/instagram.svg" alt="Logo Instagram" title="Instagram" class="service-logo" height="20">
     </a>
-    <a href="https://www.reddit.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/reddit.svg" alt="Reddit" title="Reddit" class="service-logo" height="20">
+    <a href="https://www.facebook.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/facebook.svg" alt="Logo Facebook" title="Facebook" class="service-logo" height="20">
     </a>
-    <a href="https://www.vimeo.com" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/vimeo.svg" alt="Vimeo" title="Vimeo" class="service-logo" height="20">
+    <a href="https://www.reddit.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/reddit.svg" alt="Logo Reddit" title="Reddit" class="service-logo" height="20">
     </a>
-    <a href="https://www.twitch.tv" target="_blank" rel="nofollow" class="service-link">
-        <img src="/static/img/services/twitch.svg" alt="Twitch" title="Twitch" class="service-logo" height="20">
+    <a href="https://www.vimeo.com" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/vimeo.svg" alt="Logo Vimeo" title="Vimeo" class="service-logo" height="20">
+    </a>
+    <a href="https://www.twitch.tv" target="_blank" rel="nofollow noopener noreferrer" class="service-link">
+        <img src="/static/img/services/twitch.svg" alt="Logo Twitch" title="Twitch" class="service-logo" height="20">
     </a>
 </div>
 {% endblock %}
@@ -416,19 +419,15 @@
     var selectedFormat = 'video';
     var selectedQuality = 'best';
 
-    // Format toggle switch
+    // Format toggle switch — audio not yet supported by backend
+    formatToggle.disabled = true;
+    formatToggle.title = 'Stažení audia zatím není podporováno.';
     formatToggle.addEventListener('change', function() {
-        if (formatToggle.checked) {
-            selectedFormat = 'audio';
-            labelVideo.classList.remove('active');
-            labelAudio.classList.add('active');
-            qualityEl.classList.remove('visible');
-        } else {
-            selectedFormat = 'video';
-            labelVideo.classList.add('active');
-            labelAudio.classList.remove('active');
-            qualityEl.classList.add('visible');
-        }
+        selectedFormat = 'video';
+        formatToggle.checked = false;
+        labelVideo.classList.add('active');
+        labelAudio.classList.remove('active');
+        qualityEl.classList.add('visible');
     });
 
     // Quality toggle
@@ -452,7 +451,7 @@
             urlInput.value = url;
         }
 
-        showStatus('<span class="spinner"></span> Načítám informace o videu\u2026', false);
+        showStatus('Načítám informace o videu\u2026', false, true);
         previewEl.classList.remove('visible');
         actionsEl.classList.remove('visible');
         btnFetch.disabled = true;
@@ -497,7 +496,7 @@
         var url = urlInput.value.trim();
         if (!url) return;
 
-        showStatus('<span class="spinner"></span> Připravuji stažení\u2026', false);
+        showStatus('Připravuji stažení\u2026', false, true);
         btnDownload.disabled = true;
 
         fetch('/api/video/prepare', {
@@ -533,8 +532,12 @@
         }
     });
 
-    function showStatus(html, isError) {
-        statusEl.innerHTML = html;
+    var statusSpinner = document.getElementById('status-spinner');
+    var statusText = document.getElementById('status-text');
+
+    function showStatus(text, isError, loading) {
+        statusText.textContent = text;
+        statusSpinner.style.display = loading ? 'inline-block' : 'none';
         statusEl.classList.add('visible');
         statusEl.classList.toggle('error', !!isError);
     }
