@@ -121,13 +121,6 @@ jobs:
           echo "Health check failed after 60 seconds"
           exit 1
 
-      - name: Notify deploy result
-        if: always()
-        uses: Olbrasoft/GitHub.Actions.Notify/actions/deploy-status@v1
-        with:
-          job-status: ${{ job.status }}
-          repository: ${{ github.repository }}
-
       - name: Write deploy event for Claude Code
         if: always()
         continue-on-error: true
@@ -180,6 +173,7 @@ jobs:
           url: https://ceskarepublika.wiki
           checks: health,homepage
           repository: ${{ github.repository }}
+          send-notification: 'false'
 
       - name: Write verify event for Claude Code
         if: always()
