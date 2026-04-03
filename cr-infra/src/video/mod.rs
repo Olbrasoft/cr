@@ -227,11 +227,9 @@ async fn ytdlp_download(url: &str, resolution: &str, output_path: &std::path::Pa
         .collect();
 
     let format_selector = if !height.is_empty() {
-        format!(
-            "bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/best"
-        )
+        format!("bestvideo[height<={height}]+bestaudio/best[height<={height}]/best")
     } else {
-        "best".to_string()
+        "bestvideo+bestaudio/best".to_string()
     };
 
     let output = ytdlp_command()
