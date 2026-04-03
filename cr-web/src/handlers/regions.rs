@@ -29,6 +29,7 @@ impl From<cr_domain::repository::OrpRecord> for OrpRow {
             orp_code: r.orp_code,
             latitude: r.latitude,
             longitude: r.longitude,
+            description: r.description,
         }
     }
 }

@@ -25,7 +25,7 @@ pub use download_video::download_video;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
-pub use video_api::{video_cleanup, video_file, video_info, video_prepare, video_recent};
+pub use video_api::{video_cleanup, video_file, video_info, video_prepare, video_recent, video_thumb};
 
 // --- DB row types ---
 
@@ -56,6 +56,7 @@ pub(crate) struct OrpRow {
     pub(crate) orp_code: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
+    pub(crate) description: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
