@@ -152,6 +152,16 @@ body {
     align-items: center;
 }
 
+.region-layout {
+    align-items: start;
+}
+
+.region-layout .content-right {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
 .info-hub {
     display: grid;
     grid-template-columns: 1fr 360px;
