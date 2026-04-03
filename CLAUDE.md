@@ -56,8 +56,8 @@ Before marking any UI change as done, EVERY visible element on the page must be 
 - Docker image must be minimal — only production binary + static assets + data
 - No Python, no test frameworks, no browsers on the server
 
-**After creating ANY Pull Request, you MUST immediately set up CronCreate monitoring.**
-This is NOT optional. The CronCreate runs the full pipeline autonomously (CI → review → merge → deploy → Playwright verify) without asking the user. See `ci-workflow-monitor` skill for the CronCreate prompt template.
+**CI/CD feedback is push-based via asyncRewake hooks — no CronCreate polling needed.**
+Deploy and code review events arrive automatically via event files in `~/.config/claude-channels/deploy-events/`. Claude Code wakes instantly from idle when events arrive. See `ci-workflow-monitor` skill for event handling details.
 
 **NEVER close a GitHub issue before production verification.** Closing an issue means the work is DONE and verified on production. The sequence is:
 1. PR merged → deploy runs → Playwright verifies → THEN close issue
@@ -245,51 +245,50 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 All work is **issue-driven** and the CI/CD pipeline runs **fully autonomously** — never ask the user, just act.
 
-**After creating a PR, ALWAYS set up CronCreate monitoring.** This is mandatory, not optional.
+**CI/CD feedback is push-based** — no CronCreate polling needed. Events arrive automatically via asyncRewake hooks.
 
-#### Full Lifecycle (automated after PR creation)
+#### Full Lifecycle (push-based, automatic)
 
 1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
 2. **Implement** — Create feature branch, write code, test locally
 3. **PR** — Push branch, create PR
-4. **CronCreate** — Immediately set up autonomous pipeline monitor (see below)
-5. **Continue working** — Start next issue while CI/review runs (pipeline processing)
-6. *(Autonomous)* CI fails → analyze logs, fix, push
-7. *(Autonomous)* Review has comments → fix all, push
-8. *(Autonomous)* CI passes + review done → merge PR
-9. *(Autonomous)* Deploy completes → verify production
-10. *(Autonomous)* Read issue description → verify issue-specific changes on production via Playwright/curl
-11. *(Autonomous)* Notify result → CronDelete
+4. **Continue working** — Start next issue while CI/review runs (pipeline processing)
+5. *(Push)* Code review completes → asyncRewake wakes Claude Code → read comments, fix, push
+6. *(Push)* CI passes + review done → merge PR
+7. *(Push)* Deploy completes → asyncRewake wakes Claude Code → verify production
+8. *(Push)* Read issue description → verify issue-specific changes on production via Playwright/curl
+9. Notify result → close issue
 
-#### CronCreate Setup (MANDATORY after every PR)
+#### Push-Based CI/CD Notifications (asyncRewake Hooks)
 
-After creating a PR, immediately run CronCreate with the template from `ci-workflow-monitor` skill. Example:
+Events arrive automatically via two mechanisms:
 
-```
-CronCreate({
-  cron: "*/2 * * * *",
-  prompt: "AUTONOMOUS issue-driven CI/CD monitor for Olbrasoft/cr. Working on issue #<NUM>, PR #<NUM>...",
-  recurring: true
-})
-```
+**Deploy notification:**
+GitHub Actions writes event file to `~/.config/claude-channels/deploy-events/Olbrasoft-cr.json` after deploy → `watch-deploy-events.sh` (asyncRewake) detects file → wakes Claude Code instantly.
 
-The CronCreate prompt must:
-- Monitor CI status (`gh pr checks`)
-- Monitor review status (`gh pr view --json reviewDecision`)
-- **Autonomously merge** when ready (no asking!)
-- **Autonomously fix** CI failures and review comments
-- Monitor deploy after merge (`gh run list --branch main`)
-- **Verify production** — health check + issue-specific changes on `https://ceskarepublika.wiki`
-- CronDelete when pipeline complete
+**Code review notification:**
+`gh webhook forward` service receives `pull_request_review` events via WebSocket → `webhook-receiver.py` writes event file → `watch-deploy-events.sh` (asyncRewake) detects file → wakes Claude Code instantly.
 
-**Full template:** See `ci-workflow-monitor` skill in `.claude/skills/` or `~/GitHub/Olbrasoft/GitHub.Actions.Notify/skills/ci-workflow-monitor/SKILL.md`
+**How to react to push events:**
+
+| Event | Status | Action |
+|---|---|---|
+| `deploy-complete` | `success` | Verify: `curl https://ceskarepublika.wiki/health`. Run Playwright verification. Notify user. |
+| `deploy-complete` | `failure` | Notify user: "Deploy selhal!" with run URL. |
+| `deploy-complete` | `cancelled` | Notify user: "Deploy zrušen." Include run URL. Investigate and re-run if needed. |
+| `verify-complete` | `success` | Production verified by CI. Run issue-specific Playwright test. Close issue if OK. |
+| `verify-complete` | `failure` | Notify user. Investigate and fix. |
+| `verify-complete` | `cancelled` | Notify user: "Verifikace zrušena." Investigate and re-run if needed. |
+| `code-review-complete` | `commented` | Read comments: `gh api repos/Olbrasoft/cr/pulls/{PR}/comments`. Fix ALL. Push. |
+
+See `ci-workflow-monitor` skill for full event handling details.
 
 #### Parent Issues with Sub-Issues (Pipeline Processing)
 
 Follow [Continuous PR Processing Workflow](~/GitHub/Olbrasoft/engineering-handbook/development-guidelines/workflow/continuous-pr-processing-workflow.md):
 - **Independent sub-issues**: start next issue immediately after creating PR (don't wait for review)
 - **Dependent sub-issues**: wait for previous PR to be merged before starting next
-- Multiple PRs run in parallel with separate CronCreate monitors
+- Push notifications handle each PR independently — no polling overhead
 - After ALL sub-issues done: verify all changes on production
 
 ### Branch Naming
@@ -320,7 +319,9 @@ Pipeline:
 3. Tests (cloud)
 4. Deploy: rsync + docker build + health check (self-hosted runner)
 5. **Notify**: TTS notification via VirtualAssistant (self-hosted runner)
-6. **Verify**: Playwright health + homepage check (self-hosted runner)
+6. **Push event**: Write `Olbrasoft-cr.json` to deploy-events → asyncRewake wakes Claude Code
+7. **Verify**: Playwright health + homepage check (self-hosted runner)
+8. **Push event**: Write `Olbrasoft-cr-verify.json` → asyncRewake wakes Claude Code
 
 **Manual deploy (emergency only):**
 ```bash
