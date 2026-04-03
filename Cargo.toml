@@ -73,3 +73,4 @@ cr-domain = { path = "cr-domain" }
 cr-app = { path = "cr-app" }
 cr-infra = { path = "cr-infra" }
 cr-web = { path = "cr-web" }
+urlencoding = "2"
