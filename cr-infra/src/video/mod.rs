@@ -51,7 +51,6 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
 }
 
 /// Download a video file. Uses direct HTTP for Seznam/Instagram, yt-dlp for others.
-/// Optional `progress` atomic tracks download percentage (0-100).
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
@@ -283,14 +282,25 @@ async fn ytdlp_download(
         .spawn()
         .context("Failed to spawn yt-dlp")?;
 
-    // Parse progress from stdout (--newline makes each progress update a separate line)
+    // yt-dlp writes progress to stderr (with --newline, each update is a line)
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let progress_clone = progress.clone();
 
+    // Drain stdout (not used for progress, but must be consumed)
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
             let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        }
+    });
+
+    // Parse progress from stderr + keep last 20 lines for error reporting
+    let stderr_handle = tokio::spawn(async move {
+        let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        if let Some(stderr) = stderr {
+            let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Some(progress) = &progress_clone {
@@ -302,21 +312,13 @@ async fn ytdlp_download(
                         progress.store(pct.min(99.0) as u8, Ordering::Relaxed);
                     }
                 }
+                tail.push_back(line);
+                if tail.len() > 20 {
+                    tail.pop_front();
+                }
             }
         }
-    });
-
-    let stderr_handle = tokio::spawn(async move {
-        let mut err = String::new();
-        if let Some(stderr) = stderr {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                err.push_str(&line);
-                err.push('\n');
-            }
-        }
-        err
+        tail.into_iter().collect::<Vec<_>>().join("\n")
     });
 
     let status = child.wait().await.context("yt-dlp process failed")?;
