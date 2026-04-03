@@ -64,6 +64,7 @@ scraper = "0.22"
 
 # Base64
 base64 = "0.22"
+urlencoding = "2"
 
 # Testing
 tokio-test = "0.4"
@@ -73,4 +74,3 @@ cr-domain = { path = "cr-domain" }
 cr-app = { path = "cr-app" }
 cr-infra = { path = "cr-infra" }
 cr-web = { path = "cr-web" }
-urlencoding = "2"

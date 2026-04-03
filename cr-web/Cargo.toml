@@ -28,4 +28,4 @@ image = { workspace = true }
 reqwest = { workspace = true }
 uuid = { workspace = true }
 ammonia = "4.1.2"
-urlencoding = "2.1.3"
+urlencoding = { workspace = true }
