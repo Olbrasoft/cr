@@ -455,29 +455,38 @@
     });
 
     function pollDownloadStatus(token) {
-        var pollInterval = setInterval(function() {
+        function pollOnce() {
             fetch('/api/video/status/' + token)
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) {
+                    return r.json().then(function(err) {
+                        throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                    }).catch(function(e) {
+                        if (e instanceof Error) throw e;
+                        throw new Error('Server vrátil chybu ' + r.status);
+                    });
+                }
+                return r.json();
+            })
             .then(function(status) {
                 if (status.status === 'ready') {
-                    clearInterval(pollInterval);
                     showStatus('Stahování začíná\u2026 (' + (status.size_mb || '?') + ' MB)', false);
                     window.location.href = '/api/video/file/' + token;
                     setTimeout(loadRecent, 2000);
                     btnDownload.disabled = false;
                 } else if (status.status === 'failed') {
-                    clearInterval(pollInterval);
                     showStatus(status.error || 'Stažení se nezdařilo.', true);
                     btnDownload.disabled = false;
+                } else {
+                    setTimeout(pollOnce, 3000);
                 }
-                // status === 'downloading' — keep polling
             })
-            .catch(function() {
-                clearInterval(pollInterval);
-                showStatus('Stažení se nezdařilo: server neodpovídá.', true);
+            .catch(function(err) {
+                showStatus('Stažení se nezdařilo: ' + err.message, true);
                 btnDownload.disabled = false;
             });
-        }, 3000);
+        }
+        pollOnce();
     }
 
     // Enter key in input

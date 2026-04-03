@@ -6,7 +6,10 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Json, extract::Path};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+
+/// Maximum concurrent video downloads.
+pub static VIDEO_DOWNLOAD_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 
 use crate::state::AppState;
 
@@ -72,7 +75,6 @@ fn default_quality() -> String {
 #[derive(Serialize)]
 pub struct VideoPrepareResponse {
     token: String,
-    size_mb: f64,
 }
 
 #[derive(Serialize)]
@@ -211,7 +213,21 @@ pub async fn video_prepare(
     let dl_state = state.clone();
     let dl_client = state.http_client.clone();
 
+    // Check concurrency limit before spawning
+    let permit = VIDEO_DOWNLOAD_SEMAPHORE.try_acquire();
+    if permit.is_err() {
+        // Too many concurrent downloads — mark as failed immediately
+        if let Some(t) = state.video_downloads.lock().await.get_mut(&token) {
+            t.status = DownloadStatus::Failed {
+                error: "Příliš mnoho souběžných stahování. Zkuste to za chvíli.".to_string(),
+            };
+        }
+        return Ok(Json(VideoPrepareResponse { token }));
+    }
+
     tokio::spawn(async move {
+        let _permit = permit.unwrap(); // held until dropped at end of block
+
         let result = cr_infra::video::download_video(
             &dl_client,
             &dl_url,
@@ -243,21 +259,30 @@ pub async fn video_prepare(
 
     tracing::info!("Video download started: {token} for {url}");
 
-    Ok(Json(VideoPrepareResponse {
-        token,
-        size_mb: 0.0,
-    }))
+    Ok(Json(VideoPrepareResponse { token }))
 }
 
 pub async fn video_status(
     State(state): State<AppState>,
     Path(token): Path<String>,
-) -> Result<Json<DownloadStatus>, StatusCode> {
+) -> impl IntoResponse {
     let downloads = state.video_downloads.lock().await;
-    downloads
-        .get(&token)
-        .map(|task| Json(task.status.clone()))
-        .ok_or(StatusCode::NOT_FOUND)
+    match downloads.get(&token) {
+        Some(task) => (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(task.status.clone()),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(DownloadStatus::Failed {
+                error: "Video not found or expired".to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn video_file(
