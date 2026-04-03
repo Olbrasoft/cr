@@ -417,7 +417,7 @@
         });
     });
 
-    // Download
+    // Download (async: prepare returns immediately, then poll status)
     btnDownload.addEventListener('click', function() {
         var url = urlInput.value.trim();
         if (!url) return;
@@ -435,35 +435,59 @@
             })
         })
         .then(function(r) {
-            var ct = r.headers.get('content-type') || '';
             if (!r.ok) {
-                if (ct.indexOf('application/json') !== -1) {
-                    return r.json().then(function(err) {
-                        throw new Error(err.error || 'Server vrátil chybu ' + r.status);
-                    });
-                }
-                if (r.status === 504 || r.status === 502) {
-                    throw new Error('Stahování trvá příliš dlouho. Zkuste kratší video nebo nižší kvalitu.');
-                }
-                throw new Error('Server vrátil chybu ' + r.status);
-            }
-            if (ct.indexOf('application/json') === -1) {
-                throw new Error('Stahování trvá příliš dlouho. Zkuste kratší video nebo nižší kvalitu.');
+                return r.json().then(function(err) {
+                    throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                }).catch(function() {
+                    throw new Error('Server vrátil chybu ' + r.status);
+                });
             }
             return r.json();
         })
         .then(function(data) {
-            showStatus('Stahování začíná\u2026 (' + (data.size_mb || '?') + ' MB)', false);
-            window.location.href = '/api/video/file/' + data.token;
-            setTimeout(loadRecent, 2000);
+            showStatus('Stahuji video na serveru\u2026 Prosím čekejte.', false, true);
+            pollDownloadStatus(data.token);
         })
         .catch(function(err) {
             showStatus('Stažení se nezdařilo: ' + err.message, true);
-        })
-        .finally(function() {
             btnDownload.disabled = false;
         });
     });
+
+    function pollDownloadStatus(token) {
+        function pollOnce() {
+            fetch('/api/video/status/' + token)
+            .then(function(r) {
+                if (!r.ok) {
+                    return r.json().then(function(err) {
+                        throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                    }).catch(function(e) {
+                        if (e instanceof Error) throw e;
+                        throw new Error('Server vrátil chybu ' + r.status);
+                    });
+                }
+                return r.json();
+            })
+            .then(function(status) {
+                if (status.status === 'ready') {
+                    showStatus('Stahování začíná\u2026 (' + (status.size_mb || '?') + ' MB)', false);
+                    window.location.href = '/api/video/file/' + token;
+                    setTimeout(loadRecent, 2000);
+                    btnDownload.disabled = false;
+                } else if (status.status === 'failed') {
+                    showStatus(status.error || 'Stažení se nezdařilo.', true);
+                    btnDownload.disabled = false;
+                } else {
+                    setTimeout(pollOnce, 3000);
+                }
+            })
+            .catch(function(err) {
+                showStatus('Stažení se nezdařilo: ' + err.message, true);
+                btnDownload.disabled = false;
+            });
+        }
+        pollOnce();
+    }
 
     // Enter key in input
     urlInput.addEventListener('keydown', function(e) {
