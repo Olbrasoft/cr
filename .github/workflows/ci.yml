@@ -154,14 +154,14 @@ jobs:
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{event: $event, status: $status, failedStep: $failedStep, repository: $repository, commit: $commit, commitMessage: $commitMessage, runUrl: $runUrl, environment: $environment, timestamp: $timestamp}' \
               > "$EVENTS_DIR/Olbrasoft-cr.json"
+
+            # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
+            WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
+            if [ -x "$WAKE_SCRIPT" ]; then
+              "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
+            fi
           else
             echo "jq is not installed on this runner; skipping deploy event write." >&2
-          fi
-
-          # Wake ALL Claude Code sessions for this repo via FIFO
-          WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
-          if [ -x "$WAKE_SCRIPT" ]; then
-            "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
           fi
 
   verify:
@@ -199,12 +199,12 @@ jobs:
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{event: $event, status: $status, repository: $repository, commit: $commit, environment: $environment, timestamp: $timestamp}' \
               > "$EVENTS_DIR/Olbrasoft-cr-verify.json"
+
+            # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
+            WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
+            if [ -x "$WAKE_SCRIPT" ]; then
+              "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
+            fi
           else
             echo "jq is not installed on this runner; skipping verify event write." >&2
-          fi
-
-          # Wake ALL Claude Code sessions for this repo via FIFO
-          WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
-          if [ -x "$WAKE_SCRIPT" ]; then
-            "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
           fi
