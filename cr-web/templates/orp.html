@@ -50,11 +50,16 @@
             </div>
             {% when None %}
             {% endmatch %}
+            {% match orp.description %}
+            {% when Some with (desc) %}
+            {{ desc|safe }}
+            {% when None %}
             {% if orp.slug == "praha" %}
             <p style="margin-bottom: 0.8rem;">{{ main_municipality.name }} je hlavní město České republiky a zároveň samostatný kraj.</p>
             {% else %}
             <p style="margin-bottom: 0.8rem;">{{ main_municipality.name }} je obec s rozšířenou působností v kraji {{ region.name }}.</p>
             {% endif %}
+            {% endmatch %}
         </div>
     </div>
     <aside class="content-right">

@@ -58,6 +58,7 @@ pub(crate) struct OrpRow {
     pub(crate) orp_code: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
+    pub(crate) description: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
