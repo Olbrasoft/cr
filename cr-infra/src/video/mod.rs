@@ -282,25 +282,15 @@ async fn ytdlp_download(
         .spawn()
         .context("Failed to spawn yt-dlp")?;
 
-    // yt-dlp writes progress to stderr (with --newline, each update is a line)
+    // yt-dlp with --newline writes progress to stdout, errors to stderr
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let progress_clone = progress.clone();
 
-    // Drain stdout (not used for progress, but must be consumed)
+    // Parse progress from stdout (fragment count and percentage)
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
             let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Ok(Some(_)) = lines.next_line().await {}
-        }
-    });
-
-    // Parse progress from stderr + keep last 20 lines for error reporting
-    let stderr_handle = tokio::spawn(async move {
-        let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-        if let Some(stderr) = stderr {
-            let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Some(progress) = &progress_clone
@@ -309,6 +299,17 @@ async fn ytdlp_download(
                 {
                     progress.store(pct, Ordering::Relaxed);
                 }
+            }
+        }
+    });
+
+    // Capture stderr for error reporting (last 20 lines)
+    let stderr_handle = tokio::spawn(async move {
+        let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        if let Some(stderr) = stderr {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
                 tail.push_back(line);
                 if tail.len() > 20 {
                     tail.pop_front();
