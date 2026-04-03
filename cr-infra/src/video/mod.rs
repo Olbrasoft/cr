@@ -303,14 +303,11 @@ async fn ytdlp_download(
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(progress) = &progress_clone {
-                    // Parse "[download]  45.2% of ..."
-                    if line.contains("[download]")
-                        && let Some(pct_str) = line.split_whitespace().find(|s| s.ends_with('%'))
-                        && let Ok(pct) = pct_str.trim_end_matches('%').parse::<f32>()
-                    {
-                        progress.store(pct.min(99.0) as u8, Ordering::Relaxed);
-                    }
+                if let Some(progress) = &progress_clone
+                    && let Some(pct) = parse_ytdlp_progress(&line)
+                    && pct > progress.load(Ordering::Relaxed)
+                {
+                    progress.store(pct, Ordering::Relaxed);
                 }
                 tail.push_back(line);
                 if tail.len() > 20 {
@@ -337,6 +334,32 @@ async fn ytdlp_download(
         .await
         .context("Downloaded file not found")?;
     Ok(metadata.len())
+}
+
+/// Parse yt-dlp progress line. Returns percentage (0-99).
+/// Supports fragment-based "(frag 120/1068)" and percentage-based "45.2%".
+fn parse_ytdlp_progress(line: &str) -> Option<u8> {
+    if !line.contains("[download]") {
+        return None;
+    }
+    // Fragment-based: "(frag 120/1068)"
+    if let Some(frag_part) = line.split("(frag ").nth(1) {
+        let parts: Vec<&str> = frag_part.trim_end_matches(')').split('/').collect();
+        if parts.len() == 2
+            && let Ok(done) = parts[0].parse::<u32>()
+            && let Ok(total) = parts[1].parse::<u32>()
+            && total > 0
+        {
+            return Some(((done as f32 / total as f32) * 99.0) as u8);
+        }
+    }
+    // Percentage-based fallback: "45.2%"
+    if let Some(pct_str) = line.split_whitespace().find(|s| s.ends_with('%'))
+        && let Ok(pct) = pct_str.trim_end_matches('%').parse::<f32>()
+    {
+        return Some(pct.min(99.0) as u8);
+    }
+    None
 }
 
 // ─── Seznam Rust extractor ──────────────────────────────────────────
