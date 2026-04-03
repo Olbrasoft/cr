@@ -734,8 +734,11 @@ pub(crate) fn type_slug_to_url(type_slug: &str) -> &'static str {
 
 // --- Public handlers that stay in mod.rs ---
 
-pub async fn health() -> &'static str {
-    "OK"
+pub async fn health() -> (axum::http::StatusCode, &'static str) {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "INTENTIONAL FAILURE — failedStep test",
+    )
 }
 
 pub async fn homepage(State(state): State<AppState>) -> WebResult<impl IntoResponse> {
