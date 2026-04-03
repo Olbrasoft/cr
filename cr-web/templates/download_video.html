@@ -303,6 +303,9 @@
 </div>
 
 <div class="supported-services">
+    <a href="https://tv.nova.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link supported">
+        <img src="/static/img/services/nova-cz.svg" alt="Logo Nova.cz" title="Nova.cz (TV Nova)" class="service-logo" height="20">
+    </a>
     <a href="https://www.seznamzpravy.cz" target="_blank" rel="nofollow noopener noreferrer" class="service-link supported">
         <img src="/static/img/services/seznam-zpravy.svg" alt="Logo Seznam Zprávy" title="Seznam Zprávy" class="service-logo" height="20">
     </a>
@@ -432,13 +435,20 @@
             })
         })
         .then(function(r) {
+            var ct = r.headers.get('content-type') || '';
             if (!r.ok) {
-                return r.json().then(function(err) {
-                    throw new Error(err.error || 'Server vrátil chybu ' + r.status);
-                }).catch(function(e) {
-                    if (e.message && !e.message.startsWith('Server vrátil')) throw e;
-                    throw new Error('Server vrátil chybu ' + r.status);
-                });
+                if (ct.indexOf('application/json') !== -1) {
+                    return r.json().then(function(err) {
+                        throw new Error(err.error || 'Server vrátil chybu ' + r.status);
+                    });
+                }
+                if (r.status === 504 || r.status === 502) {
+                    throw new Error('Stahování trvá příliš dlouho. Zkuste kratší video nebo nižší kvalitu.');
+                }
+                throw new Error('Server vrátil chybu ' + r.status);
+            }
+            if (ct.indexOf('application/json') === -1) {
+                throw new Error('Stahování trvá příliš dlouho. Zkuste kratší video nebo nižší kvalitu.');
             }
             return r.json();
         })
