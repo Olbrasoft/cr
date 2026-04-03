@@ -156,16 +156,19 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
         let all_fmts: Vec<_> = fmts
             .iter()
             .filter(|f| {
-                f.url.is_some()
-                    && f.height.is_some()
-                    && f.vcodec.as_deref() != Some("none")
-                    && f.ext.as_deref() == Some("mp4")
+                // Must have a URL and contain video (not audio-only)
+                f.url.is_some() && f.vcodec.as_deref() != Some("none")
             })
             .map(|f| {
                 let height = f.height.unwrap_or(0);
+                let resolution = if height > 0 {
+                    format!("{height}p")
+                } else {
+                    f.format_id.clone().unwrap_or_else(|| "unknown".to_string())
+                };
                 VideoFormat {
                     format_id: f.format_id.clone().unwrap_or_default(),
-                    resolution: format!("{height}p"),
+                    resolution,
                     ext: f.ext.clone().unwrap_or_else(|| "mp4".to_string()),
                     url: f.url.clone().unwrap_or_default(),
                     filesize_approx: f.filesize.or(f.filesize_approx),
