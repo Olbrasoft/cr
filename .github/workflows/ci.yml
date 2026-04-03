@@ -123,6 +123,24 @@ jobs:
           job-status: ${{ job.status }}
           repository: ${{ github.repository }}
 
+      - name: Write deploy event for Claude Code
+        if: always()
+        shell: bash
+        run: |
+          EVENTS_DIR="$HOME/.config/claude-channels/deploy-events"
+          mkdir -p "$EVENTS_DIR"
+          jq -n \
+            --arg event "deploy-complete" \
+            --arg status "${{ job.status }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg commit "${GITHUB_SHA:0:7}" \
+            --arg commitMessage "$(git log -1 --pretty=%s 2>/dev/null || echo unknown)" \
+            --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg environment "production" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{event: $event, status: $status, repository: $repository, commit: $commit, commitMessage: $commitMessage, runUrl: $runUrl, environment: $environment, timestamp: $timestamp}' \
+            > "$EVENTS_DIR/Olbrasoft-cr.json"
+
   verify:
     name: Verify production
     runs-on: self-hosted
@@ -138,3 +156,19 @@ jobs:
           url: https://ceskarepublika.wiki
           checks: health,homepage
           repository: ${{ github.repository }}
+
+      - name: Write verify event for Claude Code
+        if: always()
+        shell: bash
+        run: |
+          EVENTS_DIR="$HOME/.config/claude-channels/deploy-events"
+          mkdir -p "$EVENTS_DIR"
+          jq -n \
+            --arg event "verify-complete" \
+            --arg status "${{ job.status }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg commit "${GITHUB_SHA:0:7}" \
+            --arg environment "production" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{event: $event, status: $status, repository: $repository, commit: $commit, environment: $environment, timestamp: $timestamp}' \
+            > "$EVENTS_DIR/Olbrasoft-cr-verify.json"
