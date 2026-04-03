@@ -124,3 +124,4 @@ MIT
 ---
 
 **Created by [Olbrasoft](https://github.com/Olbrasoft)** · [ceskarepublika.wiki](https://ceskarepublika.wiki)
+<!-- test review trigger pá 3. dubna 2026, 18:08:55 CEST -->
