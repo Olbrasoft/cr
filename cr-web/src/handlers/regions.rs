@@ -29,9 +29,29 @@ impl From<cr_domain::repository::OrpRecord> for OrpRow {
             orp_code: r.orp_code,
             latitude: r.latitude,
             longitude: r.longitude,
-            description: r.description,
+            description: r.description.map(|d| sanitize_description(&d)),
         }
     }
+}
+
+/// Sanitize AI-generated HTML description to prevent XSS.
+/// Only allows <p> and <a> tags with href and title attributes.
+fn sanitize_description(html: &str) -> String {
+    use std::collections::{HashMap, HashSet};
+
+    let tags: HashSet<&str> = ["p", "a"].into_iter().collect();
+    let a_attrs: HashSet<&str> = ["href", "title"].into_iter().collect();
+    let mut tag_attrs: HashMap<&str, HashSet<&str>> = HashMap::new();
+    tag_attrs.insert("a", a_attrs);
+    let schemes: HashSet<&str> = ["https"].into_iter().collect();
+
+    ammonia::Builder::default()
+        .tags(tags)
+        .tag_attributes(tag_attrs)
+        .url_schemes(schemes)
+        .link_rel(Some("noopener"))
+        .clean(html)
+        .to_string()
 }
 
 pub(crate) async fn render_region(
