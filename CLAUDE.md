@@ -56,8 +56,8 @@ Before marking any UI change as done, EVERY visible element on the page must be 
 - Docker image must be minimal — only production binary + static assets + data
 - No Python, no test frameworks, no browsers on the server
 
-**CI/CD feedback is push-based via asyncRewake hooks — no CronCreate polling needed.**
-Deploy and code review events arrive automatically via event files in `~/.config/claude-channels/deploy-events/`. Claude Code wakes instantly from idle when events arrive. See `ci-workflow-monitor` skill for event handling details.
+**CI/CD feedback is push-based via FIFO pipes — no CronCreate polling needed.**
+Deploy and code review events arrive automatically via event files + FIFO wake. Claude Code wakes instantly from idle when events arrive. See `ci-workflow-monitor` skill for event handling details.
 
 **NEVER close a GitHub issue before production verification.** Closing an issue means the work is DONE and verified on production. The sequence is:
 1. PR merged → deploy runs → Playwright verifies → THEN close issue
@@ -245,29 +245,29 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 All work is **issue-driven** and the CI/CD pipeline runs **fully autonomously** — never ask the user, just act.
 
-**CI/CD feedback is push-based** — no CronCreate polling needed. Events arrive automatically via asyncRewake hooks.
+**CI/CD feedback is push-based via FIFO pipes** — no CronCreate polling needed. Events arrive automatically.
 
-#### Full Lifecycle (push-based, automatic)
+#### Full Lifecycle (FIFO push-based, automatic)
 
 1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
 2. **Implement** — Create feature branch, write code, test locally
 3. **PR** — Push branch, create PR
 4. **Continue working** — Start next issue while CI/review runs (pipeline processing)
-5. *(Push)* Code review completes → asyncRewake wakes Claude Code → read comments, fix, push
-6. *(Push)* CI passes + review done → merge PR
-7. *(Push)* Deploy completes → asyncRewake wakes Claude Code → verify production
-8. *(Push)* Read issue description → verify issue-specific changes on production via Playwright/curl
+5. *(FIFO push)* Code review completes → `wake-claude.sh` wakes session by branch → read comments, fix, push
+6. *(FIFO push)* CI passes + review done → merge PR
+7. *(FIFO push)* Deploy completes → `wake-claude.sh` wakes ALL sessions → verify production
+8. *(FIFO push)* Read issue description → verify issue-specific changes on production via Playwright/curl
 9. Notify result → close issue
 
-#### Push-Based CI/CD Notifications (asyncRewake Hooks)
+#### FIFO-Based Push Wake Notifications
 
-Events arrive automatically via two mechanisms:
+Events arrive automatically via two mechanisms. No polling, no inotifywait, no flock.
 
 **Deploy notification:**
-GitHub Actions writes event file to `~/.config/claude-channels/deploy-events/Olbrasoft-cr.json` after deploy → `watch-deploy-events.sh` (asyncRewake) detects file → wakes Claude Code instantly.
+GitHub Actions writes event file to `~/.config/claude-channels/deploy-events/Olbrasoft-cr.json` + calls `wake-claude.sh Olbrasoft/cr` → wakes ALL Claude Code sessions for this repo via FIFO.
 
 **Code review notification:**
-`gh webhook forward` service receives `pull_request_review` events via WebSocket → `webhook-receiver.py` writes event file → `watch-deploy-events.sh` (asyncRewake) detects file → wakes Claude Code instantly.
+`gh webhook forward` service receives `pull_request_review` events via WebSocket → `webhook-receiver.py` writes event file + calls `wake-claude.sh Olbrasoft/cr {branch}` → wakes ONLY the session on that PR's branch.
 
 **How to react to push events:**
 
@@ -319,9 +319,9 @@ Pipeline:
 3. Tests (cloud)
 4. Deploy: rsync + docker build + health check (self-hosted runner)
 5. **Notify**: TTS notification via VirtualAssistant (self-hosted runner)
-6. **Push event**: Write `Olbrasoft-cr.json` to deploy-events → asyncRewake wakes Claude Code
+6. **FIFO wake**: Write `Olbrasoft-cr.json` + call `wake-claude.sh` → FIFO wakes Claude Code
 7. **Verify**: Playwright health + homepage check (self-hosted runner)
-8. **Push event**: Write `Olbrasoft-cr-verify.json` → asyncRewake wakes Claude Code
+8. **FIFO wake**: Write `Olbrasoft-cr-verify.json` + call `wake-claude.sh` → FIFO wakes Claude Code
 
 **Manual deploy (emergency only):**
 ```bash
