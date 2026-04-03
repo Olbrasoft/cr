@@ -10,14 +10,23 @@ use tokio::sync::Mutex;
 
 use crate::state::AppState;
 
-/// Shared state for tracking prepared video downloads.
-pub type VideoDownloads = Arc<Mutex<HashMap<String, PreparedVideo>>>;
+/// Shared state for tracking video download tasks (async).
+pub type VideoDownloads = Arc<Mutex<HashMap<String, VideoTask>>>;
 
-pub struct PreparedVideo {
+pub struct VideoTask {
+    pub status: DownloadStatus,
     pub file_path: std::path::PathBuf,
     pub filename: String,
     #[allow(dead_code)]
     pub created_at: std::time::Instant,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum DownloadStatus {
+    Downloading,
+    Ready { size_mb: f64 },
+    Failed { error: String },
 }
 
 // --- Request/Response types ---
@@ -183,43 +192,72 @@ pub async fn video_prepare(
     let filename = format!("{safe_title}.{}", format.ext);
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
-    // Download the video
-    let size = cr_infra::video::download_video(
-        &state.http_client,
-        &url,
-        &format.format_id,
-        &format.resolution,
-        &file_path,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("Video download failed: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(VideoErrorResponse {
-                error: format!("Stažení se nezdařilo: {e}"),
-            }),
-        )
-    })?;
-
-    let size_mb = size as f64 / (1024.0 * 1024.0);
-
-    // Store download info
+    // Store task as "downloading"
     state.video_downloads.lock().await.insert(
         token.clone(),
-        PreparedVideo {
-            file_path,
+        VideoTask {
+            status: DownloadStatus::Downloading,
+            file_path: file_path.clone(),
             filename,
             created_at: std::time::Instant::now(),
         },
     );
 
-    tracing::info!("Video prepared: {token} ({size_mb:.1} MB) for {url}");
+    // Spawn download in background — returns immediately
+    let dl_token = token.clone();
+    let dl_url = url.clone();
+    let dl_format_id = format.format_id.clone();
+    let dl_resolution = format.resolution.clone();
+    let dl_state = state.clone();
+    let dl_client = state.http_client.clone();
+
+    tokio::spawn(async move {
+        let result = cr_infra::video::download_video(
+            &dl_client,
+            &dl_url,
+            &dl_format_id,
+            &dl_resolution,
+            &file_path,
+        )
+        .await;
+
+        let mut downloads = dl_state.video_downloads.lock().await;
+        if let Some(task) = downloads.get_mut(&dl_token) {
+            match result {
+                Ok(size) => {
+                    let size_mb = size as f64 / (1024.0 * 1024.0);
+                    tracing::info!("Video ready: {dl_token} ({size_mb:.1} MB) for {dl_url}");
+                    task.status = DownloadStatus::Ready {
+                        size_mb: (size_mb * 10.0).round() / 10.0,
+                    };
+                }
+                Err(e) => {
+                    tracing::error!("Video download failed for {dl_url}: {e}");
+                    task.status = DownloadStatus::Failed {
+                        error: format!("Stažení se nezdařilo: {e}"),
+                    };
+                }
+            }
+        }
+    });
+
+    tracing::info!("Video download started: {token} for {url}");
 
     Ok(Json(VideoPrepareResponse {
         token,
-        size_mb: (size_mb * 10.0).round() / 10.0,
+        size_mb: 0.0,
     }))
+}
+
+pub async fn video_status(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<DownloadStatus>, StatusCode> {
+    let downloads = state.video_downloads.lock().await;
+    downloads
+        .get(&token)
+        .map(|task| Json(task.status.clone()))
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 pub async fn video_file(
@@ -227,12 +265,16 @@ pub async fn video_file(
     Path(token): Path<String>,
 ) -> impl IntoResponse {
     let downloads = state.video_downloads.lock().await;
-    let prepared = match downloads.get(&token) {
-        Some(p) => p,
+    let task = match downloads.get(&token) {
+        Some(t) if matches!(t.status, DownloadStatus::Ready { .. }) => t,
+        Some(_) => {
+            return (StatusCode::CONFLICT, "Video is still downloading").into_response();
+        }
         None => {
             return (StatusCode::NOT_FOUND, "Video not found or expired").into_response();
         }
     };
+    let prepared = task;
 
     let bytes = match tokio::fs::read(&prepared.file_path).await {
         Ok(b) => b,

@@ -86,6 +86,10 @@ async fn main() -> Result<()> {
             axum::routing::post(handlers::video_prepare),
         )
         .route(
+            "/video/status/{token}",
+            axum::routing::get(handlers::video_status),
+        )
+        .route(
             "/video/file/{token}",
             axum::routing::get(handlers::video_file),
         )
