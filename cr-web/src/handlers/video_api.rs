@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use axum::extract::State;
 use axum::http::{StatusCode, header};
@@ -18,6 +19,7 @@ pub type VideoDownloads = Arc<Mutex<HashMap<String, VideoTask>>>;
 
 pub struct VideoTask {
     pub status: DownloadStatus,
+    pub progress: Arc<AtomicU8>,
     pub file_path: std::path::PathBuf,
     pub filename: String,
     #[allow(dead_code)]
@@ -27,7 +29,7 @@ pub struct VideoTask {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum DownloadStatus {
-    Downloading,
+    Downloading { progress_percent: u8 },
     Ready { size_mb: f64 },
     Failed { error: String },
 }
@@ -194,11 +196,15 @@ pub async fn video_prepare(
     let filename = format!("{safe_title}.{}", format.ext);
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
-    // Store task as "downloading"
+    // Store task as "downloading" with shared progress counter
+    let progress = Arc::new(AtomicU8::new(0));
     state.video_downloads.lock().await.insert(
         token.clone(),
         VideoTask {
-            status: DownloadStatus::Downloading,
+            status: DownloadStatus::Downloading {
+                progress_percent: 0,
+            },
+            progress: progress.clone(),
             file_path: file_path.clone(),
             filename,
             created_at: std::time::Instant::now(),
@@ -216,7 +222,6 @@ pub async fn video_prepare(
     // Check concurrency limit before spawning
     let permit = VIDEO_DOWNLOAD_SEMAPHORE.try_acquire();
     if permit.is_err() {
-        // Too many concurrent downloads — mark as failed immediately
         if let Some(t) = state.video_downloads.lock().await.get_mut(&token) {
             t.status = DownloadStatus::Failed {
                 error: "Příliš mnoho souběžných stahování. Zkuste to za chvíli.".to_string(),
@@ -226,14 +231,15 @@ pub async fn video_prepare(
     }
 
     tokio::spawn(async move {
-        let _permit = permit.unwrap(); // held until dropped at end of block
+        let _permit = permit.unwrap();
 
-        let result = cr_infra::video::download_video(
+        let result = cr_infra::video::download_video_with_progress(
             &dl_client,
             &dl_url,
             &dl_format_id,
             &dl_resolution,
             &file_path,
+            Some(progress),
         )
         .await;
 
@@ -268,12 +274,21 @@ pub async fn video_status(
 ) -> impl IntoResponse {
     let downloads = state.video_downloads.lock().await;
     match downloads.get(&token) {
-        Some(task) => (
-            StatusCode::OK,
-            [(header::CACHE_CONTROL, "no-store")],
-            Json(task.status.clone()),
-        )
-            .into_response(),
+        Some(task) => {
+            // For downloading status, read live progress from atomic counter
+            let status = match &task.status {
+                DownloadStatus::Downloading { .. } => DownloadStatus::Downloading {
+                    progress_percent: task.progress.load(Ordering::Relaxed),
+                },
+                other => other.clone(),
+            };
+            (
+                StatusCode::OK,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(status),
+            )
+                .into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             [(header::CACHE_CONTROL, "no-store")],
