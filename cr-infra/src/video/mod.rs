@@ -417,21 +417,7 @@ async fn instagram_extract_info(client: &reqwest::Client, url: &str) -> Result<V
     let mut video_url = None;
     let mut thumbnail_url = None;
 
-    // Find thumbnail proxy URL (i.snapcdn.app/photo?token=...)
-    if let Some(idx) = html.find("i.snapcdn.app/photo?token=") {
-        // Go back to find the full URL start (https://)
-        let search_start = idx.saturating_sub(50);
-        if let Some(url_start) = html[search_start..idx].rfind("https://") {
-            let abs_start = search_start + url_start;
-            let end = html[abs_start..]
-                .find('"')
-                .map(|e| abs_start + e)
-                .unwrap_or(html.len());
-            thumbnail_url = Some(html[abs_start..end].to_string());
-        }
-    }
-
-    // Find video download links — decode JWT tokens to get CDN URLs
+    // Find all JWT tokens — extract CDN URLs for video and thumbnail
     for cap in html.match_indices("token=") {
         let start = cap.0 + 6;
         let end = html[start..]
@@ -449,10 +435,14 @@ async fn instagram_extract_info(client: &reqwest::Client, url: &str) -> Result<V
             if let Ok(decoded) = base64_decode(&padded)
                 && let Ok(claims) = serde_json::from_str::<serde_json::Value>(&decoded)
                 && let Some(cdn_url) = claims.get("url").and_then(|u| u.as_str())
-                && cdn_url.contains(".mp4")
-                && video_url.is_none()
             {
-                video_url = Some(cdn_url.to_string());
+                if cdn_url.contains(".mp4") && video_url.is_none() {
+                    video_url = Some(cdn_url.to_string());
+                } else if (cdn_url.contains(".jpg") || cdn_url.contains(".png"))
+                    && thumbnail_url.is_none()
+                {
+                    thumbnail_url = Some(cdn_url.to_string());
+                }
             }
         }
     }
