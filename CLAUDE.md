@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 Instructions for Claude Code when working in this repository.
+<!-- asyncRewake test 2: deploy event delivery -->
 
 ## CRITICAL — Issue Completion Rules (MANDATORY)
 
