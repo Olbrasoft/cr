@@ -99,9 +99,17 @@ pub async fn video_info(
             )
         })?;
 
+    let thumbnail = info.thumbnail.map(|t| {
+        if t.contains("cdninstagram.com") || t.contains("fbcdn.net") {
+            format!("/api/video/thumb?url={}", urlencoding::encode(&t))
+        } else {
+            t
+        }
+    });
+
     Ok(Json(VideoInfoResponse {
         title: info.title,
-        thumbnail: info.thumbnail,
+        thumbnail,
         duration: info.duration,
         uploader: info.uploader,
         formats: info
@@ -328,6 +336,40 @@ pub async fn video_cleanup(State(state): State<AppState>) -> Json<CleanupRespons
         deleted,
         freed_mb: (freed_mb * 10.0).round() / 10.0,
     })
+}
+
+// --- Thumbnail proxy ---
+
+#[derive(Deserialize)]
+pub struct ThumbQuery {
+    url: String,
+}
+
+pub async fn video_thumb(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ThumbQuery>,
+) -> impl IntoResponse {
+    let resp = state
+        .http_client
+        .get(&query.url)
+        .header("User-Agent", "Mozilla/5.0")
+        .header("Referer", "https://www.instagram.com/")
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let ct = r
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg")
+                .to_string();
+            let bytes = r.bytes().await.unwrap_or_default();
+            (StatusCode::OK, [(header::CONTENT_TYPE, ct)], bytes).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, "Thumbnail not available").into_response(),
+    }
 }
 
 /// Sanitize yt-dlp error messages into user-friendly Czech text.

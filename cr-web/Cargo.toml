@@ -27,3 +27,4 @@ dotenvy = { workspace = true }
 image = { workspace = true }
 reqwest = { workspace = true }
 uuid = { workspace = true }
+urlencoding = { workspace = true }

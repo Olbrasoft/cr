@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::video_file),
         )
         .route("/video/recent", axum::routing::get(handlers::video_recent))
+        .route("/video/thumb", axum::routing::get(handlers::video_thumb))
         .route(
             "/video/cleanup",
             axum::routing::delete(handlers::video_cleanup),
