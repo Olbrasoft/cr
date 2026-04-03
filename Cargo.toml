@@ -62,6 +62,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # HTML parsing
 scraper = "0.22"
 
+# Base64
+base64 = "0.22"
+
 # Testing
 tokio-test = "0.4"
 

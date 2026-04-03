@@ -32,18 +32,25 @@ fn is_seznam_url(url: &str) -> bool {
     SEZNAM_DOMAINS.iter().any(|d| url.contains(d))
 }
 
+/// Check if URL is an Instagram reel/video.
+fn is_instagram_url(url: &str) -> bool {
+    url.contains("instagram.com")
+}
+
 // ─── Public API ─────────────────────────────────────────────────────
 
-/// Extract video info. Tries our Seznam extractor first, falls back to yt-dlp.
+/// Extract video info. Tries our extractors first, falls back to yt-dlp.
 pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
     if is_seznam_url(url) {
         seznam_extract_info(client, url).await
+    } else if is_instagram_url(url) {
+        instagram_extract_info(client, url).await
     } else {
         ytdlp_extract_info(url).await
     }
 }
 
-/// Download a video file. Uses direct HTTP for Seznam, yt-dlp for others.
+/// Download a video file. Uses direct HTTP for Seznam/Instagram, yt-dlp for others.
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
@@ -53,6 +60,15 @@ pub async fn download_video(
 ) -> Result<u64> {
     if is_seznam_url(url) {
         let info = seznam_extract_info(client, url).await?;
+        let fmt = info
+            .formats
+            .iter()
+            .find(|f| f.format_id == format_id)
+            .or(info.formats.last())
+            .context("No format available")?;
+        download_direct(client, &fmt.url, output_path).await
+    } else if is_instagram_url(url) {
+        let info = instagram_extract_info(client, url).await?;
         let fmt = info
             .formats
             .iter()
@@ -370,6 +386,98 @@ async fn seznam_extract_info(client: &reqwest::Client, url: &str) -> Result<Vide
         uploader: Some(uploader),
         formats,
     })
+}
+
+// ─── Instagram extractor ────────────────────────────────────────────
+
+/// Extract Instagram video using external API to get CDN URL.
+async fn instagram_extract_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
+    // Use savegram API to extract video CDN URL
+    let resp = client
+        .post("https://savegram.app/api/ajaxSearch")
+        .header("User-Agent", "Mozilla/5.0")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!("q={url}&t=media&lang=en"))
+        .send()
+        .await
+        .context("Failed to call Instagram extraction API")?;
+
+    let body: serde_json::Value = resp.json().await.context("Failed to parse API response")?;
+
+    if body.get("status").and_then(|s| s.as_str()) != Some("ok") {
+        anyhow::bail!("Instagram extraction failed — video may be private or unavailable");
+    }
+
+    let html = body
+        .get("data")
+        .and_then(|d| d.as_str())
+        .unwrap_or_default();
+
+    // Extract download links from HTML response
+    let mut video_url = None;
+    let mut thumbnail_url = None;
+
+    // Find JWT token links and decode to get CDN URLs
+    for cap in html.match_indices("token=") {
+        let start = cap.0 + 6;
+        let end = html[start..]
+            .find('"')
+            .or_else(|| html[start..].find('&'))
+            .map(|e| start + e)
+            .unwrap_or(html.len());
+        let jwt = &html[start..end];
+
+        // Decode JWT payload to get CDN URL
+        if let Some(payload) = jwt.split('.').nth(1) {
+            let mut padded = payload.to_string();
+            while padded.len() % 4 != 0 {
+                padded.push('=');
+            }
+            if let Ok(decoded) = base64_decode(&padded)
+                && let Ok(claims) = serde_json::from_str::<serde_json::Value>(&decoded)
+                && let Some(cdn_url) = claims.get("url").and_then(|u| u.as_str())
+            {
+                if cdn_url.contains(".mp4") && video_url.is_none() {
+                    video_url = Some(cdn_url.to_string());
+                } else if cdn_url.contains(".jpg") && thumbnail_url.is_none() {
+                    thumbnail_url = Some(cdn_url.to_string());
+                }
+            }
+        }
+    }
+
+    let video_url = video_url.context("No video URL found in Instagram response")?;
+
+    // Extract title from HTML
+    let title = body
+        .get("meta")
+        .and_then(|m| m.get("title"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("Instagram Video")
+        .to_string();
+
+    Ok(VideoInfo {
+        title,
+        thumbnail: thumbnail_url,
+        duration: None,
+        uploader: Some("instagram.com".to_string()),
+        formats: vec![VideoFormat {
+            format_id: "best".to_string(),
+            resolution: "original".to_string(),
+            ext: "mp4".to_string(),
+            url: video_url,
+            filesize_approx: None,
+        }],
+    })
+}
+
+/// Simple base64 decode helper.
+fn base64_decode(input: &str) -> Result<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .context("base64 decode failed")?;
+    String::from_utf8(bytes).context("UTF-8 decode failed")
 }
 
 /// Download a file directly via HTTP.

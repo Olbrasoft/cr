@@ -467,6 +467,7 @@ name = "cr-infra"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "cr-app",
  "cr-domain",
  "csv",
