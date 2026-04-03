@@ -158,6 +158,12 @@ jobs:
             echo "jq is not installed on this runner; skipping deploy event write." >&2
           fi
 
+          # Wake ALL Claude Code sessions for this repo via FIFO
+          WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
+          if [ -x "$WAKE_SCRIPT" ]; then
+            "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
+          fi
+
   verify:
     name: Verify production
     runs-on: self-hosted
@@ -195,4 +201,10 @@ jobs:
               > "$EVENTS_DIR/Olbrasoft-cr-verify.json"
           else
             echo "jq is not installed on this runner; skipping verify event write." >&2
+          fi
+
+          # Wake ALL Claude Code sessions for this repo via FIFO
+          WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
+          if [ -x "$WAKE_SCRIPT" ]; then
+            "$WAKE_SCRIPT" "${GITHUB_REPOSITORY}" || true
           fi
