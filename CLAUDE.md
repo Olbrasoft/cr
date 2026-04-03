@@ -275,8 +275,10 @@ GitHub Actions writes event file to `~/.config/claude-channels/deploy-events/Olb
 |---|---|---|
 | `deploy-complete` | `success` | Verify: `curl https://ceskarepublika.wiki/health`. Run Playwright verification. Notify user. |
 | `deploy-complete` | `failure` | Notify user: "Deploy selhal!" with run URL. |
+| `deploy-complete` | `cancelled` | Notify user: "Deploy zrušen." Include run URL. Investigate and re-run if needed. |
 | `verify-complete` | `success` | Production verified by CI. Run issue-specific Playwright test. Close issue if OK. |
 | `verify-complete` | `failure` | Notify user. Investigate and fix. |
+| `verify-complete` | `cancelled` | Notify user: "Verifikace zrušena." Investigate and re-run if needed. |
 | `code-review-complete` | `commented` | Read comments: `gh api repos/Olbrasoft/cr/pulls/{PR}/comments`. Fix ALL. Push. |
 
 See `ci-workflow-monitor` skill for full event handling details.
