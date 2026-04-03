@@ -445,7 +445,7 @@
             return r.json();
         })
         .then(function(data) {
-            showStatus('Stahuji video na serveru\u2026 Prosím čekejte.', false, true);
+            showStatus('Stahuji video na serveru\u2026 0 %', false, true);
             pollDownloadStatus(data.token);
         })
         .catch(function(err) {
@@ -470,14 +470,22 @@
             })
             .then(function(status) {
                 if (status.status === 'ready') {
-                    showStatus('Stahování začíná\u2026 (' + (status.size_mb || '?') + ' MB)', false);
-                    window.location.href = '/api/video/file/' + token;
-                    setTimeout(loadRecent, 2000);
+                    showStatus('Video připraveno (' + (status.size_mb || '?') + ' MB). Stahování začíná\u2026', false);
+                    // Use hidden link to trigger download without navigating away
+                    var a = document.createElement('a');
+                    a.href = '/api/video/file/' + token;
+                    a.download = '';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(loadRecent, 3000);
                     btnDownload.disabled = false;
                 } else if (status.status === 'failed') {
                     showStatus(status.error || 'Stažení se nezdařilo.', true);
                     btnDownload.disabled = false;
                 } else {
+                    var pct = status.progress_percent || 0;
+                    showStatus('Stahuji video na serveru\u2026 ' + pct + ' %', false, true);
                     setTimeout(pollOnce, 3000);
                 }
             })

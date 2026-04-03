@@ -51,12 +51,25 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
 }
 
 /// Download a video file. Uses direct HTTP for Seznam/Instagram, yt-dlp for others.
+/// Optional `progress` atomic tracks download percentage (0-100).
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
     format_id: &str,
     resolution: &str,
     output_path: &std::path::Path,
+) -> Result<u64> {
+    download_video_with_progress(client, url, format_id, resolution, output_path, None).await
+}
+
+/// Download a video file with optional progress tracking.
+pub async fn download_video_with_progress(
+    client: &reqwest::Client,
+    url: &str,
+    format_id: &str,
+    resolution: &str,
+    output_path: &std::path::Path,
+    progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 ) -> Result<u64> {
     if is_seznam_url(url) {
         let info = seznam_extract_info(client, url).await?;
@@ -77,7 +90,7 @@ pub async fn download_video(
             .context("No format available")?;
         download_direct(client, &fmt.url, output_path).await
     } else {
-        ytdlp_download(url, resolution, output_path).await
+        ytdlp_download(url, resolution, output_path, progress).await
     }
 }
 
@@ -231,12 +244,17 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
 
 /// Download a video using yt-dlp subprocess.
 /// Uses format selector that merges video+audio (YouTube serves them separately).
-async fn ytdlp_download(url: &str, resolution: &str, output_path: &std::path::Path) -> Result<u64> {
+async fn ytdlp_download(
+    url: &str,
+    resolution: &str,
+    output_path: &std::path::Path,
+    progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
+) -> Result<u64> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     let output_str = output_path.to_str().context("Invalid output path")?;
 
-    // YouTube splits video and audio into separate streams.
-    // Use a format selector that downloads both and merges via ffmpeg.
-    // Extract height from resolution (e.g., "1080p" → 1080, "720p" → 720)
     let height: String = resolution
         .chars()
         .take_while(|c| c.is_ascii_digit())
@@ -248,24 +266,69 @@ async fn ytdlp_download(url: &str, resolution: &str, output_path: &std::path::Pa
         "bestvideo+bestaudio/best".to_string()
     };
 
-    let output = ytdlp_command()
+    let mut child = ytdlp_command()
         .args([
             "-f",
             &format_selector,
             "--merge-output-format",
             "mp4",
+            "--newline",
             "-o",
             output_str,
             "--no-warnings",
             url,
         ])
-        .output()
-        .await
-        .context("Failed to run yt-dlp download")?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn yt-dlp")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("yt-dlp download failed: {stderr}");
+    // Parse progress from stdout (--newline makes each progress update a separate line)
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let progress_clone = progress.clone();
+
+    let stdout_handle = tokio::spawn(async move {
+        if let Some(stdout) = stdout {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(progress) = &progress_clone {
+                    // Parse "[download]  45.2% of ..."
+                    if line.contains("[download]")
+                        && let Some(pct_str) = line.split_whitespace().find(|s| s.ends_with('%'))
+                        && let Ok(pct) = pct_str.trim_end_matches('%').parse::<f32>()
+                    {
+                        progress.store(pct.min(99.0) as u8, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    });
+
+    let stderr_handle = tokio::spawn(async move {
+        let mut err = String::new();
+        if let Some(stderr) = stderr {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                err.push_str(&line);
+                err.push('\n');
+            }
+        }
+        err
+    });
+
+    let status = child.wait().await.context("yt-dlp process failed")?;
+    let _ = stdout_handle.await;
+    let stderr_output = stderr_handle.await.unwrap_or_default();
+
+    if !status.success() {
+        anyhow::bail!("yt-dlp download failed: {stderr_output}");
+    }
+
+    if let Some(progress) = &progress {
+        progress.store(100, Ordering::Relaxed);
     }
 
     let metadata = tokio::fs::metadata(output_str)
