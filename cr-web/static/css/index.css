@@ -484,4 +484,31 @@ body {
         gap: 1rem;
         align-items: flex-start;
     }
+
+    .premium-footer {
+        padding: 2rem 0 1.5rem 0;
+        margin-top: 3rem;
+    }
+
+    .footer-main {
+        flex-direction: column;
+        align-items: center;
+        gap: 1.5rem;
+        padding-bottom: 1.5rem;
+    }
+
+    .footer-brand {
+        font-size: 1rem;
+        text-align: center;
+    }
+
+    .footer-github {
+        padding: 0.5rem 1rem;
+        font-size: 0.85rem;
+    }
+
+    .footer-legal {
+        justify-content: center;
+        text-align: center;
+    }
 }
