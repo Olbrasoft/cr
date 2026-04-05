@@ -417,6 +417,8 @@
         qualityEl.classList.remove('visible');
         qualityEl.innerHTML = '';
         selectedQuality = 'best';
+        btnDownload.style.display = '';
+        btnDownload.disabled = false;
         btnFetch.disabled = true;
 
         fetch('/api/video/info', {
@@ -621,7 +623,7 @@
         waImg.src = '/static/img/services/whatsapp.svg';
         waImg.alt = 'WhatsApp';
         waBtn.appendChild(waImg);
-        var waLabel = '\u2264720p';
+        var waLabel = '\u2264480p';
         if (whatsappParts > 1) {
             waLabel += ' (' + whatsappParts + '\u00d7)';
         }
