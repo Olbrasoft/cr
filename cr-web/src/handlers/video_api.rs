@@ -299,7 +299,7 @@ pub async fn video_prepare(
         let mut downloads = dl_state.video_downloads.lock().await;
         if let Some(task) = downloads.get_mut(&dl_token) {
             match result {
-                Ok(size) if is_whatsapp => {
+                Ok(_size) if is_whatsapp => {
                     // WhatsApp: convert with ffmpeg
                     let safe: String = task
                         .filename
