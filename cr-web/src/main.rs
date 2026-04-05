@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
             "/video/file/{token}",
             axum::routing::get(handlers::video_file),
         )
+        .route(
+            "/video/file/{token}/{part_index}",
+            axum::routing::get(handlers::video_file_part),
+        )
         .route("/video/recent", axum::routing::get(handlers::video_recent))
         .route("/video/thumb", axum::routing::get(handlers::video_thumb))
         .route(

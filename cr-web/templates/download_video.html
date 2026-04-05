@@ -114,6 +114,33 @@
     border-color: var(--color-gold);
     color: var(--color-gold);
 }
+.quality-btn.whatsapp {
+    border-color: #25D366;
+    color: #25D366;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+.quality-btn.whatsapp.active {
+    background: #25D366;
+    border-color: #25D366;
+    color: white;
+}
+.quality-btn.whatsapp:hover:not(.active) {
+    border-color: #25D366;
+    color: #25D366;
+}
+.quality-btn.whatsapp img {
+    height: 14px;
+    width: 14px;
+}
+.quality-btn.whatsapp.active img {
+    filter: brightness(0) invert(1);
+}
+.whatsapp-parts-note {
+    font-size: 0.75rem;
+    color: #888;
+}
 /* Preview card */
 .video-preview {
     display: none;
@@ -437,7 +464,7 @@
 
             // Update quality buttons from available formats
             if (data.formats && data.formats.length > 0) {
-                updateQualityButtons(data.formats);
+                updateQualityButtons(data.formats, data.whatsapp_parts || 1);
             }
         })
         .catch(function(err) {
@@ -501,44 +528,17 @@
             })
             .then(function(status) {
                 if (status.status === 'ready') {
-                    var fname = status.filename || 'video.mp4';
-                    var fileUrl = '/api/video/file/' + token;
-                    // Hide download button, show download link
-                    btnDownload.style.display = 'none';
-                    var readyLink = document.createElement('a');
-                    readyLink.href = fileUrl;
-                    readyLink.download = fname;
-                    readyLink.className = 'download-ready-link';
-                    var arrowSpan = document.createElement('span');
-                    arrowSpan.className = 'download-arrow';
-                    arrowSpan.textContent = '\u2B07';
-                    readyLink.appendChild(arrowSpan);
-                    readyLink.appendChild(document.createTextNode(' '));
-                    var fnameSpan = document.createElement('span');
-                    fnameSpan.className = 'download-fname';
-                    fnameSpan.textContent = fname;
-                    readyLink.appendChild(fnameSpan);
-                    readyLink.appendChild(document.createTextNode(' '));
-                    var sizeSpan = document.createElement('span');
-                    sizeSpan.className = 'download-size';
-                    sizeSpan.textContent = '(' + (status.size_mb || '?') + ' MB)';
-                    readyLink.appendChild(sizeSpan);
-                    statusEl.textContent = '';
-                    statusEl.appendChild(readyLink);
-                    statusEl.style.display = 'block';
-                    statusEl.style.color = '';
-                    // Auto-trigger download via hidden link
-                    var a = document.createElement('a');
-                    a.href = fileUrl;
-                    a.download = fname;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    setTimeout(loadRecent, 3000);
+                    showSingleDownload(token, status);
+                } else if (status.status === 'ready_parts') {
+                    showMultiPartDownload(token, status.parts);
                 } else if (status.status === 'failed') {
                     showStatus(status.error || 'Stažení se nezdařilo.', true);
                     btnDownload.style.display = '';
                     btnDownload.disabled = false;
+                } else if (status.status === 'converting') {
+                    var pct = status.progress_percent || 0;
+                    showStatus('Konvertuji pro WhatsApp\u2026 ' + pct + ' %', false, true);
+                    setTimeout(pollOnce, 3000);
                 } else {
                     var pct = status.progress_percent || 0;
                     showStatus('Stahuji video na serveru\u2026 ' + pct + ' %', false, true);
@@ -593,7 +593,7 @@
         catch(e) { return url; }
     }
 
-    function updateQualityButtons(formats) {
+    function updateQualityButtons(formats, whatsappParts) {
         var container = document.getElementById('quality-selector');
         container.innerHTML = '';
 
@@ -617,16 +617,111 @@
             container.appendChild(btn);
         });
 
+        // Add WhatsApp button
+        var waBtn = document.createElement('button');
+        waBtn.className = 'quality-btn whatsapp';
+        waBtn.setAttribute('data-quality', 'whatsapp');
+        var waImg = document.createElement('img');
+        waImg.src = '/static/img/services/whatsapp.svg';
+        waImg.alt = 'WhatsApp';
+        waBtn.appendChild(waImg);
+        var waText = document.createTextNode(' WhatsApp');
+        waBtn.appendChild(waText);
+        if (whatsappParts > 1) {
+            var partsNote = document.createElement('span');
+            partsNote.className = 'whatsapp-parts-note';
+            partsNote.textContent = ' (' + whatsappParts + ' částí)';
+            waBtn.appendChild(partsNote);
+        }
+        waBtn.addEventListener('click', function() {
+            document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
+            waBtn.classList.add('active');
+            selectedQuality = 'whatsapp';
+        });
+        container.appendChild(waBtn);
+
         // Show the quality selector now that we have formats
         container.classList.add('visible');
 
-        // Select the best quality by default (last = highest)
-        var buttons = container.querySelectorAll('.quality-btn');
-        if (buttons.length > 0) {
-            var best = buttons[buttons.length - 1];
+        // Select the best quality by default (last resolution, not WhatsApp)
+        var resButtons = container.querySelectorAll('.quality-btn:not(.whatsapp)');
+        if (resButtons.length > 0) {
+            var best = resButtons[resButtons.length - 1];
             best.classList.add('active');
             selectedQuality = best.getAttribute('data-quality');
         }
+    }
+
+    function showSingleDownload(token, status) {
+        var fname = status.filename || 'video.mp4';
+        var fileUrl = '/api/video/file/' + token;
+        btnDownload.style.display = 'none';
+        var readyLink = document.createElement('a');
+        readyLink.href = fileUrl;
+        readyLink.download = fname;
+        readyLink.className = 'download-ready-link';
+        var arrowSpan = document.createElement('span');
+        arrowSpan.className = 'download-arrow';
+        arrowSpan.textContent = '\u2B07';
+        readyLink.appendChild(arrowSpan);
+        readyLink.appendChild(document.createTextNode(' '));
+        var fnameSpan = document.createElement('span');
+        fnameSpan.className = 'download-fname';
+        fnameSpan.textContent = fname;
+        readyLink.appendChild(fnameSpan);
+        readyLink.appendChild(document.createTextNode(' '));
+        var sizeSpan = document.createElement('span');
+        sizeSpan.className = 'download-size';
+        sizeSpan.textContent = '(' + (status.size_mb || '?') + ' MB)';
+        readyLink.appendChild(sizeSpan);
+        statusEl.textContent = '';
+        statusEl.appendChild(readyLink);
+        statusEl.style.display = 'block';
+        statusEl.style.color = '';
+        // Auto-trigger download
+        var a = document.createElement('a');
+        a.href = fileUrl;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(loadRecent, 3000);
+    }
+
+    function showMultiPartDownload(token, parts) {
+        btnDownload.style.display = 'none';
+        statusEl.textContent = '';
+        statusEl.style.display = 'block';
+        statusEl.style.color = '';
+        var wrapper = document.createElement('div');
+        wrapper.style.textAlign = 'left';
+        wrapper.style.display = 'inline-block';
+        parts.forEach(function(part) {
+            var fileUrl = '/api/video/file/' + token + '/' + part.index;
+            var link = document.createElement('a');
+            link.href = fileUrl;
+            link.download = part.filename;
+            link.className = 'download-ready-link';
+            link.style.display = 'block';
+            link.style.marginBottom = '0.5rem';
+            var arrow = document.createElement('span');
+            arrow.className = 'download-arrow';
+            arrow.textContent = '\u2B07';
+            link.appendChild(arrow);
+            link.appendChild(document.createTextNode(' '));
+            var fnameSpan = document.createElement('span');
+            fnameSpan.className = 'download-fname';
+            fnameSpan.textContent = part.filename;
+            link.appendChild(fnameSpan);
+            link.appendChild(document.createTextNode(' '));
+            var sizeSpan = document.createElement('span');
+            sizeSpan.className = 'download-size';
+            sizeSpan.textContent = '(' + part.size_mb + ' MB)';
+            link.appendChild(sizeSpan);
+            wrapper.appendChild(link);
+        });
+        statusEl.appendChild(wrapper);
+        setTimeout(loadRecent, 3000);
     }
 
     function loadRecent() {
