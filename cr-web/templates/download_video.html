@@ -115,27 +115,13 @@
     color: var(--color-gold);
 }
 .quality-btn.whatsapp {
-    border-color: #25D366;
-    color: #25D366;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
 }
-.quality-btn.whatsapp.active {
-    background: #25D366;
-    border-color: #25D366;
-    color: white;
-}
-.quality-btn.whatsapp:hover:not(.active) {
-    border-color: #25D366;
-    color: #25D366;
-}
 .quality-btn.whatsapp img {
     height: 14px;
     width: 14px;
-}
-.quality-btn.whatsapp.active img {
-    filter: brightness(0) invert(1);
 }
 .whatsapp-parts-note {
     font-size: 0.75rem;
@@ -609,6 +595,16 @@
             btn.className = 'quality-btn';
             btn.setAttribute('data-quality', fmt.format_id);
             btn.textContent = fmt.resolution;
+            var h = parseInt(fmt.resolution, 10) || 0;
+            if (h >= 1080) {
+                btn.title = fmt.resolution + ' \u2014 Full HD, velk\u00fd soubor';
+            } else if (h >= 720) {
+                btn.title = fmt.resolution + ' \u2014 HD kvalita';
+            } else if (h >= 480) {
+                btn.title = fmt.resolution + ' \u2014 SD kvalita, men\u0161\u00ed soubor';
+            } else {
+                btn.title = fmt.resolution + ' \u2014 n\u00edzk\u00e9 rozli\u0161en\u00ed, nejmen\u0161\u00ed soubor';
+            }
             btn.addEventListener('click', function() {
                 document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
                 btn.classList.add('active');
@@ -617,7 +613,7 @@
             container.appendChild(btn);
         });
 
-        // Add WhatsApp button
+        // Add WhatsApp button — looks like other quality buttons but with WA icon
         var waBtn = document.createElement('button');
         waBtn.className = 'quality-btn whatsapp';
         waBtn.setAttribute('data-quality', 'whatsapp');
@@ -625,14 +621,12 @@
         waImg.src = '/static/img/services/whatsapp.svg';
         waImg.alt = 'WhatsApp';
         waBtn.appendChild(waImg);
-        var waText = document.createTextNode(' WhatsApp');
-        waBtn.appendChild(waText);
+        var waLabel = '720p';
         if (whatsappParts > 1) {
-            var partsNote = document.createElement('span');
-            partsNote.className = 'whatsapp-parts-note';
-            partsNote.textContent = ' (' + whatsappParts + ' částí)';
-            waBtn.appendChild(partsNote);
+            waLabel += ' (' + whatsappParts + '\u00d7)';
         }
+        waBtn.appendChild(document.createTextNode(' ' + waLabel));
+        waBtn.title = 'WhatsApp \u2014 max 16 MB, H.264' + (whatsappParts > 1 ? ', ' + whatsappParts + ' \u010d\u00e1st\u00ed' : '');
         waBtn.addEventListener('click', function() {
             document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
             waBtn.classList.add('active');
