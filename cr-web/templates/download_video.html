@@ -595,6 +595,16 @@
             btn.className = 'quality-btn';
             btn.setAttribute('data-quality', fmt.format_id);
             btn.textContent = fmt.resolution;
+            var h = parseInt(fmt.resolution, 10) || 0;
+            if (h >= 1080) {
+                btn.title = fmt.resolution + ' \u2014 Full HD, velk\u00fd soubor';
+            } else if (h >= 720) {
+                btn.title = fmt.resolution + ' \u2014 HD kvalita';
+            } else if (h >= 480) {
+                btn.title = fmt.resolution + ' \u2014 SD kvalita, men\u0161\u00ed soubor';
+            } else {
+                btn.title = fmt.resolution + ' \u2014 n\u00edzk\u00e9 rozli\u0161en\u00ed, nejmen\u0161\u00ed soubor';
+            }
             btn.addEventListener('click', function() {
                 document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
                 btn.classList.add('active');
