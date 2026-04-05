@@ -37,14 +37,24 @@ fn is_instagram_url(url: &str) -> bool {
     url.contains("instagram.com")
 }
 
-/// Check if URL is Nova.cz.
+/// Check if URL is Nova.cz (validates host, not substring).
 fn is_nova_url(url: &str) -> bool {
-    url.contains("nova.cz")
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .map(|host| host == "nova.cz" || host.ends_with(".nova.cz"))
+        .unwrap_or(false)
 }
 
-/// Czech proxy URL for geo-blocked Nova.cz embeds.
-const CZ_PROXY_URL: &str = "http://chobotnice.aspfree.cz/Proxy.ashx";
-const CZ_PROXY_KEY: &str = "cr-proxy-2026-chobotnice";
+/// Czech proxy URL and key for geo-blocked Nova.cz embeds (from env vars).
+fn cz_proxy_config() -> Option<(String, String)> {
+    let url = std::env::var("CZ_PROXY_URL").ok()?;
+    let key = std::env::var("CZ_PROXY_KEY").ok()?;
+    if url.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some((url, key))
+}
 
 // ─── Public API ─────────────────────────────────────────────────────
 
@@ -106,8 +116,8 @@ pub async fn download_video_with_progress(
             .context("No format available")?;
         download_direct(client, &fmt.url, output_path).await
     } else if format_id == "proxy-hls" {
-        // Nova.cz proxy fallback — format_id contains the direct m3u8 URL
-        // Re-extract to get the manifest URL (it has a time-limited token)
+        // Nova.cz proxy fallback — `format_id` is a sentinel, not the direct m3u8 URL.
+        // Re-extract to obtain a fresh tokenized manifest URL from `info.formats[0].url`.
         let info = nova_proxy_extract_info(client, url).await?;
         let m3u8 = &info.formats[0].url;
         ytdlp_download(m3u8, "best", output_path, progress).await
@@ -413,12 +423,14 @@ async fn nova_proxy_extract_info(client: &reqwest::Client, url: &str) -> Result<
         .to_string();
 
     // Step 2: Fetch embed page via Czech proxy
+    let (proxy_base, proxy_key) =
+        cz_proxy_config().context("CZ_PROXY_URL and CZ_PROXY_KEY env vars required")?;
     let embed_url = format!("https://media.cms.nova.cz/embed/{embed_id}");
     let proxy_url = format!(
         "{}?url={}&key={}",
-        CZ_PROXY_URL,
+        proxy_base,
         urlencoding::encode(&embed_url),
-        CZ_PROXY_KEY
+        proxy_key
     );
 
     let embed_html = client

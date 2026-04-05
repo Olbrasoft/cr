@@ -505,8 +505,26 @@
                     var fileUrl = '/api/video/file/' + token;
                     // Hide download button, show download link
                     btnDownload.style.display = 'none';
-                    var linkHtml = '<a href="' + fileUrl + '" download="' + fname + '" class="download-ready-link"><span class="download-arrow">\u2B07</span> <span class="download-fname">' + fname + '</span> <span class="download-size">(' + (status.size_mb || '?') + ' MB)</span></a>';
-                    statusEl.innerHTML = linkHtml;
+                    var readyLink = document.createElement('a');
+                    readyLink.href = fileUrl;
+                    readyLink.download = fname;
+                    readyLink.className = 'download-ready-link';
+                    var arrowSpan = document.createElement('span');
+                    arrowSpan.className = 'download-arrow';
+                    arrowSpan.textContent = '\u2B07';
+                    readyLink.appendChild(arrowSpan);
+                    readyLink.appendChild(document.createTextNode(' '));
+                    var fnameSpan = document.createElement('span');
+                    fnameSpan.className = 'download-fname';
+                    fnameSpan.textContent = fname;
+                    readyLink.appendChild(fnameSpan);
+                    readyLink.appendChild(document.createTextNode(' '));
+                    var sizeSpan = document.createElement('span');
+                    sizeSpan.className = 'download-size';
+                    sizeSpan.textContent = '(' + (status.size_mb || '?') + ' MB)';
+                    readyLink.appendChild(sizeSpan);
+                    statusEl.textContent = '';
+                    statusEl.appendChild(readyLink);
                     statusEl.style.display = 'block';
                     statusEl.style.color = '';
                     // Auto-trigger download via hidden link
