@@ -193,13 +193,20 @@ fn ytdlp_command() -> tokio::process::Command {
         let cookies = cookies.trim();
         if !cookies.is_empty() {
             let path = std::path::Path::new(cookies);
-            let is_valid = path.is_file() && path.metadata().is_ok_and(|m| m.len() > 0);
-            if is_valid {
-                cmd.arg("--cookies").arg(cookies);
-            } else {
-                tracing::warn!(
-                    "YTDLP_COOKIES path is not a valid cookies file, skipping: {cookies}"
-                );
+            match path.metadata() {
+                Ok(meta) if meta.is_file() && meta.len() > 0 => {
+                    cmd.arg("--cookies").arg(cookies);
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "YTDLP_COOKIES path is not a valid cookies file, skipping: {cookies}"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "YTDLP_COOKIES path metadata could not be read, skipping: {cookies}: {err}"
+                    );
+                }
             }
         }
     }
