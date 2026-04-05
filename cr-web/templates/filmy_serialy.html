@@ -1,0 +1,501 @@
+{% extends "base.html" %}
+
+{% block title %}Filmy a seriály{% endblock %}
+
+{% block meta_description %}Sledujte české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/filmy-a-serialy/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <img src="/static/img/logo-stahnout-video.svg"
+            alt="Logo Filmy a seriály" title="Filmy a seriály" class="header-emblem">
+        <h1>Filmy a seriály</h1>
+    </a>
+</div>
+{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem"></div>
+{% endblock %}
+
+{% block head %}
+<style>
+.movies-hero {
+    text-align: center;
+    padding: 2.5rem 0 1.5rem;
+}
+.movies-hero h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-black);
+}
+.movies-hero p {
+    color: #555;
+    margin-top: 0.5rem;
+    font-size: 1.05rem;
+}
+.search-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    border: 1px solid var(--color-gray-border);
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+.search-group {
+    display: flex;
+    gap: 0.75rem;
+}
+.search-input {
+    flex: 1;
+    padding: 0.85rem 1rem;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 24px;
+    font-size: 1rem;
+    font-family: 'Inter', sans-serif;
+    transition: border-color 0.2s;
+}
+.search-input:focus {
+    outline: none;
+    border-color: var(--color-blue);
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
+}
+.search-input::placeholder {
+    color: #aaa;
+}
+.btn-search {
+    background: var(--color-red);
+    color: white;
+    border: none;
+    border-radius: 24px;
+    padding: 0.85rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+.btn-search:hover {
+    background: #b5141a;
+}
+.btn-search:disabled {
+    background: #ccc;
+    cursor: default;
+}
+/* Results grid */
+.results-info {
+    color: #888;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+}
+.results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1.25rem;
+}
+.movie-card {
+    background: white;
+    border-radius: 10px;
+    border: 1px solid var(--color-gray-border);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+.movie-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
+.movie-card img {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    background: #e8e8e8;
+}
+.movie-card .card-info {
+    padding: 0.75rem;
+}
+.movie-card .card-title {
+    font-weight: 600;
+    font-size: 0.88rem;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    color: var(--color-black);
+}
+.movie-card .card-year {
+    color: #888;
+    font-size: 0.78rem;
+    margin-top: 0.25rem;
+}
+/* Player */
+.player-section {
+    display: none;
+    margin-bottom: 2rem;
+}
+.player-section.visible {
+    display: block;
+}
+.btn-back {
+    background: var(--color-gray-border);
+    color: var(--color-black);
+    border: none;
+    border-radius: 20px;
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    margin-bottom: 1rem;
+    transition: background 0.15s;
+}
+.btn-back:hover {
+    background: #ccc;
+}
+.video-container {
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 16/9;
+}
+.video-container video {
+    width: 100%;
+    height: 100%;
+}
+.now-playing {
+    margin-top: 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--color-black);
+}
+/* Status */
+.status-msg {
+    display: none;
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.95rem;
+    color: #555;
+}
+.status-msg.visible {
+    display: block;
+}
+.status-msg.error {
+    color: var(--color-red);
+}
+.spinner-sm {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--color-gray-border);
+    border-top-color: var(--color-blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+@media (max-width: 600px) {
+    .search-group { flex-direction: column; }
+    .movies-hero h2 { font-size: 1.5rem; }
+    .results-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Filmy a seriály</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="movies-hero">
+    <h2>Filmy a seriály</h2>
+    <p>Vyhledejte a sledujte české filmy a seriály online</p>
+</section>
+
+<div class="search-card">
+    <div class="search-group">
+        <label for="search-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">Hledat film nebo seriál</label>
+        <input type="text" class="search-input" id="search-input"
+               placeholder="Hledej film nebo seriál (např. Matrix, Angelika, Lovci zločinců...)"
+               autocomplete="off" spellcheck="false">
+        <button class="btn-search" id="btn-search">Hledat</button>
+    </div>
+</div>
+
+<div class="status-msg" id="status-msg">
+    <span class="spinner-sm" id="status-spinner" style="display:none;"></span>
+    <span id="status-text"></span>
+</div>
+
+<div class="player-section" id="player-section">
+    <button class="btn-back" id="btn-back">&#8592; Zpět na výsledky</button>
+    <div class="video-container">
+        <video id="video-player" controls></video>
+    </div>
+    <div class="now-playing" id="now-playing"></div>
+</div>
+
+<div id="results-section" style="display:none;">
+    <div class="results-info" id="results-info"></div>
+    <div class="results-grid" id="results-grid"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script>
+(function() {
+    var searchInput = document.getElementById('search-input');
+    var btnSearch = document.getElementById('btn-search');
+    var statusMsg = document.getElementById('status-msg');
+    var statusSpinner = document.getElementById('status-spinner');
+    var statusText = document.getElementById('status-text');
+    var resultsSection = document.getElementById('results-section');
+    var resultsGrid = document.getElementById('results-grid');
+    var resultsInfo = document.getElementById('results-info');
+    var playerSection = document.getElementById('player-section');
+    var videoPlayer = document.getElementById('video-player');
+    var nowPlaying = document.getElementById('now-playing');
+    var btnBack = document.getElementById('btn-back');
+
+    var currentResults = [];
+    var hls = null;
+
+    function showStatus(text, isError, loading) {
+        statusText.textContent = text;
+        statusSpinner.style.display = loading ? 'inline-block' : 'none';
+        statusMsg.classList.add('visible');
+        statusMsg.classList.toggle('error', !!isError);
+    }
+
+    function hideStatus() {
+        statusMsg.classList.remove('visible');
+        statusMsg.classList.remove('error');
+    }
+
+    function showResults() {
+        resultsSection.style.display = 'block';
+        playerSection.classList.remove('visible');
+    }
+
+    function showPlayer() {
+        resultsSection.style.display = 'none';
+        playerSection.classList.add('visible');
+    }
+
+    // Search
+    btnSearch.addEventListener('click', searchMovies);
+    searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); searchMovies(); }
+    });
+
+    function searchMovies() {
+        var query = searchInput.value.trim();
+        if (!query) {
+            showStatus('Zadejte n\u00e1zev filmu nebo seri\u00e1lu.', true);
+            return;
+        }
+
+        stopVideo();
+        showStatus('Vyhled\u00e1v\u00e1m\u2026', false, true);
+        resultsSection.style.display = 'none';
+        playerSection.classList.remove('visible');
+        btnSearch.disabled = true;
+
+        fetch('/api/movies/search?q=' + encodeURIComponent(query))
+        .then(function(r) {
+            if (!r.ok) throw new Error('Server vr\u00e1til chybu ' + r.status);
+            return r.json();
+        })
+        .then(function(data) {
+            if (data.success && data.movies && data.movies.length > 0) {
+                currentResults = data.movies;
+                hideStatus();
+                displayResults(data.movies, query);
+            } else {
+                showStatus('Nic nenalezeno pro \u201e' + query + '\u201c', true);
+            }
+        })
+        .catch(function(err) {
+            showStatus('Chyba: ' + err.message, true);
+        })
+        .finally(function() {
+            btnSearch.disabled = false;
+        });
+    }
+
+    function displayResults(movies, query) {
+        resultsInfo.textContent = 'Nalezeno ' + movies.length + ' v\u00fdsledk\u016f pro \u201e' + query + '\u201c (ov\u011b\u0159uji dostupnost\u2026)';
+        resultsGrid.innerHTML = '';
+
+        var cardElements = [];
+
+        movies.forEach(function(movie, index) {
+            var card = document.createElement('div');
+            card.className = 'movie-card';
+            card.setAttribute('data-url', movie.url);
+
+            var img = document.createElement('img');
+            img.src = movie.thumbnail || '';
+            img.alt = movie.title;
+            img.onerror = function() { this.style.background = '#ddd'; };
+            card.appendChild(img);
+
+            var info = document.createElement('div');
+            info.className = 'card-info';
+            var title = document.createElement('div');
+            title.className = 'card-title';
+            title.textContent = movie.title;
+            info.appendChild(title);
+            if (movie.year) {
+                var year = document.createElement('div');
+                year.className = 'card-year';
+                year.textContent = movie.year;
+                info.appendChild(year);
+            }
+            card.appendChild(info);
+
+            card.addEventListener('click', function() {
+                playMovie(movie);
+            });
+
+            resultsGrid.appendChild(card);
+            cardElements[index] = card;
+        });
+
+        showResults();
+        validateInBackground(movies, query, cardElements);
+    }
+
+    function validateInBackground(movies, query, cardElements) {
+        var validCount = movies.length;
+        var checkedCount = 0;
+        var concurrency = 5;
+
+        function processChunk(startIndex) {
+            var chunk = [];
+            for (var i = startIndex; i < Math.min(startIndex + concurrency, movies.length); i++) {
+                chunk.push({ movie: movies[i], index: i });
+            }
+            if (chunk.length === 0) {
+                resultsInfo.textContent = 'Nalezeno ' + validCount + ' funk\u010dn\u00edch v\u00fdsledk\u016f pro \u201e' + query + '\u201c';
+                if (validCount === 0) {
+                    showStatus('\u017d\u00e1dn\u00e9 funk\u010dn\u00ed video nenalezeno.', true);
+                }
+                return;
+            }
+
+            var promises = chunk.map(function(item) {
+                return fetch('/api/movies/validate?url=' + encodeURIComponent(item.movie.url))
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        checkedCount++;
+                        if (!data.valid) {
+                            var card = cardElements[item.index];
+                            if (card && card.parentNode) {
+                                card.remove();
+                                validCount--;
+                            }
+                        }
+                        resultsInfo.textContent = 'Nalezeno ' + validCount + ' funk\u010dn\u00edch v\u00fdsledk\u016f (ov\u011b\u0159eno ' + checkedCount + '/' + movies.length + ')';
+                    })
+                    .catch(function() { checkedCount++; });
+            });
+
+            Promise.all(promises).then(function() {
+                processChunk(startIndex + concurrency);
+            });
+        }
+
+        processChunk(0);
+    }
+
+    function playMovie(movie) {
+        showStatus('Na\u010d\u00edt\u00e1m video\u2026', false, true);
+        showPlayer();
+        nowPlaying.textContent = movie.title;
+
+        fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success && data.video_url) {
+                hideStatus();
+                loadVideo(data.video_url);
+            } else {
+                showStatus(data.error || 'Video se nepoda\u0159ilo na\u010d\u00edst.', true);
+            }
+        })
+        .catch(function(err) {
+            showStatus('Chyba: ' + err.message, true);
+        });
+    }
+
+    function loadVideo(url) {
+        stopVideo();
+
+        if (url.indexOf('.m3u8') !== -1) {
+            // HLS stream
+            if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                hls = new Hls();
+                hls.loadSource(url);
+                hls.attachMedia(videoPlayer);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    videoPlayer.play().catch(function() {});
+                });
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    if (data.fatal) {
+                        showStatus('Chyba p\u0159ehr\u00e1v\u00e1n\u00ed HLS streamu.', true);
+                    }
+                });
+            } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native HLS
+                videoPlayer.src = url;
+                videoPlayer.play().catch(function() {});
+            } else {
+                showStatus('V\u00e1\u0161 prohl\u00ed\u017ee\u010d nepodporuje HLS streaming.', true);
+            }
+        } else {
+            // Direct MP4
+            videoPlayer.src = url;
+            videoPlayer.play().catch(function() {});
+        }
+    }
+
+    function stopVideo() {
+        if (hls) {
+            hls.destroy();
+            hls = null;
+        }
+        videoPlayer.pause();
+        videoPlayer.src = '';
+        videoPlayer.load();
+    }
+
+    btnBack.addEventListener('click', function() {
+        stopVideo();
+        hideStatus();
+        playerSection.classList.remove('visible');
+        if (currentResults.length > 0) {
+            resultsSection.style.display = 'block';
+        }
+    });
+
+    // Check URL params on load
+    var params = new URLSearchParams(window.location.search);
+    var q = params.get('q');
+    if (q) {
+        searchInput.value = q;
+        searchMovies();
+    }
+})();
+</script>
+{% endblock %}

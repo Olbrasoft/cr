@@ -103,6 +103,22 @@ async fn main() -> Result<()> {
             "/video/cleanup",
             axum::routing::delete(handlers::video_cleanup),
         )
+        .route(
+            "/movies/search",
+            axum::routing::get(handlers::movies_api::movies_search),
+        )
+        .route(
+            "/movies/video-url",
+            axum::routing::get(handlers::movies_api::movies_video_url),
+        )
+        .route(
+            "/movies/validate",
+            axum::routing::get(handlers::movies_api::movies_validate),
+        )
+        .route(
+            "/movies/stream",
+            axum::routing::get(handlers::movies_api::movies_stream),
+        )
         .layer(cors);
 
     let app = Router::new()
@@ -120,6 +136,14 @@ async fn main() -> Result<()> {
         .route(
             "/stahnout-video/",
             axum::routing::get(handlers::download_video),
+        )
+        .route(
+            "/filmy-a-serialy",
+            axum::routing::get(handlers::filmy_serialy),
+        )
+        .route(
+            "/filmy-a-serialy/",
+            axum::routing::get(handlers::filmy_serialy),
         )
         .route("/koupani", axum::routing::get(handlers::pools_hub))
         .route("/koupani/", axum::routing::get(handlers::pools_hub))
