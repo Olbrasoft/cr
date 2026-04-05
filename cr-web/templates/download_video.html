@@ -599,8 +599,8 @@
 
         // Sort by resolution height (ascending) so highest is last
         var sorted = formats.slice().sort(function(a, b) {
-            var aH = parseInt(a.resolution) || 0;
-            var bH = parseInt(b.resolution) || 0;
+            var aH = parseInt(a.resolution, 10) || 0;
+            var bH = parseInt(b.resolution, 10) || 0;
             return aH - bH;
         });
 
