@@ -249,7 +249,10 @@ pub async fn movies_video_url(
     }))
 }
 
-/// Validate video availability via CzProxy
+/// PHP proxy URL for prehraj.to validation (ASP.NET proxy returns 401, PHP works).
+const PREHRAJTO_PHP_PROXY: &str = "http://tumarsrobot.unas.cz/index.php";
+
+/// Validate video availability via PHP proxy (tumarsrobot.unas.cz)
 pub async fn movies_validate(
     State(state): State<AppState>,
     Query(params): Query<ValidateQuery>,
@@ -262,22 +265,11 @@ pub async fn movies_validate(
             error: Some("Missing url".to_string()),
         });
     }
-
-    let config = cz_proxy_config();
-    if config.is_none() {
-        return Json(ValidateResponse {
-            valid: false,
-            status: None,
-            error: Some("Proxy not configured".to_string()),
-        });
-    }
-    let (proxy_url, proxy_key) = config.unwrap();
-
+    // Use PHP proxy for validation — ASP.NET proxy returns 401 for valid CDN URLs
     let req_url = format!(
-        "{}?action=validate&url={}&key={}",
-        proxy_url,
+        "{}?action=validate&url={}",
+        PREHRAJTO_PHP_PROXY,
         urlencoding::encode(&url),
-        proxy_key
     );
 
     match state
