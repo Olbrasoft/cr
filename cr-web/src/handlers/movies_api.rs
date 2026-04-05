@@ -106,7 +106,11 @@ fn is_allowed_stream_url(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .map(|h| STREAM_ALLOWED_DOMAINS.iter().any(|d| h.ends_with(d)))
+        .map(|h| {
+            STREAM_ALLOWED_DOMAINS
+                .iter()
+                .any(|d| h == *d || h.ends_with(&format!(".{d}")))
+        })
         .unwrap_or(false)
 }
 
@@ -310,6 +314,9 @@ pub async fn movies_stream(
     req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
     let video_url = params.url.trim().to_string();
+    if video_url.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Missing url").into_response();
+    }
     if !is_allowed_stream_url(&video_url) {
         return (StatusCode::BAD_REQUEST, "URL not allowed").into_response();
     }
