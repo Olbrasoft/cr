@@ -252,6 +252,37 @@
     .preview-thumb { width: 100%; height: auto; aspect-ratio: 16/9; }
     .download-hero h2 { font-size: 1.5rem; }
 }
+.download-ready-link {
+    color: var(--color-link);
+    text-decoration: none;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: color 0.2s;
+}
+.download-arrow {
+    color: var(--color-gold);
+    transition: color 0.2s;
+}
+.download-fname {
+    transition: all 0.2s;
+}
+.download-size {
+    color: #888;
+    font-weight: 400;
+    font-size: 0.9rem;
+}
+.download-ready-link:hover {
+    color: var(--color-blue);
+}
+.download-ready-link:hover .download-arrow {
+    color: var(--color-blue);
+}
+.download-ready-link:hover .download-fname {
+    text-decoration: underline;
+    text-decoration-color: var(--color-blue);
+}
 </style>
 {% endblock %}
 
@@ -423,7 +454,7 @@
         if (!url) return;
 
         showStatus('Připravuji stažení\u2026', false, true);
-        btnDownload.disabled = true;
+        btnDownload.style.display = 'none';
 
         fetch('/api/video/prepare', {
             method: 'POST',
@@ -470,18 +501,43 @@
             })
             .then(function(status) {
                 if (status.status === 'ready') {
-                    showStatus('Video připraveno (' + (status.size_mb || '?') + ' MB). Stahování začíná\u2026', false);
-                    // Use hidden link to trigger download without navigating away
+                    var fname = status.filename || 'video.mp4';
+                    var fileUrl = '/api/video/file/' + token;
+                    // Hide download button, show download link
+                    btnDownload.style.display = 'none';
+                    var readyLink = document.createElement('a');
+                    readyLink.href = fileUrl;
+                    readyLink.download = fname;
+                    readyLink.className = 'download-ready-link';
+                    var arrowSpan = document.createElement('span');
+                    arrowSpan.className = 'download-arrow';
+                    arrowSpan.textContent = '\u2B07';
+                    readyLink.appendChild(arrowSpan);
+                    readyLink.appendChild(document.createTextNode(' '));
+                    var fnameSpan = document.createElement('span');
+                    fnameSpan.className = 'download-fname';
+                    fnameSpan.textContent = fname;
+                    readyLink.appendChild(fnameSpan);
+                    readyLink.appendChild(document.createTextNode(' '));
+                    var sizeSpan = document.createElement('span');
+                    sizeSpan.className = 'download-size';
+                    sizeSpan.textContent = '(' + (status.size_mb || '?') + ' MB)';
+                    readyLink.appendChild(sizeSpan);
+                    statusEl.textContent = '';
+                    statusEl.appendChild(readyLink);
+                    statusEl.style.display = 'block';
+                    statusEl.style.color = '';
+                    // Auto-trigger download via hidden link
                     var a = document.createElement('a');
-                    a.href = '/api/video/file/' + token;
-                    a.download = '';
+                    a.href = fileUrl;
+                    a.download = fname;
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
                     setTimeout(loadRecent, 3000);
-                    btnDownload.disabled = false;
                 } else if (status.status === 'failed') {
                     showStatus(status.error || 'Stažení se nezdařilo.', true);
+                    btnDownload.style.display = '';
                     btnDownload.disabled = false;
                 } else {
                     var pct = status.progress_percent || 0;
@@ -491,6 +547,7 @@
             })
             .catch(function(err) {
                 showStatus('Stažení se nezdařilo: ' + err.message, true);
+                btnDownload.style.display = '';
                 btnDownload.disabled = false;
             });
         }

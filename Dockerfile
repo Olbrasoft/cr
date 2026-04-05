@@ -38,9 +38,10 @@ RUN cargo build --release -p cr-web && \
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip ffmpeg && \
+    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip ffmpeg curl unzip && \
     pip install --no-cache-dir --break-system-packages yt-dlp curl_cffi && \
-    apt-get purge -y python3-pip && apt-get autoremove -y && \
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local DENO_VERSION=v2.7.11 sh && \
+    apt-get purge -y python3-pip curl unzip && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -r -s /bin/false appuser
 

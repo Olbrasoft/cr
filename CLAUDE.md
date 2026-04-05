@@ -323,11 +323,31 @@ Pipeline:
 7. **Verify**: Playwright health + homepage check (self-hosted runner)
 8. **FIFO wake**: Write `Olbrasoft-cr-verify.json` + call `wake-claude.sh` → FIFO wakes Claude Code
 
-**Manual deploy (emergency only):**
+**Quick deploy (during active development, ~20s):**
+
+Cross-compile locally with musl static linking, upload binary, restart container.
+
 ```bash
-rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '.env' --exclude 'data/images/' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
+# 1. Cross-compile (first build ~47s, subsequent ~10s)
+SQLX_OFFLINE=true cargo zigbuild --release --target aarch64-unknown-linux-musl -p cr-web
+
+# 2. Upload binary + replace in container + restart (~10s)
+scp -P 2222 target/aarch64-unknown-linux-musl/release/cr-web root@46.225.101.253:/tmp/cr-web-new
+ssh -p 2222 root@46.225.101.253 "docker cp /tmp/cr-web-new cr-web-1:/app/cr-web && docker compose -f /opt/cr/docker-compose.yml restart web"
+```
+
+**For template/static file changes** (no Rust recompilation needed):
+```bash
+ssh -p 2222 root@46.225.101.253 "docker cp /opt/cr/cr-web/templates/. cr-web-1:/app/templates/ && docker cp /opt/cr/cr-web/static/. cr-web-1:/app/static/ && docker compose -f /opt/cr/docker-compose.yml restart web"
+```
+
+**Full Docker rebuild (when Dockerfile or dependencies change, ~4min):**
+```bash
+rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '.env' --exclude 'data/images/' --exclude 'data/porovnani/' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
 ssh -p 2222 root@46.225.101.253 "cd /opt/cr && docker compose build web && docker compose up -d web"
 ```
+
+**IMPORTANT:** Use `cargo zigbuild` with `aarch64-unknown-linux-musl` target (static linking). Regular `cargo build --target aarch64-unknown-linux-gnu` does NOT work — glibc version mismatch.
 
 ## Current Project Status
 
