@@ -553,7 +553,7 @@ pub(crate) struct DownloadVideoTemplate {
 
 #[derive(Template)]
 #[template(path = "filmy_serialy.html")]
-pub(crate) struct FilmySeriályTemplate {
+pub(crate) struct FilmySerialyTemplate {
     pub(crate) img: String,
 }
 

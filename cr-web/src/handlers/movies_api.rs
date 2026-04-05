@@ -89,6 +89,27 @@ struct ProxyValidateResponse {
     status: Option<u16>,
 }
 
+/// Validate URL is actually from prehraj.to domain.
+fn is_prehrajto_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .map(|h| h == "prehraj.to" || h.ends_with(".prehraj.to"))
+        .unwrap_or(false)
+}
+
+/// Allowed CDN domains for video streaming proxy.
+const STREAM_ALLOWED_DOMAINS: &[&str] = &["premiumcdn.net"];
+
+/// Validate URL is from allowed CDN domain.
+fn is_allowed_stream_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .map(|h| STREAM_ALLOWED_DOMAINS.iter().any(|d| h.ends_with(d)))
+        .unwrap_or(false)
+}
+
 /// Get CzProxy base URL and key from env vars.
 fn cz_proxy_config() -> Option<(String, String)> {
     let url = std::env::var("CZ_PROXY_URL").ok()?;
@@ -151,11 +172,15 @@ pub async fn movies_search(
         .movies
         .unwrap_or_default()
         .into_iter()
-        .map(|m| MovieResult {
-            url: m.url.unwrap_or_default(),
-            title: m.title.unwrap_or_default(),
-            thumbnail: m.thumbnail.unwrap_or_default(),
-            year: m.year.unwrap_or_default(),
+        .filter_map(|m| {
+            let url = m.url.filter(|s| !s.trim().is_empty())?;
+            let title = m.title.filter(|s| !s.trim().is_empty())?;
+            Some(MovieResult {
+                url,
+                title,
+                thumbnail: m.thumbnail.unwrap_or_default(),
+                year: m.year.unwrap_or_default(),
+            })
         })
         .collect();
 
@@ -175,7 +200,7 @@ pub async fn movies_video_url(
     Query(params): Query<VideoUrlQuery>,
 ) -> Result<Json<VideoUrlResponse>, (StatusCode, String)> {
     let video_url = params.url.trim().to_string();
-    if video_url.is_empty() || !video_url.contains("prehraj.to") {
+    if !is_prehrajto_url(&video_url) {
         return Err((
             StatusCode::BAD_REQUEST,
             "Invalid prehraj.to URL".to_string(),
@@ -285,8 +310,8 @@ pub async fn movies_stream(
     req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
     let video_url = params.url.trim().to_string();
-    if video_url.is_empty() {
-        return (StatusCode::BAD_REQUEST, "Missing url").into_response();
+    if !is_allowed_stream_url(&video_url) {
+        return (StatusCode::BAD_REQUEST, "URL not allowed").into_response();
     }
 
     let config = cz_proxy_config();
