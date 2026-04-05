@@ -30,7 +30,7 @@ pub struct VideoTask {
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum DownloadStatus {
     Downloading { progress_percent: u8 },
-    Ready { size_mb: f64 },
+    Ready { size_mb: f64, filename: String },
     Failed { error: String },
 }
 
@@ -187,8 +187,14 @@ pub async fn video_prepare(
 
     // Generate token and file path
     let token = uuid::Uuid::new_v4().to_string();
-    let safe_title: String = info
+    let decoded_title = info
         .title
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    let safe_title: String = decoded_title
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
         .take(60)
@@ -251,6 +257,7 @@ pub async fn video_prepare(
                     tracing::info!("Video ready: {dl_token} ({size_mb:.1} MB) for {dl_url}");
                     task.status = DownloadStatus::Ready {
                         size_mb: (size_mb * 10.0).round() / 10.0,
+                        filename: task.filename.clone(),
                     };
                 }
                 Err(e) => {

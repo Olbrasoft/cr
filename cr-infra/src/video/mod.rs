@@ -37,6 +37,15 @@ fn is_instagram_url(url: &str) -> bool {
     url.contains("instagram.com")
 }
 
+/// Check if URL is Nova.cz.
+fn is_nova_url(url: &str) -> bool {
+    url.contains("nova.cz")
+}
+
+/// Czech proxy URL for geo-blocked Nova.cz embeds.
+const CZ_PROXY_URL: &str = "http://chobotnice.aspfree.cz/Proxy.ashx";
+const CZ_PROXY_KEY: &str = "cr-proxy-2026-chobotnice";
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 /// Extract video info. Tries our extractors first, falls back to yt-dlp.
@@ -46,7 +55,15 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
     } else if is_instagram_url(url) {
         instagram_extract_info(client, url).await
     } else {
-        ytdlp_extract_info(url).await
+        let result = ytdlp_extract_info(url).await;
+        // If yt-dlp fails for Nova.cz, try Czech proxy to bypass geo-block
+        if result.is_err() && is_nova_url(url) {
+            tracing::warn!("yt-dlp failed for Nova.cz URL, trying Czech proxy fallback");
+            if let Ok(info) = nova_proxy_extract_info(client, url).await {
+                return Ok(info);
+            }
+        }
+        result
     }
 }
 
@@ -88,6 +105,12 @@ pub async fn download_video_with_progress(
             .or(info.formats.last())
             .context("No format available")?;
         download_direct(client, &fmt.url, output_path).await
+    } else if format_id == "proxy-hls" {
+        // Nova.cz proxy fallback — format_id contains the direct m3u8 URL
+        // Re-extract to get the manifest URL (it has a time-limited token)
+        let info = nova_proxy_extract_info(client, url).await?;
+        let m3u8 = &info.formats[0].url;
+        ytdlp_download(m3u8, "best", output_path, progress).await
     } else {
         ytdlp_download(url, resolution, output_path, progress).await
     }
@@ -148,6 +171,8 @@ struct YtDlpFormat {
 /// Build yt-dlp command with optional proxy from YTDLP_PROXY env var.
 fn ytdlp_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("yt-dlp");
+    // Enable EJS challenge solver for YouTube (requires deno)
+    cmd.arg("--remote-components").arg("ejs:github");
     if let Ok(proxy) = std::env::var("YTDLP_PROXY") {
         let proxy = proxy.trim();
         if !proxy.is_empty() {
@@ -331,10 +356,134 @@ async fn ytdlp_download(
         progress.store(100, Ordering::Relaxed);
     }
 
-    let metadata = tokio::fs::metadata(output_str)
-        .await
-        .context("Downloaded file not found")?;
-    Ok(metadata.len())
+    // yt-dlp may create file with different extension (e.g., token.webm.mp4)
+    // Find the actual file by prefix match
+    if tokio::fs::metadata(output_str).await.is_ok() {
+        let metadata = tokio::fs::metadata(output_str).await?;
+        return Ok(metadata.len());
+    }
+
+    // Fallback: find file matching token prefix in the output directory
+    let parent = output_path.parent().context("No parent directory")?;
+    let stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("No file stem")?;
+
+    let mut entries = tokio::fs::read_dir(parent).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with(stem)
+            && !name_str.ends_with(".part")
+            && !name_str.ends_with(".ytdl")
+        {
+            let actual_path = entry.path();
+            // Rename to expected path
+            tokio::fs::rename(&actual_path, output_path).await?;
+            let metadata = tokio::fs::metadata(output_str).await?;
+            return Ok(metadata.len());
+        }
+    }
+
+    anyhow::bail!("Downloaded file not found")
+}
+
+// ─── Nova.cz proxy fallback ────────────────────────────────────────
+
+/// Extract video info from Nova.cz via Czech proxy (for geo-blocked embeds).
+/// 1. Fetch tv.nova.cz page to get embed ID
+/// 2. Fetch embed page via Czech proxy
+/// 3. Extract m3u8/mpd manifest URLs + metadata
+async fn nova_proxy_extract_info(client: &reqwest::Client, url: &str) -> Result<VideoInfo> {
+    // Step 1: Get embed ID from the Nova.cz page
+    let page_html = client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    let embed_id = page_html
+        .split("media.cms.nova.cz/embed/")
+        .nth(1)
+        .and_then(|s| s.split(['?', '"', '\'', ' '].as_ref()).next())
+        .context("Could not find Nova embed ID")?
+        .to_string();
+
+    // Step 2: Fetch embed page via Czech proxy
+    let embed_url = format!("https://media.cms.nova.cz/embed/{embed_id}");
+    let proxy_url = format!(
+        "{}?url={}&key={}",
+        CZ_PROXY_URL,
+        urlencoding::encode(&embed_url),
+        CZ_PROXY_KEY
+    );
+
+    let embed_html = client
+        .get(&proxy_url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    // Step 3: Extract title from og:title
+    let title = embed_html
+        .split("og:title")
+        .nth(1)
+        .and_then(|s| s.split("content=\"").nth(1))
+        .and_then(|s| s.split('"').next())
+        .unwrap_or("Nova.cz Video")
+        .to_string();
+
+    // Extract thumbnail from og:image
+    let thumbnail = embed_html
+        .split("og:image")
+        .nth(1)
+        .and_then(|s| s.split("content=\"").nth(1))
+        .and_then(|s| s.split('"').next())
+        .map(|s| s.to_string());
+
+    // Extract duration from programDuration
+    let duration = embed_html
+        .split("\"duration\":")
+        .nth(1)
+        .and_then(|s| s.split([',', '}'].as_ref()).next())
+        .and_then(|s| s.trim().parse::<f64>().ok());
+
+    // Extract m3u8 manifest URL
+    let m3u8_url = embed_html
+        .split("\"src\":\"")
+        .filter_map(|s| {
+            let url = s.split('"').next()?;
+            if url.contains(".m3u8") {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        })
+        .next()
+        .context("No m3u8 manifest found in Nova.cz embed")?;
+
+    tracing::info!("Nova.cz proxy: extracted manifest for {title}");
+
+    // Build formats — we pass the m3u8 URL as a single format.
+    // yt-dlp can download directly from this manifest URL.
+    Ok(VideoInfo {
+        title,
+        thumbnail,
+        duration,
+        uploader: Some("Nova.cz".to_string()),
+        formats: vec![VideoFormat {
+            format_id: "proxy-hls".to_string(),
+            resolution: "best".to_string(),
+            ext: "mp4".to_string(),
+            url: m3u8_url,
+            filesize_approx: None,
+        }],
+    })
 }
 
 /// Parse yt-dlp progress line. Returns percentage (0-99).
