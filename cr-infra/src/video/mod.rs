@@ -320,13 +320,19 @@ pub async fn convert_for_whatsapp(
 }
 
 /// Estimate number of WhatsApp parts based on video duration.
+/// With CRF 30 at 480p, typical bitrate is ~1.1 Mbps.
+/// 12 MB target segment / 1.1 Mbps ≈ 87 seconds per segment.
 pub fn estimate_whatsapp_parts(duration_secs: f64) -> u32 {
     if duration_secs <= 0.0 {
         return 1;
     }
-    // At ~700kbps total, 16MB lasts about 180s
-    let parts = (duration_secs / 180.0).ceil() as u32;
-    parts.max(1)
+    // Estimate total size: ~1.1 Mbps = 137.5 KB/s for 480p CRF 30
+    let estimated_bytes = duration_secs * 137.5 * 1024.0;
+    if estimated_bytes <= WHATSAPP_MAX_SIZE as f64 {
+        return 1;
+    }
+    let target_segment_bytes = 12.0 * 1024.0 * 1024.0;
+    (estimated_bytes / target_segment_bytes).ceil() as u32
 }
 
 /// Get video duration using ffprobe.
