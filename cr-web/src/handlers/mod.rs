@@ -11,8 +11,10 @@ use crate::state::AppState;
 
 mod audiobooks;
 mod download_video;
+mod filmy_serialy;
 mod geojson;
 mod landmarks;
+pub mod movies_api;
 mod municipalities;
 mod orp;
 mod pools;
@@ -22,6 +24,7 @@ pub mod video_api;
 // Re-export all public handlers so main.rs doesn't need changes
 pub use audiobooks::audiobooks;
 pub use download_video::download_video;
+pub use filmy_serialy::filmy_serialy;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
@@ -545,6 +548,12 @@ pub(crate) struct AudiobooksTemplate {
 #[derive(Template)]
 #[template(path = "download_video.html")]
 pub(crate) struct DownloadVideoTemplate {
+    pub(crate) img: String,
+}
+
+#[derive(Template)]
+#[template(path = "filmy_serialy.html")]
+pub(crate) struct FilmySeriályTemplate {
     pub(crate) img: String,
 }
 

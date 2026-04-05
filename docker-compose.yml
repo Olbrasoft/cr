@@ -25,6 +25,8 @@ services:
       STATIC_DIR: /app/static
       YTDLP_PROXY: ${YTDLP_PROXY:-}
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}
+      CZ_PROXY_URL: ${CZ_PROXY_URL:-}
+      CZ_PROXY_KEY: ${CZ_PROXY_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
