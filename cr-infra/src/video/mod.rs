@@ -208,7 +208,7 @@ pub async fn convert_for_whatsapp(
             "-crf",
             "30",
             "-vf",
-            "scale=-2:'min(480,ih)'",
+            "scale=-2:'trunc(min(480,ih)/2)*2'",
             "-c:a",
             "aac",
             "-b:a",
