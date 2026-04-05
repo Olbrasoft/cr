@@ -305,7 +305,11 @@ pub async fn movies_stream(
     let mut proxy_req = state.http_client.get(&stream_url);
 
     // Forward Range header for seeking
-    if let Some(range) = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok()) {
+    if let Some(range) = req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
         proxy_req = proxy_req.header("Range", range);
     }
 
