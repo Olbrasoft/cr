@@ -186,7 +186,7 @@ pub async fn video_prepare(
     // Find the requested quality
     let quality = &req.quality;
     let format = if is_whatsapp {
-        // For WhatsApp, pick 720p or lower for source
+        // For WhatsApp, pick 480p or lower to keep file small and conversion fast
         info.formats
             .iter()
             .filter(|f| {
@@ -194,7 +194,7 @@ pub async fn video_prepare(
                     .trim_end_matches('p')
                     .parse::<u32>()
                     .unwrap_or(0)
-                    <= 720
+                    <= 480
             })
             .max_by_key(|f| {
                 f.resolution

@@ -172,60 +172,43 @@ pub struct WhatsAppPart {
 }
 
 /// Convert a downloaded video to WhatsApp-compatible format.
-/// Returns single file if ≤16 MB, or multiple parts if larger.
+/// Strategy: convert to H.264/AAC MP4 with ultrafast preset, then split if > 16 MB.
 pub async fn convert_for_whatsapp(
     input_path: &std::path::Path,
     output_dir: &std::path::Path,
     base_name: &str,
     progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 ) -> Result<WhatsAppResult> {
+    use std::sync::atomic::Ordering;
+
     let input_str = input_path.to_str().context("Invalid input path")?;
-
-    // Get video duration for bitrate calculation
-    let duration = ffprobe_duration(input_path).await.unwrap_or(0.0);
-
-    // Calculate target video bitrate to fit in 16 MB
-    let total_bitrate = if duration > 0.0 {
-        ((WHATSAPP_MAX_SIZE as f64 * 8.0) / duration) as u32
-    } else {
-        800_000 // 800 kbps default
-    };
-    let audio_bitrate = 128_000u32;
-    let video_bitrate = total_bitrate.saturating_sub(audio_bitrate).max(200_000);
-
-    // For short videos, try single file conversion
     let converted_path = output_dir.join(format!("{base_name}-wa.mp4"));
     let converted_str = converted_path.to_str().context("Invalid output path")?;
 
     if let Some(p) = &progress {
-        p.store(30, std::sync::atomic::Ordering::Relaxed);
+        p.store(40, Ordering::Relaxed);
     }
 
-    let vb = format!("{video_bitrate}");
+    // Remux to MP4 container with H.264+AAC (re-encode only if needed).
+    // Source is already ≤480p from yt-dlp, so just ensure MP4 compatibility.
     let output = tokio::process::Command::new("ffmpeg")
         .args([
             "-i",
             input_str,
             "-c:v",
             "libx264",
-            "-profile:v",
-            "baseline",
-            "-level",
-            "3.1",
-            "-b:v",
-            &vb,
-            "-maxrate",
-            &vb,
-            "-bufsize",
-            &format!("{}", video_bitrate * 2),
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "30",
             "-c:a",
             "aac",
             "-b:a",
             "128k",
             "-ac",
             "2",
-            "-vf",
-            "scale=-2:'min(720,ih)'",
             "-movflags",
             "+faststart",
             "-y",
@@ -243,7 +226,7 @@ pub async fn convert_for_whatsapp(
     }
 
     if let Some(p) = &progress {
-        p.store(70, std::sync::atomic::Ordering::Relaxed);
+        p.store(80, Ordering::Relaxed);
     }
 
     let meta = tokio::fs::metadata(&converted_path).await?;
@@ -251,7 +234,7 @@ pub async fn convert_for_whatsapp(
 
     if size <= WHATSAPP_MAX_SIZE {
         if let Some(p) = &progress {
-            p.store(99, std::sync::atomic::Ordering::Relaxed);
+            p.store(99, Ordering::Relaxed);
         }
         return Ok(WhatsAppResult::Single {
             path: converted_path,
@@ -261,24 +244,24 @@ pub async fn convert_for_whatsapp(
 
     // File too large — split into segments
     tracing::info!(
-        "WhatsApp conversion: {:.1} MB exceeds 16 MB, splitting",
+        "WhatsApp: {:.1} MB exceeds 16 MB, splitting",
         size as f64 / (1024.0 * 1024.0)
     );
 
-    let conv_duration = ffprobe_duration(&converted_path).await.unwrap_or(duration);
-    // Calculate segment duration to get ~14 MB per segment (with safety margin)
-    let target_segment_size = 14.0 * 1024.0 * 1024.0; // 14 MB target
-    let segment_secs = if conv_duration > 0.0 && size > 0 {
-        (target_segment_size / (size as f64 / conv_duration)) as u32
+    let duration = ffprobe_duration(&converted_path).await.unwrap_or(0.0);
+    // Calculate segment duration to produce ~14 MB chunks
+    let target_segment_bytes = 12.0 * 1024.0 * 1024.0;
+    let segment_secs = if duration > 0.0 && size > 0 {
+        (target_segment_bytes / (size as f64 / duration)) as u32
     } else {
         WHATSAPP_SEGMENT_SECS
     };
-    let segment_secs = segment_secs.max(30); // minimum 30 seconds
+    let segment_secs = segment_secs.max(30);
 
     let segment_pattern = output_dir.join(format!("{base_name}-wa-part%03d.mp4"));
     let pattern_str = segment_pattern.to_str().context("Invalid segment path")?;
-
     let seg_time = format!("{segment_secs}");
+
     let split_output = tokio::process::Command::new("ffmpeg")
         .args([
             "-i",
@@ -307,24 +290,20 @@ pub async fn convert_for_whatsapp(
         anyhow::bail!("ffmpeg split failed: {stderr}");
     }
 
-    // Clean up the converted (too large) single file
+    // Clean up the single converted file
     let _ = tokio::fs::remove_file(&converted_path).await;
 
     // Collect parts
     let mut parts = Vec::new();
-    let mut idx = 0usize;
-    loop {
+    for idx in 0..100 {
         let part_path = output_dir.join(format!("{base_name}-wa-part{idx:03}.mp4"));
-        if tokio::fs::metadata(&part_path).await.is_ok() {
-            let part_meta = tokio::fs::metadata(&part_path).await?;
-            parts.push(WhatsAppPart {
+        match tokio::fs::metadata(&part_path).await {
+            Ok(m) => parts.push(WhatsAppPart {
                 path: part_path,
-                size: part_meta.len(),
+                size: m.len(),
                 index: idx,
-            });
-            idx += 1;
-        } else {
-            break;
+            }),
+            Err(_) => break,
         }
     }
 
@@ -333,7 +312,7 @@ pub async fn convert_for_whatsapp(
     }
 
     if let Some(p) = &progress {
-        p.store(99, std::sync::atomic::Ordering::Relaxed);
+        p.store(99, Ordering::Relaxed);
     }
 
     tracing::info!("WhatsApp split: {} parts created", parts.len());
