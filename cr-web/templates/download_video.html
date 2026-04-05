@@ -553,13 +553,18 @@
     var statusSpinner = document.getElementById('status-spinner');
     var statusText = document.getElementById('status-text');
 
+    function resetStatusEl() {
+        statusEl.textContent = '';
+        statusEl.style.display = '';
+        statusEl.style.color = '';
+        statusEl.appendChild(statusSpinner);
+        statusEl.appendChild(document.createTextNode(' '));
+        statusEl.appendChild(statusText);
+    }
+
     function showStatus(text, isError, loading) {
-        // Restore inner structure if it was replaced by download links
         if (!statusEl.contains(statusSpinner)) {
-            statusEl.textContent = '';
-            statusEl.appendChild(statusSpinner);
-            statusEl.appendChild(document.createTextNode(' '));
-            statusEl.appendChild(statusText);
+            resetStatusEl();
         }
         statusText.textContent = text;
         statusSpinner.style.display = loading ? 'inline-block' : 'none';
@@ -568,15 +573,12 @@
     }
 
     function hideStatus() {
-        // Restore inner structure if it was replaced by download links
         if (!statusEl.contains(statusSpinner)) {
-            statusEl.textContent = '';
-            statusEl.appendChild(statusSpinner);
-            statusEl.appendChild(document.createTextNode(' '));
-            statusEl.appendChild(statusText);
+            resetStatusEl();
         }
         statusEl.classList.remove('visible');
         statusEl.classList.remove('error');
+        statusEl.style.display = '';
     }
 
     function formatDuration(seconds) {
