@@ -172,7 +172,7 @@ pub struct WhatsAppPart {
 }
 
 /// Convert a downloaded video to WhatsApp-compatible format.
-/// Strategy: convert to H.264/AAC MP4 with ultrafast preset, then split if > 16 MB.
+/// Strategy: transcode to H.264/AAC MP4 with veryfast preset, then split if > 16 MB.
 pub async fn convert_for_whatsapp(
     input_path: &std::path::Path,
     output_dir: &std::path::Path,
@@ -189,8 +189,8 @@ pub async fn convert_for_whatsapp(
         p.store(40, Ordering::Relaxed);
     }
 
-    // Remux to MP4 container with H.264+AAC (re-encode only if needed).
-    // Source is already ≤480p from yt-dlp, so just ensure MP4 compatibility.
+    // Transcode to a WhatsApp-compatible MP4 with H.264 video and AAC audio.
+    // The input is always re-encoded here to normalize codec/container compatibility.
     let output = tokio::process::Command::new("ffmpeg")
         .args([
             "-i",
@@ -249,14 +249,14 @@ pub async fn convert_for_whatsapp(
     );
 
     let duration = ffprobe_duration(&converted_path).await.unwrap_or(0.0);
-    // Calculate segment duration to produce ~14 MB chunks
+    // Calculate segment duration to produce ~12 MB chunks
     let target_segment_bytes = 12.0 * 1024.0 * 1024.0;
     let segment_secs = if duration > 0.0 && size > 0 {
         (target_segment_bytes / (size as f64 / duration)) as u32
     } else {
         WHATSAPP_SEGMENT_SECS
     };
-    let segment_secs = segment_secs.max(30);
+    let segment_secs = segment_secs.max(10); // minimum 10s to avoid degenerate splits
 
     let segment_pattern = output_dir.join(format!("{base_name}-wa-part%03d.mp4"));
     let pattern_str = segment_pattern.to_str().context("Invalid segment path")?;
@@ -295,7 +295,7 @@ pub async fn convert_for_whatsapp(
 
     // Collect parts
     let mut parts = Vec::new();
-    for idx in 0..100 {
+    for idx in 0usize.. {
         let part_path = output_dir.join(format!("{base_name}-wa-part{idx:03}.mp4"));
         match tokio::fs::metadata(&part_path).await {
             Ok(m) => parts.push(WhatsAppPart {
@@ -303,7 +303,13 @@ pub async fn convert_for_whatsapp(
                 size: m.len(),
                 index: idx,
             }),
-            Err(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => {
+                return Err(e).context(format!(
+                    "Failed to read metadata for split part {}",
+                    part_path.display()
+                ));
+            }
         }
     }
 
