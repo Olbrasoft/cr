@@ -554,6 +554,13 @@
     var statusText = document.getElementById('status-text');
 
     function showStatus(text, isError, loading) {
+        // Restore inner structure if it was replaced by download links
+        if (!statusEl.contains(statusSpinner)) {
+            statusEl.textContent = '';
+            statusEl.appendChild(statusSpinner);
+            statusEl.appendChild(document.createTextNode(' '));
+            statusEl.appendChild(statusText);
+        }
         statusText.textContent = text;
         statusSpinner.style.display = loading ? 'inline-block' : 'none';
         statusEl.classList.add('visible');
@@ -561,6 +568,13 @@
     }
 
     function hideStatus() {
+        // Restore inner structure if it was replaced by download links
+        if (!statusEl.contains(statusSpinner)) {
+            statusEl.textContent = '';
+            statusEl.appendChild(statusSpinner);
+            statusEl.appendChild(document.createTextNode(' '));
+            statusEl.appendChild(statusText);
+        }
         statusEl.classList.remove('visible');
         statusEl.classList.remove('error');
     }
