@@ -109,7 +109,7 @@ fn is_allowed_stream_url(url: &str) -> bool {
         .map(|h| {
             STREAM_ALLOWED_DOMAINS
                 .iter()
-                .any(|d| h == *d || h.ends_with(&format!(".{d}")))
+                .any(|d| h == *d || h.strip_suffix(d).is_some_and(|p| p.ends_with('.')))
         })
         .unwrap_or(false)
 }
@@ -258,11 +258,11 @@ pub async fn movies_validate(
     Query(params): Query<ValidateQuery>,
 ) -> Json<ValidateResponse> {
     let url = params.url.trim().to_string();
-    if url.is_empty() {
+    if url.is_empty() || !is_prehrajto_url(&url) {
         return Json(ValidateResponse {
             valid: false,
             status: None,
-            error: Some("Missing url".to_string()),
+            error: Some("Invalid or missing prehraj.to URL".to_string()),
         });
     }
     // Use PHP proxy for validation — ASP.NET proxy returns 401 for valid CDN URLs
