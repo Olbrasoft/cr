@@ -192,7 +192,15 @@ fn ytdlp_command() -> tokio::process::Command {
     if let Ok(cookies) = std::env::var("YTDLP_COOKIES") {
         let cookies = cookies.trim();
         if !cookies.is_empty() {
-            cmd.arg("--cookies").arg(cookies);
+            let path = std::path::Path::new(cookies);
+            let is_valid = path.is_file() && path.metadata().is_ok_and(|m| m.len() > 0);
+            if is_valid {
+                cmd.arg("--cookies").arg(cookies);
+            } else {
+                tracing::warn!(
+                    "YTDLP_COOKIES path is not a valid cookies file, skipping: {cookies}"
+                );
+            }
         }
     }
     cmd
