@@ -597,7 +597,14 @@
         var container = document.getElementById('quality-selector');
         container.innerHTML = '';
 
-        formats.forEach(function(fmt) {
+        // Sort by resolution height (ascending) so highest is last
+        var sorted = formats.slice().sort(function(a, b) {
+            var aH = parseInt(a.resolution, 10) || 0;
+            var bH = parseInt(b.resolution, 10) || 0;
+            return aH - bH;
+        });
+
+        sorted.forEach(function(fmt) {
             var btn = document.createElement('button');
             btn.className = 'quality-btn';
             btn.setAttribute('data-quality', fmt.format_id);
