@@ -22,16 +22,34 @@ pub struct VideoTask {
     pub progress: Arc<AtomicU8>,
     pub file_path: std::path::PathBuf,
     pub filename: String,
+    pub parts: Vec<PartInfo>,
     #[allow(dead_code)]
     pub created_at: std::time::Instant,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PartInfo {
+    pub index: usize,
+    pub filename: String,
+    pub size_mb: f64,
+    pub file_path: std::path::PathBuf,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum DownloadStatus {
     Downloading { progress_percent: u8 },
+    Converting { progress_percent: u8 },
     Ready { size_mb: f64, filename: String },
+    ReadyParts { parts: Vec<PartResponse> },
     Failed { error: String },
+}
+
+#[derive(Clone, Serialize)]
+pub struct PartResponse {
+    pub index: usize,
+    pub filename: String,
+    pub size_mb: f64,
 }
 
 // --- Request/Response types ---
@@ -48,6 +66,7 @@ pub struct VideoInfoResponse {
     duration: Option<f64>,
     uploader: Option<String>,
     formats: Vec<FormatResponse>,
+    whatsapp_parts: u32,
 }
 
 #[derive(Serialize)]
@@ -120,6 +139,11 @@ pub async fn video_info(
         }
     });
 
+    let whatsapp_parts = info
+        .duration
+        .map(cr_infra::video::estimate_whatsapp_parts)
+        .unwrap_or(1);
+
     Ok(Json(VideoInfoResponse {
         title: info.title,
         thumbnail,
@@ -134,6 +158,7 @@ pub async fn video_info(
                 ext: f.ext.clone(),
             })
             .collect(),
+        whatsapp_parts,
     }))
 }
 
@@ -156,22 +181,43 @@ pub async fn video_prepare(
             )
         })?;
 
+    let is_whatsapp = req.quality == "whatsapp";
+
     // Find the requested quality
     let quality = &req.quality;
-    let format = info
-        .formats
-        .iter()
-        .find(|f| &f.format_id == quality)
-        .or_else(|| info.formats.iter().find(|f| f.format_id == "480p"))
-        .or(info.formats.last())
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(VideoErrorResponse {
-                    error: "Žádné formáty k dispozici".to_string(),
-                }),
-            )
-        })?;
+    let format = if is_whatsapp {
+        // For WhatsApp, pick 720p or lower for source
+        info.formats
+            .iter()
+            .filter(|f| {
+                f.resolution
+                    .trim_end_matches('p')
+                    .parse::<u32>()
+                    .unwrap_or(0)
+                    <= 720
+            })
+            .max_by_key(|f| {
+                f.resolution
+                    .trim_end_matches('p')
+                    .parse::<u32>()
+                    .unwrap_or(0)
+            })
+            .or(info.formats.last())
+    } else {
+        info.formats
+            .iter()
+            .find(|f| &f.format_id == quality)
+            .or_else(|| info.formats.iter().find(|f| f.format_id == "480p"))
+            .or(info.formats.last())
+    }
+    .ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(VideoErrorResponse {
+                error: "Žádné formáty k dispozici".to_string(),
+            }),
+        )
+    })?;
 
     // Create temp directory if it doesn't exist
     let tmp_dir = std::path::PathBuf::from("/tmp/cr-videos");
@@ -213,6 +259,7 @@ pub async fn video_prepare(
             progress: progress.clone(),
             file_path: file_path.clone(),
             filename,
+            parts: Vec::new(),
             created_at: std::time::Instant::now(),
         },
     );
@@ -245,13 +292,97 @@ pub async fn video_prepare(
             &dl_format_id,
             &dl_resolution,
             &file_path,
-            Some(progress),
+            Some(progress.clone()),
         )
         .await;
 
         let mut downloads = dl_state.video_downloads.lock().await;
         if let Some(task) = downloads.get_mut(&dl_token) {
             match result {
+                Ok(size) if is_whatsapp => {
+                    // WhatsApp: convert with ffmpeg
+                    let safe: String = task
+                        .filename
+                        .trim_end_matches(".mp4")
+                        .trim_end_matches(".webm")
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                        .take(50)
+                        .collect();
+                    task.status = DownloadStatus::Converting {
+                        progress_percent: 0,
+                    };
+                    drop(downloads); // release lock during conversion
+
+                    let wa_result = cr_infra::video::convert_for_whatsapp(
+                        &file_path,
+                        &std::path::PathBuf::from("/tmp/cr-videos"),
+                        &dl_token,
+                        Some(progress),
+                    )
+                    .await;
+
+                    // Clean up source file
+                    let _ = tokio::fs::remove_file(&file_path).await;
+
+                    let mut downloads = dl_state.video_downloads.lock().await;
+                    if let Some(task) = downloads.get_mut(&dl_token) {
+                        match wa_result {
+                            Ok(cr_infra::video::WhatsAppResult::Single { path, size }) => {
+                                let size_mb = size as f64 / (1024.0 * 1024.0);
+                                let fname = format!("{safe} (WhatsApp).mp4");
+                                task.file_path = path;
+                                task.filename = fname.clone();
+                                task.status = DownloadStatus::Ready {
+                                    size_mb: (size_mb * 10.0).round() / 10.0,
+                                    filename: fname,
+                                };
+                                tracing::info!(
+                                    "WhatsApp video ready: {dl_token} ({size_mb:.1} MB)"
+                                );
+                            }
+                            Ok(cr_infra::video::WhatsAppResult::Parts(parts)) => {
+                                let part_infos: Vec<PartInfo> = parts
+                                    .iter()
+                                    .map(|p| {
+                                        let size_mb = p.size as f64 / (1024.0 * 1024.0);
+                                        PartInfo {
+                                            index: p.index,
+                                            filename: format!(
+                                                "{safe} (WhatsApp část {}).mp4",
+                                                p.index + 1
+                                            ),
+                                            size_mb: (size_mb * 10.0).round() / 10.0,
+                                            file_path: p.path.clone(),
+                                        }
+                                    })
+                                    .collect();
+                                let part_responses: Vec<PartResponse> = part_infos
+                                    .iter()
+                                    .map(|p| PartResponse {
+                                        index: p.index,
+                                        filename: p.filename.clone(),
+                                        size_mb: p.size_mb,
+                                    })
+                                    .collect();
+                                task.parts = part_infos;
+                                task.status = DownloadStatus::ReadyParts {
+                                    parts: part_responses,
+                                };
+                                tracing::info!(
+                                    "WhatsApp video ready: {dl_token} ({} parts)",
+                                    parts.len()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("WhatsApp conversion failed: {e}");
+                                task.status = DownloadStatus::Failed {
+                                    error: format!("Konverze pro WhatsApp selhala: {e}"),
+                                };
+                            }
+                        }
+                    }
+                }
                 Ok(size) => {
                     let size_mb = size as f64 / (1024.0 * 1024.0);
                     tracing::info!("Video ready: {dl_token} ({size_mb:.1} MB) for {dl_url}");
@@ -282,9 +413,12 @@ pub async fn video_status(
     let downloads = state.video_downloads.lock().await;
     match downloads.get(&token) {
         Some(task) => {
-            // For downloading status, read live progress from atomic counter
+            // For downloading/converting status, read live progress from atomic counter
             let status = match &task.status {
                 DownloadStatus::Downloading { .. } => DownloadStatus::Downloading {
+                    progress_percent: task.progress.load(Ordering::Relaxed),
+                },
+                DownloadStatus::Converting { .. } => DownloadStatus::Converting {
                     progress_percent: task.progress.load(Ordering::Relaxed),
                 },
                 other => other.clone(),
@@ -333,6 +467,50 @@ pub async fn video_file(
 
     let filename = &prepared.filename;
     let content_disposition = format!("attachment; filename=\"{filename}\"");
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "video/mp4".to_string()),
+            (header::CONTENT_DISPOSITION, content_disposition),
+            (header::CONTENT_LENGTH, bytes.len().to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+pub async fn video_file_part(
+    State(state): State<AppState>,
+    Path((token, part_index)): Path<(String, usize)>,
+) -> impl IntoResponse {
+    let downloads = state.video_downloads.lock().await;
+    let task = match downloads.get(&token) {
+        Some(t) if matches!(t.status, DownloadStatus::ReadyParts { .. }) => t,
+        Some(_) => {
+            return (StatusCode::CONFLICT, "Video is still processing").into_response();
+        }
+        None => {
+            return (StatusCode::NOT_FOUND, "Video not found or expired").into_response();
+        }
+    };
+
+    let part = match task.parts.get(part_index) {
+        Some(p) => p,
+        None => {
+            return (StatusCode::NOT_FOUND, "Part not found").into_response();
+        }
+    };
+
+    let bytes = match tokio::fs::read(&part.file_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to read part file: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response();
+        }
+    };
+
+    let content_disposition = format!("attachment; filename=\"{}\"", part.filename);
 
     (
         StatusCode::OK,
