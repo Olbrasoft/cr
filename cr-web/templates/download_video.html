@@ -896,7 +896,13 @@
             .then(function(items) {
                 var container = document.getElementById('video-library');
                 var grid = document.getElementById('library-grid');
+                // Empty / invalid response: drop everything we had cached
+                // so a later refetch can rebuild from a clean baseline.
+                // Without this reset, deleting the last library row would
+                // leave stale cards rendered in the DOM forever.
                 if (!Array.isArray(items) || items.length === 0) {
+                    grid.innerHTML = '';
+                    renderedLibraryIds.clear();
                     container.style.display = 'none';
                     return [];
                 }
@@ -930,20 +936,36 @@
             .catch(function(e) { console.warn('library load failed', e); return []; });
     }
 
+    // Bumped every time the user touches the URL form (typing, picking a
+    // quality, clicking Načíst info). The deferred refresh check below
+    // uses this revision number to avoid wiping the user's in-progress
+    // preparation when an *earlier* preparation's pipeline finally lands.
+    var preparationFormRevision = 0;
+    function markPreparationFormChanged() {
+        preparationFormRevision++;
+    }
+    document.addEventListener('input', markPreparationFormChanged, true);
+    document.addEventListener('change', markPreparationFormChanged, true);
+
     // Called after a successful preparation. The publish-to-library
     // pipeline runs in the background after Ready, so we retry the
     // refresh a few times until the new entry shows up. Once a new card
     // appears, also clear the URL form so the user can prepare another
-    // video without manual cleanup.
+    // video without manual cleanup — but only if the user has not
+    // already started typing a *new* URL in the meantime, otherwise we
+    // would clobber their in-progress preparation.
     function scheduleLibraryRefresh() {
         var attempts = 0;
         var maxAttempts = 8;
         var delay = 1500;
+        var scheduledRevision = preparationFormRevision;
         function tick() {
             attempts++;
             loadLibrary().then(function(newItems) {
                 if (newItems && newItems.length > 0) {
-                    clearPreparationForm();
+                    if (preparationFormRevision === scheduledRevision) {
+                        clearPreparationForm();
+                    }
                     return;
                 }
                 if (attempts < maxAttempts) {
