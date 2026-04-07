@@ -17,7 +17,11 @@ pub async fn filmy_serialy(
     // static logo — without blocking the client-side search that re-runs below.
     let query_str: Option<String> = params.q.as_ref().and_then(|q| {
         let t = q.trim();
-        if t.is_empty() { None } else { Some(t.to_string()) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
     });
 
     let mut og_image: Option<String> = None;
