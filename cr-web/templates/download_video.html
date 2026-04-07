@@ -381,11 +381,6 @@
     gap: 0.6rem;
     flex-wrap: wrap;
 }
-.library-actions {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: auto;
-}
 .library-btn {
     flex: 1;
     background: var(--color-blue);
@@ -417,22 +412,132 @@
     display: block;
     background: black;
 }
-/* #345 — audio (podcast) mode keeps the thumbnail visible as static
-   "now playing" artwork and shows a compact audio control bar below it. */
-.library-card audio.library-audio {
-    width: 100%;
-    display: block;
-    margin: 0;
-    padding: 0.5rem 0.6rem;
+/* #350/#351/#352 — permanent custom audio mini-player on every card.
+   Native <audio controls> ships a tiny scrub bar that is impossible to
+   drag with a finger; we render our own ▶/⏸ + time + a wide range
+   slider on its own row so seeking inside an hour-long podcast feels
+   natural on mobile. The underlying <audio> element stays in the DOM
+   (display:none) so Media Session API + lock-screen artwork still work. */
+.library-audio-mini {
+    margin-top: auto;
+    padding: 0.65rem 0.7rem 0.75rem;
     background: #f8fafc;
-    border-bottom: 1px solid var(--color-gray-border);
+    border-top: 1px solid var(--color-gray-border);
+    border-radius: 0 0 11px 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
 }
-.library-btn.audio-btn {
+.library-audio-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+.library-audio-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+/* Play button styled to match the project logo (red ring around a
+   white inset with a gold play triangle). On hover the triangle
+   flips to the blue brand colour so it visually balances the gold
+   audio scrubber below it. SVG icons inherit currentColor, so a
+   single CSS color transition recolours the glyph cleanly. */
+.library-audio-play {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    border: 3px solid var(--color-red);
+    background: white;
+    color: var(--color-gold);
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, transform 0.1s;
+    padding: 0;
+}
+.library-audio-play:hover { color: var(--color-blue); }
+.library-audio-play:active { transform: scale(0.95); }
+.library-audio-play:focus-visible { outline: 2px solid var(--color-blue); outline-offset: 2px; }
+.library-audio-play svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+    display: block;
+}
+.library-audio-time {
+    font-size: 0.85rem;
+    color: #555;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    white-space: nowrap;
+}
+.library-audio-range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 36px;
+    background: transparent;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.library-audio-range:focus { outline: none; }
+.library-audio-range:focus-visible {
+    outline: 2px solid var(--color-blue);
+    outline-offset: 4px;
+    border-radius: 6px;
+}
+.library-audio-range::-webkit-slider-runnable-track {
+    height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(
+        to right,
+        var(--color-gold) 0%,
+        var(--color-gold) var(--progress, 0%),
+        #e5e7eb var(--progress, 0%),
+        #e5e7eb 100%
+    );
+}
+.library-audio-range::-moz-range-track {
+    height: 8px;
+    border-radius: 4px;
+    background: #e5e7eb;
+}
+.library-audio-range::-moz-range-progress {
+    height: 8px;
+    border-radius: 4px;
     background: var(--color-gold);
 }
-.library-btn.audio-btn:hover {
-    background: #b8941d;
+.library-audio-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--color-gold);
+    border: 2px solid white;
+    margin-top: -8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
 }
+.library-audio-range::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--color-gold);
+    border: 2px solid white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+}
+.library-audio-element { display: none; }
 /* #342 — fade-in for cards prepended after a fresh preparation. */
 .library-card-fadein {
     animation: library-card-fadein 0.45s ease-out;
@@ -1056,40 +1161,215 @@
         meta.appendChild(size);
         info.appendChild(meta);
 
-        // #345 — explicit audio-only / podcast play mode for mobile.
-        // <video> elements get suspended on screen lock no matter what
-        // Media Session API tricks we play; <audio> elements reliably
-        // keep going. The user clicks 🎧 → we replace the card body
-        // with an <audio controls> playing the same /stream URL.
-        var actions = document.createElement('div');
-        actions.className = 'library-actions';
-        var audioBtn = document.createElement('button');
-        audioBtn.type = 'button';
-        audioBtn.className = 'library-btn audio-btn';
-        audioBtn.title = 'Pustit jen zvuk — hraje i při zamčené obrazovce na mobilu';
-        audioBtn.textContent = '\uD83C\uDFA7 Pustit na pozadí';
-        audioBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            playLibraryItemAudio(card, item);
-        });
-        actions.appendChild(audioBtn);
-        info.appendChild(actions);
-
         // No separate Stáhnout button — see #337. The /stream endpoint
         // sets `Content-Disposition: inline; filename="<title>.<ext>"` so
         // the browser's built-in <video> ⋮ menu pre-fills the right
         // filename when the user picks Save video as…
 
         card.appendChild(info);
+
+        // #350/#351/#352 — permanent custom audio mini-player.
+        // <video> elements get suspended on screen lock no matter what
+        // Media Session API tricks we play; <audio> elements reliably
+        // keep going. The mini-player is rendered up front so the user
+        // can start podcast-mode playback in one tap, and the scrubber
+        // sits on its own row so it is wide enough to drag with a
+        // finger inside an hour-long recording. preload="none" keeps
+        // the network quiet until the user actually presses play.
+        card.appendChild(buildLibraryAudioMini(card, item));
         return card;
+    }
+
+    // SVG icons for the audio mini-player play / pause toggle. Inline
+    // strings (not files) so a card can swap them with innerHTML
+    // without an extra fetch. fill="currentColor" lets the CSS color
+    // rule on .library-audio-play recolour the glyph on hover.
+    var ICON_PLAY = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>';
+    var ICON_PAUSE = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+
+    function buildLibraryAudioMini(card, item) {
+        var mini = document.createElement('div');
+        mini.className = 'library-audio-mini';
+
+        var label = document.createElement('div');
+        label.className = 'library-audio-label';
+        label.textContent = '\uD83C\uDFA7 Poslouchat jako podcast';
+        mini.appendChild(label);
+
+        var row = document.createElement('div');
+        row.className = 'library-audio-row';
+
+        var playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'library-audio-play';
+        playBtn.setAttribute('aria-label', 'Spustit zvuk');
+        // aria-pressed reflects the toggle state for assistive tech;
+        // aria-label additionally describes the action.
+        playBtn.setAttribute('aria-pressed', 'false');
+        // SVG icons keep the glyph crisp at any size and recolour with
+        // currentColor — unlike unicode ▶ which some platforms render
+        // as a fixed-colour emoji glyph that ignores CSS color.
+        playBtn.innerHTML = ICON_PLAY;
+        row.appendChild(playBtn);
+
+        var time = document.createElement('span');
+        time.className = 'library-audio-time';
+        // '--:--' is the universal media-player placeholder for an
+        // unknown duration; we leave it there until loadedmetadata
+        // gives us the real number rather than fabricating "0:00".
+        var totalText = item.duration_sec ? formatDuration(item.duration_sec) : '--:--';
+        time.textContent = '0:00 / ' + totalText;
+        row.appendChild(time);
+
+        mini.appendChild(row);
+
+        var range = document.createElement('input');
+        range.type = 'range';
+        range.className = 'library-audio-range';
+        range.min = '0';
+        // If we already know the duration from the library API we use
+        // it; otherwise we *disable* the slider until loadedmetadata
+        // fires so the user can't seek to a meaningless position
+        // before the real max is known. (No magic 100s default.)
+        if (item.duration_sec) {
+            range.max = String(item.duration_sec);
+        } else {
+            range.max = '0';
+            range.disabled = true;
+        }
+        range.step = '0.1';
+        range.value = '0';
+        range.setAttribute('aria-label', 'Posuvník přehrávání');
+        mini.appendChild(range);
+
+        var audio = document.createElement('audio');
+        audio.className = 'library-audio-element';
+        audio.preload = 'none';
+        audio.src = '/api/video/library/' + item.id + '/stream';
+        mini.appendChild(audio);
+
+        var sessionRegistered = false;
+        var seeking = false;
+
+        function updateProgress(seconds, total) {
+            var pct = total > 0 ? Math.min(100, (seconds / total) * 100) : 0;
+            range.style.setProperty('--progress', pct + '%');
+        }
+
+        function fmtTime(seconds) {
+            if (!isFinite(seconds) || seconds < 0) return '0:00';
+            var s = Math.floor(seconds);
+            var h = Math.floor(s / 3600);
+            var m = Math.floor((s % 3600) / 60);
+            var sec = s % 60;
+            if (h > 0) return h + ':' + pad(m) + ':' + pad(sec);
+            return m + ':' + pad(sec);
+        }
+
+        playBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            // If the inline <video> is mounted in this card, fully
+            // tear it down (not just pause) so the browser stops any
+            // pending Range requests and we never have two players
+            // holding /stream connections to the same source.
+            teardownInlineVideo(card);
+            if (audio.paused) {
+                audio.play().catch(function(err) {
+                    console.error('audio play failed', err);
+                });
+            } else {
+                audio.pause();
+            }
+        });
+
+        audio.addEventListener('play', function() {
+            playBtn.innerHTML = ICON_PAUSE;
+            playBtn.setAttribute('aria-label', 'Pozastavit zvuk');
+            playBtn.setAttribute('aria-pressed', 'true');
+            if (!sessionRegistered) {
+                registerMediaSession(audio, item);
+                sessionRegistered = true;
+            }
+        });
+
+        audio.addEventListener('pause', function() {
+            playBtn.innerHTML = ICON_PLAY;
+            playBtn.setAttribute('aria-label', 'Spustit zvuk');
+            playBtn.setAttribute('aria-pressed', 'false');
+        });
+
+        audio.addEventListener('ended', function() {
+            playBtn.innerHTML = ICON_PLAY;
+            playBtn.setAttribute('aria-label', 'Spustit zvuk');
+            playBtn.setAttribute('aria-pressed', 'false');
+        });
+
+        audio.addEventListener('loadedmetadata', function() {
+            if (isFinite(audio.duration) && audio.duration > 0) {
+                range.max = String(audio.duration);
+                range.disabled = false;
+                time.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
+            }
+        });
+
+        audio.addEventListener('timeupdate', function() {
+            if (seeking) return;
+            var hasRealDuration = isFinite(audio.duration) && audio.duration > 0;
+            var total = hasRealDuration ? audio.duration : (item.duration_sec || 0);
+            range.value = String(audio.currentTime);
+            updateProgress(audio.currentTime, total);
+            // Show '--:--' until we have a real total — never fabricate
+            // 0:00 if duration is genuinely unknown.
+            var totalLabel = (hasRealDuration || item.duration_sec)
+                ? fmtTime(total)
+                : '--:--';
+            time.textContent = fmtTime(audio.currentTime) + ' / ' + totalLabel;
+        });
+
+        // Drag (input) → live preview, change/pointerup → commit seek.
+        range.addEventListener('input', function() {
+            seeking = true;
+            var total = parseFloat(range.max) || 0;
+            var current = parseFloat(range.value) || 0;
+            updateProgress(current, total);
+            time.textContent = fmtTime(current) + ' / ' + fmtTime(total);
+        });
+        range.addEventListener('change', function() {
+            var current = parseFloat(range.value) || 0;
+            audio.currentTime = current;
+            seeking = false;
+        });
+
+        // Initialize progress var so the gold fill is correct at 0%.
+        updateProgress(0, item.duration_sec || 0);
+
+        return mini;
+    }
+
+    // Fully unmount the inline <video> element from a card and put
+    // the thumbnail back. We use this from the audio mini-player when
+    // the user switches to podcast mode — pausing alone leaves the
+    // <video> mounted with src set, which keeps Range requests open
+    // against /stream.
+    function teardownInlineVideo(card) {
+        var v = card.querySelector('video');
+        if (!v) return;
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+        v.remove();
+        card.classList.remove('playing');
+        var thumb = card.querySelector('.library-thumb');
+        if (thumb) thumb.style.display = '';
     }
 
     function playLibraryItem(card, item) {
         if (card.querySelector('video')) return;
-        // If an audio element is currently playing in this card (podcast
-        // mode), tear it down before swapping in the video player so we
-        // never double-play the same source.
-        teardownAudioPlayer(card);
+        // If the permanent audio mini-player is playing in this card,
+        // pause it before swapping in the video so we never double-play
+        // the same source. The mini-player stays in the DOM.
+        var existingAudio = card.querySelector('audio.library-audio-element');
+        if (existingAudio && !existingAudio.paused) existingAudio.pause();
         // Inline player streams via /stream proxy — Streamtape's direct
         // CDN URLs are session/IP-bound to whoever called dlticket so we
         // can't hand them to the browser. The proxy resolves the URL
@@ -1104,7 +1384,8 @@
         // Android Chrome keep playing audio when the screen is unlocked
         // (otherwise iOS pulls the video into a fullscreen overlay).
         // For *background* playback while the screen is locked the user
-        // should use the 🎧 button which switches to <audio> — see #345.
+        // should use the audio mini-player below the meta row, which
+        // streams the same /stream URL as <audio> — see #350/#351/#352.
         v.setAttribute('playsinline', '');
         v.setAttribute('webkit-playsinline', '');
         v.preload = 'metadata';
@@ -1116,51 +1397,6 @@
         // lock-screen / notification shade shows the right metadata and
         // the play/pause/seek hardware keys forward to this video.
         registerMediaSession(v, item);
-    }
-
-    // #345 — Audio-only / "podcast" mode. <video> elements get
-    // suspended by mobile browsers when the screen locks; <audio>
-    // elements reliably keep playing. Same /stream URL — the browser
-    // decodes only the audio track of the MP4. The card keeps showing
-    // the thumbnail above the audio control bar so the visual context
-    // is preserved.
-    function playLibraryItemAudio(card, item) {
-        if (card.querySelector('audio.library-audio')) return;
-        // If a video is currently playing in this card, pause + remove
-        // it so we never run two playbacks of the same source.
-        var existingVideo = card.querySelector('video');
-        if (existingVideo) {
-            existingVideo.pause();
-            existingVideo.remove();
-            card.classList.remove('playing');
-            var hiddenThumb = card.querySelector('.library-thumb');
-            if (hiddenThumb) hiddenThumb.style.display = '';
-        }
-        var a = document.createElement('audio');
-        a.className = 'library-audio';
-        a.controls = true;
-        a.autoplay = true;
-        a.preload = 'metadata';
-        a.src = '/api/video/library/' + item.id + '/stream';
-        card.classList.add('playing-audio');
-        // Insert after the thumb so the artwork stays visible above
-        // the audio scrub bar — works as a static "now playing" cover.
-        var thumb = card.querySelector('.library-thumb');
-        if (thumb && thumb.nextSibling) {
-            card.insertBefore(a, thumb.nextSibling);
-        } else {
-            card.appendChild(a);
-        }
-        registerMediaSession(a, item);
-    }
-
-    function teardownAudioPlayer(card) {
-        var existingAudio = card.querySelector('audio.library-audio');
-        if (existingAudio) {
-            existingAudio.pause();
-            existingAudio.remove();
-            card.classList.remove('playing-audio');
-        }
     }
 
     function registerMediaSession(videoEl, item) {
