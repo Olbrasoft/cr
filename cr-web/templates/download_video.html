@@ -80,7 +80,8 @@
     white-space: nowrap;
 }
 .btn-primary:hover {
-    background: #b5141a;
+    background: var(--color-blue);
+    color: white;
 }
 .btn-primary:disabled {
     background: #ccc;
@@ -583,6 +584,18 @@
         statusEl.style.display = '';
     }
 
+    // After a successful download a ready-link is shown in statusEl and the
+    // Stáhnout button is hidden. If the user then switches quality, the old
+    // file is no longer what they want — clear the stale link and bring back
+    // the Stáhnout button so they can re-download in the new quality.
+    function resetReadyDownload() {
+        if (statusEl.querySelector('.download-ready-link')) {
+            hideStatus();
+            btnDownload.style.display = '';
+            btnDownload.disabled = false;
+        }
+    }
+
     function formatDuration(seconds) {
         if (!seconds) return 'neznámá';
         var h = Math.floor(seconds / 3600);
@@ -626,6 +639,9 @@
                 btn.title = fmt.resolution + ' \u2014 n\u00edzk\u00e9 rozli\u0161en\u00ed, nejmen\u0161\u00ed soubor';
             }
             btn.addEventListener('click', function() {
+                if (selectedQuality !== fmt.format_id) {
+                    resetReadyDownload();
+                }
                 document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
                 btn.classList.add('active');
                 selectedQuality = fmt.format_id;
@@ -648,6 +664,9 @@
         waBtn.appendChild(document.createTextNode(' ' + waLabel));
         waBtn.title = 'WhatsApp \u2014 max 16 MB, H.264' + (whatsappParts > 1 ? ', ' + whatsappParts + ' \u010d\u00e1st\u00ed' : '');
         waBtn.addEventListener('click', function() {
+            if (selectedQuality !== 'whatsapp') {
+                resetReadyDownload();
+            }
             document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
             waBtn.classList.add('active');
             selectedQuality = 'whatsapp';
