@@ -160,6 +160,12 @@ jobs:
               '{event: $event, status: $status, failedStep: $failedStep, repository: $repository, commit: $commit, commitMessage: $commitMessage, runUrl: $runUrl, environment: $environment, timestamp: $timestamp}' \
               > "$EVENT_FILE"
 
+            # Retain recent deploy event files only so the persistent self-hosted
+            # runner does not accumulate unbounded JSON files over time. Successfully
+            # delivered events are deleted by wake-claude.sh after the consumer ack;
+            # this cleanup catches the few that drop on dead session and any leftover.
+            find "$EVENTS_DIR" -maxdepth 1 -type f -name 'Olbrasoft-cr-deploy-*.json' -mtime +14 -delete 2>/dev/null || true
+
             # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
             WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
             if [ -x "$WAKE_SCRIPT" ]; then
@@ -207,6 +213,9 @@ jobs:
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{event: $event, status: $status, repository: $repository, commit: $commit, environment: $environment, timestamp: $timestamp}' \
               > "$EVENT_FILE"
+
+            # Retain recent verify event files only (same rationale as deploy).
+            find "$EVENTS_DIR" -maxdepth 1 -type f -name 'Olbrasoft-cr-verify-*.json' -mtime +14 -delete 2>/dev/null || true
 
             # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
             WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
