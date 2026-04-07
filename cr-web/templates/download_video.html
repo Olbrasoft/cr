@@ -417,6 +417,14 @@
     display: block;
     background: black;
 }
+/* #342 — fade-in for cards prepended after a fresh preparation. */
+.library-card-fadein {
+    animation: library-card-fadein 0.45s ease-out;
+}
+@keyframes library-card-fadein {
+    from { opacity: 0; transform: translateY(-12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
 </style>
 {% endblock %}
 
@@ -458,7 +466,7 @@
     <div class="status-message" id="status-message"><span class="spinner" id="status-spinner" style="display:none;"></span> <span id="status-text"></span></div>
 
     <div class="download-actions" id="download-actions">
-        <button class="btn-download" id="btn-download">Stáhnout</button>
+        <button class="btn-download" id="btn-download" title="Stáhnout video na server, převést a připravit ke stažení / přehrání">Připravit ke stažení</button>
     </div>
 </div>
 
@@ -832,14 +840,10 @@
         statusEl.appendChild(readyLink);
         statusEl.style.display = 'block';
         statusEl.style.color = '';
-        // Auto-trigger download
-        var a = document.createElement('a');
-        a.href = fileUrl;
-        a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(loadRecent, 3000);
+        // No auto-download (#341): the user clicks the ready-link if they
+        // want the file, otherwise they can play it inline from the
+        // library card that prepends below (#342).
+        scheduleLibraryRefresh();
     }
 
     function showMultiPartDownload(token, parts) {
@@ -875,29 +879,121 @@
             wrapper.appendChild(link);
         });
         statusEl.appendChild(wrapper);
-        setTimeout(loadRecent, 3000);
+        scheduleLibraryRefresh();
     }
 
     // --- #322 Video library grid ---
+    // Track which library ids are already rendered so refresh-after-prepare
+    // can spot the new entry, render it with a fade-in animation, and avoid
+    // re-creating cards the user is already interacting with.
+    var renderedLibraryIds = new Set();
+
     function loadRecent() { loadLibrary(); }
 
     function loadLibrary() {
-        fetch('/api/video/library')
+        return fetch('/api/video/library')
             .then(function(r) { return r.json(); })
             .then(function(items) {
                 var container = document.getElementById('video-library');
                 var grid = document.getElementById('library-grid');
+                // Empty / invalid response: drop everything we had cached
+                // so a later refetch can rebuild from a clean baseline.
+                // Without this reset, deleting the last library row would
+                // leave stale cards rendered in the DOM forever.
                 if (!Array.isArray(items) || items.length === 0) {
+                    grid.innerHTML = '';
+                    renderedLibraryIds.clear();
                     container.style.display = 'none';
+                    return [];
+                }
+                // First load: render everything fresh.
+                if (renderedLibraryIds.size === 0) {
+                    grid.innerHTML = '';
+                    items.forEach(function(item) {
+                        grid.appendChild(buildLibraryCard(item));
+                        renderedLibraryIds.add(item.id);
+                    });
+                    container.style.display = 'block';
+                    return items;
+                }
+                // Subsequent refreshes: prepend any items we don't already
+                // have, with a fade-in animation. Don't touch existing cards
+                // (the user might be playing one of them).
+                var newItems = items.filter(function(it) {
+                    return !renderedLibraryIds.has(it.id);
+                });
+                // The API returns newest first, so we prepend in the same
+                // order to keep that ordering.
+                for (var i = newItems.length - 1; i >= 0; i--) {
+                    var card = buildLibraryCard(newItems[i]);
+                    card.classList.add('library-card-fadein');
+                    grid.insertBefore(card, grid.firstChild);
+                    renderedLibraryIds.add(newItems[i].id);
+                }
+                container.style.display = 'block';
+                return newItems;
+            })
+            .catch(function(e) { console.warn('library load failed', e); return []; });
+    }
+
+    // Bumped every time the user touches the URL form (typing, picking a
+    // quality, clicking Načíst info). The deferred refresh check below
+    // uses this revision number to avoid wiping the user's in-progress
+    // preparation when an *earlier* preparation's pipeline finally lands.
+    var preparationFormRevision = 0;
+    function markPreparationFormChanged() {
+        preparationFormRevision++;
+    }
+    document.addEventListener('input', markPreparationFormChanged, true);
+    document.addEventListener('change', markPreparationFormChanged, true);
+
+    // Called after a successful preparation. The publish-to-library
+    // pipeline runs in the background after Ready, so we retry the
+    // refresh a few times until the new entry shows up. Once a new card
+    // appears, also clear the URL form so the user can prepare another
+    // video without manual cleanup — but only if the user has not
+    // already started typing a *new* URL in the meantime, otherwise we
+    // would clobber their in-progress preparation.
+    function scheduleLibraryRefresh() {
+        var attempts = 0;
+        var maxAttempts = 8;
+        var delay = 1500;
+        var scheduledRevision = preparationFormRevision;
+        function tick() {
+            attempts++;
+            loadLibrary().then(function(newItems) {
+                if (newItems && newItems.length > 0) {
+                    if (preparationFormRevision === scheduledRevision) {
+                        clearPreparationForm();
+                    }
                     return;
                 }
-                grid.innerHTML = '';
-                items.forEach(function(item) {
-                    grid.appendChild(buildLibraryCard(item));
-                });
-                container.style.display = 'block';
-            })
-            .catch(function(e) { console.warn('library load failed', e); });
+                if (attempts < maxAttempts) {
+                    setTimeout(tick, delay);
+                }
+            });
+        }
+        setTimeout(tick, delay);
+    }
+
+    // Reset the URL form back to its initial state after a video has been
+    // successfully prepared and prepended to the library. The status row
+    // (with the ready-link from the just-finished preparation) is left
+    // intact on purpose — the user can either click that link to download
+    // the file, or scroll down and play the new card. The status is
+    // overwritten the next time the user clicks Připravit.
+    function clearPreparationForm() {
+        urlInput.value = '';
+        previewEl.classList.remove('visible');
+        actionsEl.classList.remove('visible');
+        qualityEl.classList.remove('visible');
+        qualityEl.innerHTML = '';
+        selectedQuality = 'best';
+        btnDownload.disabled = false;
+        // btnDownload stays hidden — the visible ready-link replaces it
+        // until the user starts another preparation by entering a new URL
+        // and clicking Načíst info, which re-shows the button via the
+        // existing fetch flow.
     }
 
     function buildLibraryCard(item) {
@@ -966,9 +1062,64 @@
         var v = document.createElement('video');
         v.controls = true;
         v.autoplay = true;
+        // #343 — playsinline + webkit-playsinline let mobile Safari /
+        // Android Chrome keep playing audio when the screen is locked
+        // (otherwise iOS pulls the video into a fullscreen overlay that
+        // suspends on lock).
+        v.setAttribute('playsinline', '');
+        v.setAttribute('webkit-playsinline', '');
+        v.preload = 'metadata';
         v.src = '/api/video/library/' + item.id + '/stream';
         card.classList.add('playing');
         card.insertBefore(v, card.firstChild);
+
+        // #343 — Media Session API: register title + thumbnail so the OS
+        // lock-screen / notification shade shows the right metadata and
+        // the play/pause/seek hardware keys forward to this video.
+        registerMediaSession(v, item);
+    }
+
+    function registerMediaSession(videoEl, item) {
+        if (!('mediaSession' in navigator)) return;
+        try {
+            var artwork = [];
+            if (item.thumbnail_url) {
+                artwork.push({ src: item.thumbnail_url, sizes: '512x512', type: 'image/jpeg' });
+            }
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: item.title || 'Video',
+                artist: 'ceskarepublika.wiki',
+                artwork: artwork,
+            });
+            navigator.mediaSession.setActionHandler('play', function() { videoEl.play(); });
+            navigator.mediaSession.setActionHandler('pause', function() { videoEl.pause(); });
+            navigator.mediaSession.setActionHandler('seekbackward', function(e) {
+                videoEl.currentTime = Math.max(0, videoEl.currentTime - (e.seekOffset || 10));
+            });
+            navigator.mediaSession.setActionHandler('seekforward', function(e) {
+                videoEl.currentTime = Math.min(
+                    videoEl.duration || Infinity,
+                    videoEl.currentTime + (e.seekOffset || 10)
+                );
+            });
+            navigator.mediaSession.setActionHandler('seekto', function(e) {
+                if (e.fastSeek && 'fastSeek' in videoEl) {
+                    videoEl.fastSeek(e.seekTime);
+                } else {
+                    videoEl.currentTime = e.seekTime;
+                }
+            });
+            // Keep the OS playback state in sync.
+            videoEl.addEventListener('play', function() {
+                navigator.mediaSession.playbackState = 'playing';
+            });
+            videoEl.addEventListener('pause', function() {
+                navigator.mediaSession.playbackState = 'paused';
+            });
+        } catch (e) {
+            // Older browsers / unsupported actions — never break playback.
+            console.warn('mediaSession setup failed', e);
+        }
     }
 
     loadLibrary();
