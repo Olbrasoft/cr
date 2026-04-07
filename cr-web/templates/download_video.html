@@ -490,6 +490,11 @@
     touch-action: manipulation;
 }
 .library-audio-range:focus { outline: none; }
+.library-audio-range:focus-visible {
+    outline: 2px solid var(--color-blue);
+    outline-offset: 4px;
+    border-radius: 6px;
+}
 .library-audio-range::-webkit-slider-runnable-track {
     height: 8px;
     border-radius: 4px;
@@ -1198,6 +1203,9 @@
         playBtn.type = 'button';
         playBtn.className = 'library-audio-play';
         playBtn.setAttribute('aria-label', 'Spustit zvuk');
+        // aria-pressed reflects the toggle state for assistive tech;
+        // aria-label additionally describes the action.
+        playBtn.setAttribute('aria-pressed', 'false');
         // SVG icons keep the glyph crisp at any size and recolour with
         // currentColor — unlike unicode ▶ which some platforms render
         // as a fixed-colour emoji glyph that ignores CSS color.
@@ -1206,7 +1214,10 @@
 
         var time = document.createElement('span');
         time.className = 'library-audio-time';
-        var totalText = item.duration_sec ? formatDuration(item.duration_sec) : '0:00';
+        // '--:--' is the universal media-player placeholder for an
+        // unknown duration; we leave it there until loadedmetadata
+        // gives us the real number rather than fabricating "0:00".
+        var totalText = item.duration_sec ? formatDuration(item.duration_sec) : '--:--';
         time.textContent = '0:00 / ' + totalText;
         row.appendChild(time);
 
@@ -1216,7 +1227,16 @@
         range.type = 'range';
         range.className = 'library-audio-range';
         range.min = '0';
-        range.max = String(item.duration_sec || 100);
+        // If we already know the duration from the library API we use
+        // it; otherwise we *disable* the slider until loadedmetadata
+        // fires so the user can't seek to a meaningless position
+        // before the real max is known. (No magic 100s default.)
+        if (item.duration_sec) {
+            range.max = String(item.duration_sec);
+        } else {
+            range.max = '0';
+            range.disabled = true;
+        }
         range.step = '0.1';
         range.value = '0';
         range.setAttribute('aria-label', 'Posuvník přehrávání');
@@ -1248,10 +1268,11 @@
 
         playBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            // If the inline <video> is playing in this card, pause it
-            // so we never run two playbacks of the same source.
-            var v = card.querySelector('video');
-            if (v && !v.paused) v.pause();
+            // If the inline <video> is mounted in this card, fully
+            // tear it down (not just pause) so the browser stops any
+            // pending Range requests and we never have two players
+            // holding /stream connections to the same source.
+            teardownInlineVideo(card);
             if (audio.paused) {
                 audio.play().catch(function(err) {
                     console.error('audio play failed', err);
@@ -1264,6 +1285,7 @@
         audio.addEventListener('play', function() {
             playBtn.innerHTML = ICON_PAUSE;
             playBtn.setAttribute('aria-label', 'Pozastavit zvuk');
+            playBtn.setAttribute('aria-pressed', 'true');
             if (!sessionRegistered) {
                 registerMediaSession(audio, item);
                 sessionRegistered = true;
@@ -1273,28 +1295,35 @@
         audio.addEventListener('pause', function() {
             playBtn.innerHTML = ICON_PLAY;
             playBtn.setAttribute('aria-label', 'Spustit zvuk');
+            playBtn.setAttribute('aria-pressed', 'false');
         });
 
         audio.addEventListener('ended', function() {
             playBtn.innerHTML = ICON_PLAY;
             playBtn.setAttribute('aria-label', 'Spustit zvuk');
+            playBtn.setAttribute('aria-pressed', 'false');
         });
 
         audio.addEventListener('loadedmetadata', function() {
             if (isFinite(audio.duration) && audio.duration > 0) {
                 range.max = String(audio.duration);
+                range.disabled = false;
                 time.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
             }
         });
 
         audio.addEventListener('timeupdate', function() {
             if (seeking) return;
-            var total = (isFinite(audio.duration) && audio.duration > 0)
-                ? audio.duration
-                : (item.duration_sec || 0);
+            var hasRealDuration = isFinite(audio.duration) && audio.duration > 0;
+            var total = hasRealDuration ? audio.duration : (item.duration_sec || 0);
             range.value = String(audio.currentTime);
             updateProgress(audio.currentTime, total);
-            time.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(total);
+            // Show '--:--' until we have a real total — never fabricate
+            // 0:00 if duration is genuinely unknown.
+            var totalLabel = (hasRealDuration || item.duration_sec)
+                ? fmtTime(total)
+                : '--:--';
+            time.textContent = fmtTime(audio.currentTime) + ' / ' + totalLabel;
         });
 
         // Drag (input) → live preview, change/pointerup → commit seek.
@@ -1315,6 +1344,23 @@
         updateProgress(0, item.duration_sec || 0);
 
         return mini;
+    }
+
+    // Fully unmount the inline <video> element from a card and put
+    // the thumbnail back. We use this from the audio mini-player when
+    // the user switches to podcast mode — pausing alone leaves the
+    // <video> mounted with src set, which keeps Range requests open
+    // against /stream.
+    function teardownInlineVideo(card) {
+        var v = card.querySelector('video');
+        if (!v) return;
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+        v.remove();
+        card.classList.remove('playing');
+        var thumb = card.querySelector('.library-thumb');
+        if (thumb) thumb.style.display = '';
     }
 
     function playLibraryItem(card, item) {
