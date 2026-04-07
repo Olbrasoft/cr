@@ -417,6 +417,22 @@
     display: block;
     background: black;
 }
+/* #345 — audio (podcast) mode keeps the thumbnail visible as static
+   "now playing" artwork and shows a compact audio control bar below it. */
+.library-card audio.library-audio {
+    width: 100%;
+    display: block;
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--color-gray-border);
+}
+.library-btn.audio-btn {
+    background: var(--color-gold);
+}
+.library-btn.audio-btn:hover {
+    background: #b8941d;
+}
 /* #342 — fade-in for cards prepended after a fresh preparation. */
 .library-card-fadein {
     animation: library-card-fadein 0.45s ease-out;
@@ -1040,11 +1056,29 @@
         meta.appendChild(size);
         info.appendChild(meta);
 
+        // #345 — explicit audio-only / podcast play mode for mobile.
+        // <video> elements get suspended on screen lock no matter what
+        // Media Session API tricks we play; <audio> elements reliably
+        // keep going. The user clicks 🎧 → we replace the card body
+        // with an <audio controls> playing the same /stream URL.
+        var actions = document.createElement('div');
+        actions.className = 'library-actions';
+        var audioBtn = document.createElement('button');
+        audioBtn.type = 'button';
+        audioBtn.className = 'library-btn audio-btn';
+        audioBtn.title = 'Pustit jen zvuk — hraje i při zamčené obrazovce na mobilu';
+        audioBtn.textContent = '\uD83C\uDFA7 Pustit na pozadí';
+        audioBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            playLibraryItemAudio(card, item);
+        });
+        actions.appendChild(audioBtn);
+        info.appendChild(actions);
+
         // No separate Stáhnout button — see #337. The /stream endpoint
         // sets `Content-Disposition: inline; filename="<title>.<ext>"` so
         // the browser's built-in <video> ⋮ menu pre-fills the right
-        // filename when the user picks Save video as… The /file endpoint
-        // is still wired up server-side for non-browser tools.
+        // filename when the user picks Save video as…
 
         card.appendChild(info);
         return card;
@@ -1052,6 +1086,10 @@
 
     function playLibraryItem(card, item) {
         if (card.querySelector('video')) return;
+        // If an audio element is currently playing in this card (podcast
+        // mode), tear it down before swapping in the video player so we
+        // never double-play the same source.
+        teardownAudioPlayer(card);
         // Inline player streams via /stream proxy — Streamtape's direct
         // CDN URLs are session/IP-bound to whoever called dlticket so we
         // can't hand them to the browser. The proxy resolves the URL
@@ -1063,9 +1101,10 @@
         v.controls = true;
         v.autoplay = true;
         // #343 — playsinline + webkit-playsinline let mobile Safari /
-        // Android Chrome keep playing audio when the screen is locked
-        // (otherwise iOS pulls the video into a fullscreen overlay that
-        // suspends on lock).
+        // Android Chrome keep playing audio when the screen is unlocked
+        // (otherwise iOS pulls the video into a fullscreen overlay).
+        // For *background* playback while the screen is locked the user
+        // should use the 🎧 button which switches to <audio> — see #345.
         v.setAttribute('playsinline', '');
         v.setAttribute('webkit-playsinline', '');
         v.preload = 'metadata';
@@ -1077,6 +1116,51 @@
         // lock-screen / notification shade shows the right metadata and
         // the play/pause/seek hardware keys forward to this video.
         registerMediaSession(v, item);
+    }
+
+    // #345 — Audio-only / "podcast" mode. <video> elements get
+    // suspended by mobile browsers when the screen locks; <audio>
+    // elements reliably keep playing. Same /stream URL — the browser
+    // decodes only the audio track of the MP4. The card keeps showing
+    // the thumbnail above the audio control bar so the visual context
+    // is preserved.
+    function playLibraryItemAudio(card, item) {
+        if (card.querySelector('audio.library-audio')) return;
+        // If a video is currently playing in this card, pause + remove
+        // it so we never run two playbacks of the same source.
+        var existingVideo = card.querySelector('video');
+        if (existingVideo) {
+            existingVideo.pause();
+            existingVideo.remove();
+            card.classList.remove('playing');
+            var hiddenThumb = card.querySelector('.library-thumb');
+            if (hiddenThumb) hiddenThumb.style.display = '';
+        }
+        var a = document.createElement('audio');
+        a.className = 'library-audio';
+        a.controls = true;
+        a.autoplay = true;
+        a.preload = 'metadata';
+        a.src = '/api/video/library/' + item.id + '/stream';
+        card.classList.add('playing-audio');
+        // Insert after the thumb so the artwork stays visible above
+        // the audio scrub bar — works as a static "now playing" cover.
+        var thumb = card.querySelector('.library-thumb');
+        if (thumb && thumb.nextSibling) {
+            card.insertBefore(a, thumb.nextSibling);
+        } else {
+            card.appendChild(a);
+        }
+        registerMediaSession(a, item);
+    }
+
+    function teardownAudioPlayer(card) {
+        var existingAudio = card.querySelector('audio.library-audio');
+        if (existingAudio) {
+            existingAudio.pause();
+            existingAudio.remove();
+            card.classList.remove('playing-audio');
+        }
     }
 
     function registerMediaSession(videoEl, item) {
