@@ -44,6 +44,12 @@ pub struct AppState {
     /// Orchestrator that owns the Streamtape + R2 + DB collaborators for
     /// the hosted video library. `Some` only when both configs are present.
     pub video_library: Option<VideoLibraryPipeline>,
+    /// In-memory cache of resolved Streamtape CDN URLs keyed by file_id.
+    /// Streamtape's `dlticket` flow forces a 5 s wait per call which makes
+    /// every HTML5 `<video>` Range request unbearable; the resolved URL is
+    /// good for ~50 min so caching it makes seek/buffer feel instant.
+    pub streamtape_url_cache:
+        Arc<tokio::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.

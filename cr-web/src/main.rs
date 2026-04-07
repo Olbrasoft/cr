@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
         streamtape_config: streamtape_config.map(Arc::new),
         r2_config: r2_config.map(Arc::new),
         video_library,
+        streamtape_url_cache: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // API routes with CORS
@@ -150,6 +151,14 @@ async fn main() -> Result<()> {
         .route(
             "/video/library/{id}/play",
             axum::routing::get(handlers::library_play),
+        )
+        .route(
+            "/video/library/{id}/stream",
+            axum::routing::get(handlers::library_stream),
+        )
+        .route(
+            "/video/library/{id}/file",
+            axum::routing::get(handlers::library_file),
         )
         .route(
             "/video/library/{id}",

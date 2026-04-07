@@ -198,13 +198,7 @@ pub async fn video_prepare(
                 let size_mb = existing.file_size_bytes as f64 / (1024.0 * 1024.0);
                 let filename = format!(
                     "{}.{}",
-                    existing
-                        .title
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                        .take(60)
-                        .collect::<String>()
-                        .trim(),
+                    sanitize_filename_ascii(&existing.title, 60),
                     existing.format_ext
                 );
                 state.video_downloads.lock().await.insert(
@@ -291,11 +285,11 @@ pub async fn video_prepare(
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'");
-    let safe_title: String = decoded_title
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-        .take(60)
-        .collect();
+    // ASCII-only sanitiser — non-ASCII letters confuse HTTP header parsing
+    // (Content-Disposition expects an ASCII token; the optional `filename*`
+    // form for UTF-8 is not worth the complexity here). Emoji-only titles
+    // collapse to an empty string and fall back to "video".
+    let safe_title = sanitize_filename_ascii(&decoded_title, 60);
     let filename = format!("{safe_title}.{}", format.ext);
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
@@ -364,15 +358,13 @@ pub async fn video_prepare(
         if let Some(task) = downloads.get_mut(&dl_token) {
             match result {
                 Ok(_size) if is_whatsapp => {
-                    // WhatsApp: convert with ffmpeg
-                    let safe: String = task
+                    // WhatsApp: convert with ffmpeg. ASCII-only sanitiser to
+                    // keep the resulting filename safe in HTTP headers.
+                    let stem = task
                         .filename
                         .trim_end_matches(".mp4")
-                        .trim_end_matches(".webm")
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                        .take(50)
-                        .collect();
+                        .trim_end_matches(".webm");
+                    let safe = sanitize_filename_ascii(stem, 50);
                     task.status = DownloadStatus::Converting {
                         progress_percent: 0,
                     };
@@ -849,6 +841,244 @@ pub async fn library_play(
         })?;
 
     Ok(Json(LibraryPlayResponse { stream_url }))
+}
+
+/// `GET /api/video/library/{id}/stream` — proxy the video bytes from
+/// Streamtape to the browser so the inline `<video>` element can play
+/// without hitting the Streamtape session/IP-bound URL directly.
+///
+/// We forward the Range header so seeking works, and copy the upstream
+/// content type. The upstream URL is resolved via `get_stream_url` (a
+/// dlticket roundtrip) which is bound to *our* server's IP — exactly
+/// what we want, since this server then makes the request.
+///
+/// The resolved URL is cached per file_id (~50 min) so a single video
+/// playback session — which makes dozens of Range requests — does not
+/// pay the 5 s dlticket wait on every chunk.
+pub async fn library_stream(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    use cr_domain::repository::VideoRepository;
+    let pipeline = match state.video_library.as_ref() {
+        Some(p) => p,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "library disabled").into_response(),
+    };
+    let record = match state.video_repo.find_by_id(id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "video not found").into_response(),
+        Err(e) => {
+            tracing::error!("library_stream find: {e:?}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    };
+    let upstream_url =
+        match resolve_cached_stream_url(&state, pipeline, &record.streamtape_file_id).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!(
+                    "library_stream get_stream_url failed for {}: {e}",
+                    record.streamtape_file_id
+                );
+                return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+            }
+        };
+    proxy_streamtape(state.http_client.clone(), &upstream_url, &headers, None).await
+}
+
+/// Returns the cached Streamtape CDN URL for `file_id`, resolving a fresh
+/// one (5 s dlticket wait) only when the cache is empty or the entry is
+/// older than 45 minutes (Streamtape tokens are valid ~50 min).
+async fn resolve_cached_stream_url(
+    state: &AppState,
+    pipeline: &cr_infra::video_library::VideoLibraryPipeline,
+    file_id: &str,
+) -> Result<String, cr_infra::streamtape::StreamtapeError> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+    {
+        let cache = state.streamtape_url_cache.lock().await;
+        if let Some((url, ts)) = cache.get(file_id)
+            && ts.elapsed() < TTL
+        {
+            return Ok(url.clone());
+        }
+    }
+    let url = pipeline.streamtape_client().get_stream_url(file_id).await?;
+    state.streamtape_url_cache.lock().await.insert(
+        file_id.to_string(),
+        (url.clone(), std::time::Instant::now()),
+    );
+    Ok(url)
+}
+
+/// `GET /api/video/library/{id}/file` — same upstream proxy as `/stream`
+/// but with a `Content-Disposition: attachment` header derived from the
+/// stored title so the browser triggers a download instead of trying to
+/// play it inline. Used by the Stáhnout button on the library card.
+pub async fn library_file(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    use cr_domain::repository::VideoRepository;
+    let pipeline = match state.video_library.as_ref() {
+        Some(p) => p,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "library disabled").into_response(),
+    };
+    let record = match state.video_repo.find_by_id(id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "video not found").into_response(),
+        Err(e) => {
+            tracing::error!("library_file find: {e:?}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    };
+    let upstream_url =
+        match resolve_cached_stream_url(&state, pipeline, &record.streamtape_file_id).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("library_file get_stream_url failed: {e}");
+                return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+            }
+        };
+    // ASCII-only sanitiser keeps the name HTTP-header-safe so the
+    // Content-Disposition value never silently fails to parse below.
+    // Empty results (emoji-only titles) fall back to "video-{id}".
+    let mut safe_name = sanitize_filename_ascii(&record.title, 80);
+    if safe_name == "video" {
+        safe_name = format!("video-{}", record.id);
+    }
+    let download_name = format!("{safe_name}.{}", record.format_ext);
+    proxy_streamtape(
+        state.http_client.clone(),
+        &upstream_url,
+        &headers,
+        Some(&download_name),
+    )
+    .await
+}
+
+/// Shared upstream proxy for `/stream` and `/file`.
+///
+/// Streams the upstream body chunk-by-chunk via `bytes_stream()` instead
+/// of buffering the whole file in memory. A 100 MB video used to wait for
+/// the full download before sending a single byte to the browser; now the
+/// browser starts receiving the first chunk within ~50 ms of the upstream
+/// response headers landing.
+async fn proxy_streamtape(
+    http: reqwest::Client,
+    upstream_url: &str,
+    incoming: &axum::http::HeaderMap,
+    download_name: Option<&str>,
+) -> axum::response::Response {
+    let mut req = http.get(upstream_url);
+    // Forward Range so seeking + partial content works.
+    if let Some(range) = incoming.get(axum::http::header::RANGE) {
+        req = req.header(axum::http::header::RANGE, range);
+    }
+    let upstream = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("proxy_streamtape upstream send failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "upstream error").into_response();
+        }
+    };
+    let status = upstream.status();
+    let upstream_headers = upstream.headers().clone();
+
+    let mut response_headers = axum::http::HeaderMap::new();
+    for h in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::CONTENT_RANGE,
+        axum::http::header::ACCEPT_RANGES,
+        axum::http::header::CACHE_CONTROL,
+    ] {
+        if let Some(v) = upstream_headers.get(&h) {
+            response_headers.insert(h, v.clone());
+        }
+    }
+    // Make sure the browser knows it can seek even if upstream omits it.
+    response_headers
+        .entry(axum::http::header::ACCEPT_RANGES)
+        .or_insert_with(|| axum::http::HeaderValue::from_static("bytes"));
+    if let Some(name) = download_name {
+        // Defence in depth: callers already pass an ASCII-sanitised name,
+        // but if for any reason the parse still fails, fall back to a
+        // bare "video.bin" attachment so the browser still triggers the
+        // save dialog instead of opening the file inline.
+        let header_value = format!("attachment; filename=\"{name}\"")
+            .parse::<axum::http::HeaderValue>()
+            .or_else(|_| axum::http::HeaderValue::from_str("attachment; filename=\"video.bin\""));
+        if let Ok(value) = header_value {
+            response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+        }
+    }
+
+    let body = axum::body::Body::from_stream(upstream.bytes_stream());
+    (status, response_headers, body).into_response()
+}
+
+/// ASCII-only filename sanitiser used by every code path that ends up in
+/// either an HTTP `Content-Disposition` header or an on-disk filename.
+///
+/// Allowlist: ASCII alphanumerics + space + dash + underscore. Whitespace
+/// is collapsed, the result is truncated to `max` characters, and an
+/// empty result falls back to `"video"` (so emoji-only / Cyrillic-only /
+/// CJK-only titles never produce a nameless `.mp4`).
+fn sanitize_filename_ascii(input: &str, max: usize) -> String {
+    let cleaned: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect();
+    if cleaned.is_empty() {
+        "video".to_string()
+    } else {
+        cleaned
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_filename_ascii;
+
+    #[test]
+    fn ascii_title_kept() {
+        assert_eq!(sanitize_filename_ascii("Matrix (1999)", 60), "Matrix 1999");
+    }
+
+    #[test]
+    fn cyrillic_only_falls_back() {
+        assert_eq!(sanitize_filename_ascii("Москва", 60), "video");
+    }
+
+    #[test]
+    fn emoji_only_falls_back() {
+        assert_eq!(sanitize_filename_ascii("😭😭😭", 60), "video");
+    }
+
+    #[test]
+    fn collapses_whitespace_and_truncates() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_filename_ascii(&long, 80).len(), 80);
+        assert_eq!(
+            sanitize_filename_ascii("  hello   world  ", 60),
+            "hello world"
+        );
+    }
 }
 
 /// `DELETE /api/video/library/{id}` — remove a hosted video from

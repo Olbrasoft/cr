@@ -6,10 +6,14 @@
 //! pinned to `auto`.
 //!
 //! Currently used to upload **video thumbnails** for the hosted video
-//! library — they live in the existing `cr-images` bucket under
-//! `videos/thumbs/`. The full public URL is
-//! `{R2_PUBLIC_BASE_URL}/{key}` (the public URL is fronted by a Cloudflare
-//! Worker that translates `/img/...` paths to bucket keys).
+//! library — they live in the existing `cr-images` bucket under the
+//! `videos/thumbs/` key prefix. The public URL returned by
+//! [`R2Client::upload_thumbnail`] is **`{R2_PUBLIC_BASE_URL}/img/{key}`**
+//! (note the `/img/` segment): the public origin is fronted by the
+//! Cloudflare Worker in `workers/img-proxy`, which only intercepts paths
+//! under `/img/*` and strips that prefix before doing the R2 GET.
+//! Without the prefix the request would fall through to cr-web's own
+//! img_proxy handler and self-fetch in a loop (502).
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
@@ -28,8 +32,10 @@ pub struct R2Config {
     pub secret_access_key: String,
     pub bucket: String,
     /// Public CDN base URL where bucket objects are served from
-    /// (e.g. `https://ceskarepublika.wiki`). The full thumbnail URL is
-    /// `{public_base_url}/{key}`.
+    /// (e.g. `https://ceskarepublika.wiki`). Combined with the
+    /// mandatory `/img/` Worker prefix, the full thumbnail URL is
+    /// **`{public_base_url}/img/{key}`** — see the module docs and
+    /// [`R2Client::upload_thumbnail`] for the rationale.
     pub public_base_url: String,
 }
 
@@ -94,8 +100,13 @@ impl R2Client {
         Self { inner, config }
     }
 
-    /// Upload bytes to `key` and return the public CDN URL where the
-    /// object will be served from (`{public_base_url}/{key}`).
+    /// Upload bytes to `key` and return the public CDN URL.
+    ///
+    /// The Cloudflare Worker that fronts our R2 bucket
+    /// (`workers/img-proxy`) only handles paths under `/img/*` and strips
+    /// that prefix before doing the R2 GET. So an object stored at key
+    /// `videos/thumbs/abc.jpg` is reachable from the browser at
+    /// `{public_base_url}/img/videos/thumbs/abc.jpg`.
     pub async fn upload_thumbnail(
         &self,
         key: &str,
@@ -113,7 +124,7 @@ impl R2Client {
             .await
             .map_err(|e| R2Error::Put(format!("{e:?}")))?;
         Ok(format!(
-            "{}/{}",
+            "{}/img/{}",
             self.config.public_base_url.trim_end_matches('/'),
             key
         ))
