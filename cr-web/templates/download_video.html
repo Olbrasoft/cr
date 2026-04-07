@@ -944,20 +944,11 @@
         meta.appendChild(size);
         info.appendChild(meta);
 
-        // Stáhnout = direct browser download via /file proxy endpoint.
-        // Streams the bytes through cr-web with Content-Disposition so the
-        // browser triggers a save dialog instead of opening Streamtape's
-        // ad-laden video page in a new tab.
-        var actions = document.createElement('div');
-        actions.className = 'library-actions';
-        var dlBtn = document.createElement('a');
-        dlBtn.className = 'library-btn';
-        dlBtn.textContent = 'Stáhnout';
-        dlBtn.href = '/api/video/library/' + item.id + '/file';
-        dlBtn.setAttribute('download', '');
-        dlBtn.title = 'Stáhnout do počítače';
-        actions.appendChild(dlBtn);
-        info.appendChild(actions);
+        // No separate Stáhnout button — see #337. The /stream endpoint
+        // sets `Content-Disposition: inline; filename="<title>.<ext>"` so
+        // the browser's built-in <video> ⋮ menu pre-fills the right
+        // filename when the user picks Save video as… The /file endpoint
+        // is still wired up server-side for non-browser tools.
 
         card.appendChild(info);
         return card;

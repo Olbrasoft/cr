@@ -884,7 +884,19 @@ pub async fn library_stream(
                 return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
             }
         };
-    proxy_streamtape(state.http_client.clone(), &upstream_url, &headers, None).await
+    // Inline disposition + filename: the browser still plays the response
+    // inside the <video> element, but the in-player ⋮ menu's "Save video as…"
+    // (and any other Save As path) pre-fills with the proper title instead
+    // of "stream.mp4". This means the duplicate Stáhnout button is no
+    // longer needed — see #337.
+    let download_name = library_download_filename(&record);
+    proxy_streamtape(
+        state.http_client.clone(),
+        &upstream_url,
+        &headers,
+        Some(ContentDisposition::Inline(&download_name)),
+    )
+    .await
 }
 
 /// Returns the cached Streamtape CDN URL for `file_id`, resolving a fresh
@@ -942,21 +954,39 @@ pub async fn library_file(
                 return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
             }
         };
-    // ASCII-only sanitiser keeps the name HTTP-header-safe so the
-    // Content-Disposition value never silently fails to parse below.
-    // Empty results (emoji-only titles) fall back to "video-{id}".
-    let mut safe_name = sanitize_filename_ascii(&record.title, 80);
-    if safe_name == "video" {
-        safe_name = format!("video-{}", record.id);
-    }
-    let download_name = format!("{safe_name}.{}", record.format_ext);
+    let download_name = library_download_filename(&record);
     proxy_streamtape(
         state.http_client.clone(),
         &upstream_url,
         &headers,
-        Some(&download_name),
+        Some(ContentDisposition::Attachment(&download_name)),
     )
     .await
+}
+
+/// Two filenames for a library entry — an ASCII fallback (always
+/// header-safe) and a Unicode form that keeps Czech / Cyrillic / CJK
+/// letters intact. They feed `Content-Disposition` as `filename="…"`
+/// (the ASCII one) and `filename*=UTF-8''…` (the percent-encoded
+/// Unicode one); browsers prefer `filename*` when both are present.
+struct DownloadFilename {
+    ascii: String,
+    unicode: String,
+}
+
+fn library_download_filename(record: &cr_domain::repository::VideoRecord) -> DownloadFilename {
+    let mut ascii = sanitize_filename_ascii(&record.title, 80);
+    if ascii == "video" {
+        ascii = format!("video-{}", record.id);
+    }
+    let mut unicode = sanitize_filename_unicode(&record.title, 80);
+    if unicode == "video" {
+        unicode = format!("video-{}", record.id);
+    }
+    DownloadFilename {
+        ascii: format!("{ascii}.{}", record.format_ext),
+        unicode: format!("{unicode}.{}", record.format_ext),
+    }
 }
 
 /// Shared upstream proxy for `/stream` and `/file`.
@@ -966,11 +996,23 @@ pub async fn library_file(
 /// the full download before sending a single byte to the browser; now the
 /// browser starts receiving the first chunk within ~50 ms of the upstream
 /// response headers landing.
+/// Disposition mode for the proxied response.
+///
+/// `Inline` keeps the response playable inside `<video>` while still
+/// telling the browser which filename to use when the user picks Save As
+/// from the in-player ⋮ menu. `Attachment` triggers an immediate
+/// download dialog (used by the explicit `/file` endpoint).
+#[derive(Clone, Copy)]
+enum ContentDisposition<'a> {
+    Inline(&'a DownloadFilename),
+    Attachment(&'a DownloadFilename),
+}
+
 async fn proxy_streamtape(
     http: reqwest::Client,
     upstream_url: &str,
     incoming: &axum::http::HeaderMap,
-    download_name: Option<&str>,
+    disposition: Option<ContentDisposition<'_>>,
 ) -> axum::response::Response {
     let mut req = http.get(upstream_url);
     // Forward Range so seeking + partial content works.
@@ -1003,14 +1045,23 @@ async fn proxy_streamtape(
     response_headers
         .entry(axum::http::header::ACCEPT_RANGES)
         .or_insert_with(|| axum::http::HeaderValue::from_static("bytes"));
-    if let Some(name) = download_name {
-        // Defence in depth: callers already pass an ASCII-sanitised name,
-        // but if for any reason the parse still fails, fall back to a
-        // bare "video.bin" attachment so the browser still triggers the
-        // save dialog instead of opening the file inline.
-        let header_value = format!("attachment; filename=\"{name}\"")
-            .parse::<axum::http::HeaderValue>()
-            .or_else(|_| axum::http::HeaderValue::from_str("attachment; filename=\"video.bin\""));
+    if let Some(disp) = disposition {
+        let (kind, names) = match disp {
+            ContentDisposition::Inline(n) => ("inline", n),
+            ContentDisposition::Attachment(n) => ("attachment", n),
+        };
+        // RFC 6266 / RFC 5987: send both `filename` (ASCII fallback for
+        // ancient clients) and `filename*=UTF-8''…` so modern browsers
+        // get the original Czech / Unicode title intact. The percent-
+        // encoding is intentionally aggressive — over-encoding is safe.
+        let encoded = urlencoding::encode(&names.unicode);
+        let header_str = format!(
+            "{kind}; filename=\"{}\"; filename*=UTF-8''{}",
+            names.ascii, encoded
+        );
+        let header_value = header_str.parse::<axum::http::HeaderValue>().or_else(|_| {
+            axum::http::HeaderValue::from_str(&format!("{kind}; filename=\"video.bin\""))
+        });
         if let Ok(value) = header_value {
             response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
         }
@@ -1020,8 +1071,9 @@ async fn proxy_streamtape(
     (status, response_headers, body).into_response()
 }
 
-/// ASCII-only filename sanitiser used by every code path that ends up in
-/// either an HTTP `Content-Disposition` header or an on-disk filename.
+/// ASCII-only filename sanitiser used as the `filename="…"` fallback in
+/// `Content-Disposition` headers (and as the on-disk filename for the
+/// local-download flow).
 ///
 /// Allowlist: ASCII alphanumerics + space + dash + underscore. Whitespace
 /// is collapsed, the result is truncated to `max` characters, and an
@@ -1051,9 +1103,45 @@ fn sanitize_filename_ascii(input: &str, max: usize) -> String {
     }
 }
 
+/// Unicode-friendly filename sanitiser used as the `filename*=UTF-8''…`
+/// value in `Content-Disposition` headers — keeps Czech, Cyrillic, CJK
+/// and any other letters/digits intact while still stripping path
+/// separators, control characters, quotes and the like.
+///
+/// Browsers prefer `filename*` over the ASCII `filename` fallback, so a
+/// Czech title like `I když se vše vyřeší, KRIZE ZŮSTANE!` ends up
+/// saved as `I když se vše vyřeší KRIZE ZŮSTANE.mp4` instead of the
+/// mangled ASCII transliteration.
+fn sanitize_filename_unicode(input: &str, max: usize) -> String {
+    let cleaned: String = input
+        .chars()
+        .map(|c| {
+            // Keep any letter/number from any script. Replace anything
+            // else (punctuation, control chars, separators) with a space
+            // and collapse whitespace afterwards.
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect();
+    if cleaned.is_empty() {
+        "video".to_string()
+    } else {
+        cleaned
+    }
+}
+
 #[cfg(test)]
 mod sanitize_tests {
-    use super::sanitize_filename_ascii;
+    use super::{sanitize_filename_ascii, sanitize_filename_unicode};
 
     #[test]
     fn ascii_title_kept() {
@@ -1078,6 +1166,25 @@ mod sanitize_tests {
             sanitize_filename_ascii("  hello   world  ", 60),
             "hello world"
         );
+    }
+
+    #[test]
+    fn unicode_keeps_czech_diacritics() {
+        assert_eq!(
+            sanitize_filename_unicode("I když se vše vyřeší, KRIZE ZŮSTANE!", 80),
+            "I když se vše vyřeší KRIZE ZŮSTANE"
+        );
+    }
+
+    #[test]
+    fn unicode_keeps_cyrillic_and_cjk() {
+        assert_eq!(sanitize_filename_unicode("Москва", 80), "Москва");
+        assert_eq!(sanitize_filename_unicode("世界", 80), "世界");
+    }
+
+    #[test]
+    fn unicode_emoji_only_falls_back() {
+        assert_eq!(sanitize_filename_unicode("😭😭😭", 80), "video");
     }
 }
 
