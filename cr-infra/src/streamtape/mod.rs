@@ -222,8 +222,16 @@ impl StreamtapeClient {
         display_name: &str,
     ) -> Result<UploadedFile, StreamtapeError> {
         const MAX_ATTEMPTS: usize = 3;
+        // Read the file once outside the retry loop. Previously each retry
+        // re-read the entire file from disk (Copilot review on PR #349) —
+        // a 300 MB video would do 900 MB of I/O across 3 attempts. Now we
+        // pay the read cost once and clone the cheap `Bytes` handle per
+        // attempt (`Bytes` is reference-counted, no copy of the payload).
+        let bytes: bytes::Bytes = tokio::fs::read(path).await?.into();
+        let short_name = shorten_upload_filename(display_name);
+
         for attempt in 1..=MAX_ATTEMPTS {
-            match self.upload_once(path, display_name).await {
+            match self.upload_once(&bytes, &short_name).await {
                 Ok(uploaded) => {
                     if attempt > 1 {
                         tracing::info!(
@@ -244,13 +252,13 @@ impl StreamtapeClient {
                 }
             }
         }
-        Err(StreamtapeError::MissingField("upload.retries.exhausted"))
+        unreachable!("upload loop always returns on success or terminal failure")
     }
 
     async fn upload_once(
         &self,
-        path: &Path,
-        display_name: &str,
+        bytes: &bytes::Bytes,
+        short_name: &str,
     ) -> Result<UploadedFile, StreamtapeError> {
         // 1) Get a fresh upload URL — must be re-fetched per attempt because
         //    each is one-shot and bound to a specific Streamtape cluster.
@@ -265,18 +273,19 @@ impl StreamtapeClient {
             .await?;
         let upload_url = url_resp.into_result(None)?.url;
 
-        // 2) Stream the file as multipart. The filename is truncated to a
-        //    short ASCII slug — long filenames have caused HTTP 500s on
-        //    Streamtape's upload nodes (observed in production with the
-        //    "Galaktická rada lhala…" video, where the 80-char title made
-        //    the upload reject). curl's basename-style upload always works
-        //    so we mimic that here.
-        let short_name = shorten_upload_filename(display_name);
-        let bytes = tokio::fs::read(path).await?;
-        let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(short_name)
+        // 2) Send the file as multipart. The filename is the short ASCII
+        //    slug computed once in `upload()` — long filenames have caused
+        //    HTTP 500s on Streamtape's upload nodes (observed in production
+        //    with the "Galaktická rada lhala…" video, where the 80-char
+        //    title made the upload reject). The bytes are cheaply cloned
+        //    from the parent `Bytes` so each retry doesn't re-read the
+        //    file from disk. The MIME string is a hard-coded constant so
+        //    `mime_str` cannot fail at runtime — `expect` instead of a
+        //    silent fall-back to a 0-byte part.
+        let part = reqwest::multipart::Part::bytes(bytes.clone().to_vec())
+            .file_name(short_name.to_string())
             .mime_str("video/mp4")
-            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()).file_name("video.mp4"));
+            .expect("hard-coded MIME type video/mp4 must be valid");
         let form = reqwest::multipart::Form::new().part("file1", part);
 
         let raw = self
@@ -409,15 +418,30 @@ impl StreamtapeClient {
 
 /// Should the upload retry after this error?
 ///
-/// Network failures, malformed responses (often a partial body from a
-/// dying upload node) and 5xx API errors are transient. Auth/4xx errors
-/// and not-found are not.
+/// Transient: 5xx server errors, 408/429 throttling, raw network failures
+/// (DNS, connect, read timeout), and malformed response bodies (often a
+/// partial body from a dying upload node).
+/// Permanent: 4xx other than 408/429 — those are auth/validation issues
+/// that retrying won't fix.
 fn is_retryable_upload_error(e: &StreamtapeError) -> bool {
     match e {
-        StreamtapeError::Network(_) => true,
+        StreamtapeError::Network(err) => is_retryable_reqwest_error(err),
         StreamtapeError::InvalidUploadResponse(_) => true,
         StreamtapeError::Api { status, .. } => *status >= 500,
         _ => false,
+    }
+}
+
+fn is_retryable_reqwest_error(err: &reqwest::Error) -> bool {
+    match err.status() {
+        Some(status) => {
+            status.is_server_error()
+                || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        }
+        // No HTTP status means a transport-level failure (DNS, connect,
+        // read timeout, body read interrupted, …) — always transient.
+        None => true,
     }
 }
 
@@ -426,17 +450,23 @@ fn is_retryable_upload_error(e: &StreamtapeError) -> bool {
 /// in production with the 80-char "Galaktická rada lhala…" title where
 /// our reqwest upload failed but a hand-curl with `galakt-test.mp4`
 /// succeeded against the exact same upload URL. Truncate to ~32 chars.
+///
+/// The extension is **always** forced to `.mp4` so it lines up with the
+/// hard-coded `video/mp4` MIME on the multipart part. yt-dlp can produce
+/// `.webm` output even when the user picked an mp4 quality, and uploading
+/// such a file as `name.webm` + `Content-Type: video/mp4` would be
+/// internally inconsistent.
 fn shorten_upload_filename(input: &str) -> String {
-    // Split off any existing extension and preserve it.
-    let (stem, ext) = match input.rsplit_once('.') {
-        Some((s, e)) if !e.is_empty() && e.len() <= 6 => (s, e),
-        _ => (input, "mp4"),
+    // Drop any existing extension entirely — we always force `.mp4`.
+    let stem = match input.rsplit_once('.') {
+        Some((s, e)) if !e.is_empty() && e.len() <= 6 => s,
+        _ => input,
     };
     let mut shortened: String = stem.chars().take(32).collect::<String>().trim().to_string();
     if shortened.is_empty() {
         shortened = "video".to_string();
     }
-    format!("{shortened}.{ext}")
+    format!("{shortened}.mp4")
 }
 
 #[cfg(test)]
@@ -466,5 +496,17 @@ mod tests {
     #[test]
     fn no_extension_defaults_to_mp4() {
         assert_eq!(shorten_upload_filename("video"), "video.mp4");
+    }
+
+    #[test]
+    fn webm_extension_forced_to_mp4() {
+        // yt-dlp can produce .webm even for an mp4-named quality; the
+        // upload always sends `Content-Type: video/mp4`, so the filename
+        // extension must match. See Copilot review on PR #349.
+        assert_eq!(
+            shorten_upload_filename("Some Cool Video.webm"),
+            "Some Cool Video.mp4"
+        );
+        assert_eq!(shorten_upload_filename("clip.mkv"), "clip.mp4");
     }
 }
