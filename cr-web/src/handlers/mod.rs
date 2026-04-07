@@ -555,6 +555,12 @@ pub(crate) struct DownloadVideoTemplate {
 #[template(path = "filmy_serialy.html")]
 pub(crate) struct FilmySerialyTemplate {
     pub(crate) img: String,
+    /// Optional override for og:image. Set when ?q= is present so link
+    /// previews show the first search result's thumbnail instead of the
+    /// static logo.
+    pub(crate) og_image: Option<String>,
+    /// Optional override for og:title when ?q= is present.
+    pub(crate) og_title: Option<String>,
 }
 
 // --- Pool types ---

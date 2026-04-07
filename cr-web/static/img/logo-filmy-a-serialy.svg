@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 298 300" width="298" height="300">
+  <defs>
+    <mask id="film-mask">
+      <!-- White = visible, black = transparent -->
+      <rect width="298" height="300" fill="white"/>
+
+      <!-- Top perforations (5x, cut out) -->
+      <rect x="12" y="18" width="34" height="40" rx="6" fill="black"/>
+      <rect x="72" y="18" width="34" height="40" rx="6" fill="black"/>
+      <rect x="132" y="18" width="34" height="40" rx="6" fill="black"/>
+      <rect x="192" y="18" width="34" height="40" rx="6" fill="black"/>
+      <rect x="252" y="18" width="34" height="40" rx="6" fill="black"/>
+
+      <!-- Bottom perforations (5x, cut out) -->
+      <rect x="12" y="242" width="34" height="40" rx="6" fill="black"/>
+      <rect x="72" y="242" width="34" height="40" rx="6" fill="black"/>
+      <rect x="132" y="242" width="34" height="40" rx="6" fill="black"/>
+      <rect x="192" y="242" width="34" height="40" rx="6" fill="black"/>
+      <rect x="252" y="242" width="34" height="40" rx="6" fill="black"/>
+
+      <!-- Center area (cut out) -->
+      <rect x="13" y="70" width="272" height="160" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- Red film strip with transparent holes -->
+  <rect width="298" height="300" fill="#D50000" mask="url(#film-mask)"/>
+
+  <!-- Blue play button -->
+  <polygon points="120,100 120,200 206.6,150" fill="#1A3A6E"/>
+</svg>

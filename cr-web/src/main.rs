@@ -119,6 +119,10 @@ async fn main() -> Result<()> {
             "/movies/stream",
             axum::routing::get(handlers::movies_api::movies_stream),
         )
+        .route(
+            "/movies/thumb",
+            axum::routing::get(handlers::movies_api::movies_thumb),
+        )
         .layer(cors);
 
     let app = Router::new()

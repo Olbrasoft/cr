@@ -2,12 +2,16 @@
 
 {% block title %}Filmy a seriály{% endblock %}
 
-{% block meta_description %}Sledujte české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.{% endblock %}
+{% block meta_description %}Sledujte nejen české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.{% endblock %}
+
+{% block og_title %}{% match og_title %}{% when Some with (t) %}{{ t }}{% when None %}Filmy a seriály | ceskarepublika.wiki{% endmatch %}{% endblock %}
+{% block og_description %}Sledujte nejen české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.{% endblock %}
+{% block og_image %}{% match og_image %}{% when Some with (url) %}{{ url }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy.png?v=2{% endmatch %}{% endblock %}
 
 {% block header_left %}
 <div class="logo-group">
     <a href="/filmy-a-serialy/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
-        <img src="/static/img/logo-stahnout-video.svg"
+        <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
             alt="Logo Filmy a seriály" title="Filmy a seriály" class="header-emblem">
         <h1>Filmy a seriály</h1>
     </a>
@@ -79,7 +83,8 @@
     white-space: nowrap;
 }
 .btn-search:hover {
-    background: #b5141a;
+    background: var(--color-blue);
+    color: white;
 }
 .btn-search:disabled {
     background: #ccc;
@@ -220,7 +225,7 @@
 {% block content %}
 <section class="movies-hero">
     <h2>Filmy a seriály</h2>
-    <p>Vyhledejte a sledujte české filmy a seriály online</p>
+    <p>Vyhledejte a sledujte nejen české filmy a seriály online</p>
 </section>
 
 <div class="search-card">
@@ -308,6 +313,7 @@
         }
 
         stopVideo();
+        window.history.pushState({}, '', '/filmy-a-serialy/?q=' + encodeURIComponent(query));
         showStatus('Vyhled\u00e1v\u00e1m\u2026', false, true);
         resultsSection.style.display = 'none';
         playerSection.classList.remove('visible');
@@ -342,13 +348,22 @@
         var cardElements = [];
 
         movies.forEach(function(movie, index) {
-            var card = document.createElement('div');
+            var card = document.createElement('a');
             card.className = 'movie-card';
+            card.href = '/filmy-a-serialy/?watch=' + encodeURIComponent(movie.url) + '&title=' + encodeURIComponent(movie.title);
             card.setAttribute('data-url', movie.url);
+            card.onclick = function(e) {
+                if (!e.ctrlKey && !e.metaKey && e.button === 0) {
+                    e.preventDefault();
+                    window.history.pushState({}, '', card.href);
+                    playMovie(movie);
+                }
+            };
 
             var img = document.createElement('img');
-            img.src = movie.thumbnail || '';
+            img.src = movie.thumbnail ? '/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) : '';
             img.alt = movie.title;
+            img.loading = 'lazy';
             img.onerror = function() { this.style.background = '#ddd'; };
             card.appendChild(img);
 
@@ -365,10 +380,6 @@
                 info.appendChild(year);
             }
             card.appendChild(info);
-
-            card.addEventListener('click', function() {
-                playMovie(movie);
-            });
 
             resultsGrid.appendChild(card);
             cardElements[index] = card;
@@ -431,7 +442,8 @@
         .then(function(data) {
             if (data.success && data.video_url) {
                 hideStatus();
-                loadVideo(data.video_url);
+                var videoUrl = data.video_url.replace(/&amp;/g, '&');
+                loadVideo(videoUrl);
             } else {
                 showStatus(data.error || 'Video se nepoda\u0159ilo na\u010d\u00edst.', true);
             }
@@ -486,15 +498,51 @@
         stopVideo();
         hideStatus();
         playerSection.classList.remove('visible');
+        var query = searchInput.value.trim();
+        if (query) {
+            window.history.pushState({}, '', '/filmy-a-serialy/?q=' + encodeURIComponent(query));
+        } else {
+            window.history.pushState({}, '', '/filmy-a-serialy/');
+        }
         if (currentResults.length > 0) {
             resultsSection.style.display = 'block';
         }
     });
 
+    // Handle browser back/forward
+    window.addEventListener('popstate', function() {
+        var params = new URLSearchParams(window.location.search);
+        var watchUrl = params.get('watch');
+        var watchTitle = params.get('title');
+        var searchQuery = params.get('q');
+
+        stopVideo();
+
+        if (watchUrl) {
+            playMovie({ url: watchUrl, title: watchTitle || 'Video' });
+        } else if (searchQuery) {
+            searchInput.value = searchQuery;
+            if (currentResults.length > 0) {
+                hideStatus();
+                showResults();
+            } else {
+                searchMovies();
+            }
+        } else {
+            hideStatus();
+            resultsSection.style.display = 'none';
+            playerSection.classList.remove('visible');
+        }
+    });
+
     // Check URL params on load
     var params = new URLSearchParams(window.location.search);
+    var watchUrl = params.get('watch');
+    var watchTitle = params.get('title');
     var q = params.get('q');
-    if (q) {
+    if (watchUrl) {
+        playMovie({ url: watchUrl, title: watchTitle || 'Video' });
+    } else if (q) {
         searchInput.value = q;
         searchMovies();
     }
