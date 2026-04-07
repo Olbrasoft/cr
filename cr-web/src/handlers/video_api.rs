@@ -470,9 +470,9 @@ pub async fn video_prepare(
                                     rec.id,
                                     rec.streamtape_file_id
                                 ),
-                                Err(e) => tracing::warn!(
-                                    "video library publish failed: {e} — local-only"
-                                ),
+                                Err(e) => {
+                                    tracing::warn!("video library publish failed: {e} — local-only")
+                                }
                             }
                         });
                     }
@@ -836,7 +836,10 @@ pub async fn library_play(
         .get_stream_url(&record.streamtape_file_id)
         .await
         .map_err(|e| {
-            tracing::error!("get_stream_url failed for {}: {e}", record.streamtape_file_id);
+            tracing::error!(
+                "get_stream_url failed for {}: {e}",
+                record.streamtape_file_id
+            );
             (
                 StatusCode::BAD_GATEWAY,
                 Json(VideoErrorResponse {

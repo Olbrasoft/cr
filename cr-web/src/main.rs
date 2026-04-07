@@ -61,7 +61,10 @@ async fn main() -> Result<()> {
     let r2_config = R2Config::from_env();
     match (&streamtape_config, &r2_config) {
         (Some(_), Some(r2)) => {
-            tracing::info!("Video library: Streamtape + R2 configured (bucket: {})", r2.bucket)
+            tracing::info!(
+                "Video library: Streamtape + R2 configured (bucket: {})",
+                r2.bucket
+            )
         }
         (None, _) => tracing::warn!(
             "Video library: STREAMTAPE_LOGIN/STREAMTAPE_KEY missing — uploads disabled"
@@ -143,10 +146,7 @@ async fn main() -> Result<()> {
             axum::routing::delete(handlers::video_cleanup),
         )
         // --- #321 Video library API ---
-        .route(
-            "/video/library",
-            axum::routing::get(handlers::library_list),
-        )
+        .route("/video/library", axum::routing::get(handlers::library_list))
         .route(
             "/video/library/{id}/play",
             axum::routing::get(handlers::library_play),
