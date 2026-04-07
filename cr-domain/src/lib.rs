@@ -18,6 +18,7 @@ pub mod coordinates;
 pub mod entities;
 pub mod error;
 pub mod id;
+pub mod intentional_negative_test_for_ci_wake;
 pub mod repository;
 pub mod slug;
 
