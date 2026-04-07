@@ -211,12 +211,49 @@ impl StreamtapeClient {
     /// This is a two-step API: first GET `/file/ul` to obtain a one-shot
     /// upload URL on the cluster, then POST the file to that URL as
     /// multipart/form-data with the field name `file1`.
+    ///
+    /// Retries up to 3 times on transient upload errors (HTTP 5xx, network
+    /// failures). Each retry fetches a fresh upload URL because Streamtape
+    /// upload nodes are sticky (the URL has a server hash baked in) — a
+    /// flaky cluster will keep failing until we move to a different node.
     pub async fn upload(
         &self,
         path: &Path,
         display_name: &str,
     ) -> Result<UploadedFile, StreamtapeError> {
-        // 1) Get the upload URL
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.upload_once(path, display_name).await {
+                Ok(uploaded) => {
+                    if attempt > 1 {
+                        tracing::info!(
+                            "streamtape upload succeeded on attempt {attempt}/{MAX_ATTEMPTS}"
+                        );
+                    }
+                    return Ok(uploaded);
+                }
+                Err(e) => {
+                    if attempt >= MAX_ATTEMPTS || !is_retryable_upload_error(&e) {
+                        return Err(e);
+                    }
+                    let backoff = Duration::from_millis(500 * (1 << (attempt - 1)));
+                    tracing::warn!(
+                        "streamtape upload attempt {attempt}/{MAX_ATTEMPTS} failed: {e} — retrying after {backoff:?}"
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+        Err(StreamtapeError::MissingField("upload.retries.exhausted"))
+    }
+
+    async fn upload_once(
+        &self,
+        path: &Path,
+        display_name: &str,
+    ) -> Result<UploadedFile, StreamtapeError> {
+        // 1) Get a fresh upload URL — must be re-fetched per attempt because
+        //    each is one-shot and bound to a specific Streamtape cluster.
         let url_resp: Envelope<UlResult> = self
             .http
             .get(format!("{API_BASE}/file/ul"))
@@ -228,9 +265,18 @@ impl StreamtapeClient {
             .await?;
         let upload_url = url_resp.into_result(None)?.url;
 
-        // 2) Stream the file as multipart
+        // 2) Stream the file as multipart. The filename is truncated to a
+        //    short ASCII slug — long filenames have caused HTTP 500s on
+        //    Streamtape's upload nodes (observed in production with the
+        //    "Galaktická rada lhala…" video, where the 80-char title made
+        //    the upload reject). curl's basename-style upload always works
+        //    so we mimic that here.
+        let short_name = shorten_upload_filename(display_name);
         let bytes = tokio::fs::read(path).await?;
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(display_name.to_string());
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(short_name)
+            .mime_str("video/mp4")
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()).file_name("video.mp4"));
         let form = reqwest::multipart::Form::new().part("file1", part);
 
         let raw = self
@@ -358,5 +404,67 @@ impl StreamtapeClient {
             content_type: entry.content_type.clone(),
             status: entry.status,
         })
+    }
+}
+
+/// Should the upload retry after this error?
+///
+/// Network failures, malformed responses (often a partial body from a
+/// dying upload node) and 5xx API errors are transient. Auth/4xx errors
+/// and not-found are not.
+fn is_retryable_upload_error(e: &StreamtapeError) -> bool {
+    match e {
+        StreamtapeError::Network(_) => true,
+        StreamtapeError::InvalidUploadResponse(_) => true,
+        StreamtapeError::Api { status, .. } => *status >= 500,
+        _ => false,
+    }
+}
+
+/// Shorten a filename for the multipart upload field. Streamtape's upload
+/// nodes appear to reject long filenames with HTTP 500 — we observed this
+/// in production with the 80-char "Galaktická rada lhala…" title where
+/// our reqwest upload failed but a hand-curl with `galakt-test.mp4`
+/// succeeded against the exact same upload URL. Truncate to ~32 chars.
+fn shorten_upload_filename(input: &str) -> String {
+    // Split off any existing extension and preserve it.
+    let (stem, ext) = match input.rsplit_once('.') {
+        Some((s, e)) if !e.is_empty() && e.len() <= 6 => (s, e),
+        _ => (input, "mp4"),
+    };
+    let mut shortened: String = stem.chars().take(32).collect::<String>().trim().to_string();
+    if shortened.is_empty() {
+        shortened = "video".to_string();
+    }
+    format!("{shortened}.{ext}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_upload_filename;
+
+    #[test]
+    fn long_title_gets_truncated() {
+        // The actual title that broke the upload in production.
+        let long = "Galaktick rada lhala Zem ude ila okam it a zanechala galaxii v oku.mp4";
+        let short = shorten_upload_filename(long);
+        assert!(short.len() <= 40, "got {short:?}");
+        assert!(short.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn short_title_kept() {
+        assert_eq!(shorten_upload_filename("test.mp4"), "test.mp4");
+    }
+
+    #[test]
+    fn empty_falls_back() {
+        assert_eq!(shorten_upload_filename(".mp4"), "video.mp4");
+        assert_eq!(shorten_upload_filename(""), "video.mp4");
+    }
+
+    #[test]
+    fn no_extension_defaults_to_mp4() {
+        assert_eq!(shorten_upload_filename("video"), "video.mp4");
     }
 }
