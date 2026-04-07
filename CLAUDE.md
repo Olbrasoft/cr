@@ -84,6 +84,53 @@ gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" --jq '.check_runs[] | sel
 - After merge: "PR mergnut, sleduji deploy." (NOT "Issue hotová")
 - After deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
 
+## Startup — Chrome Browser (MANDATORY)
+
+**At the start of every session**, open Google Chrome with project tabs. Follow this sequence:
+
+### Step 1: Check if Chrome is already connected
+
+```
+mcp__claude-in-chrome__tabs_context_mcp  (createIfEmpty: false)
+```
+
+- If tabs are returned → Chrome is already running and MCP is connected → go to **Step 3**
+- If no tabs / error → Chrome is not running or MCP can't connect → go to **Step 2**
+
+### Step 2: Launch new Chrome instance (only if Step 1 found nothing)
+
+```
+mcp__claude-in-chrome__tabs_context_mcp  (createIfEmpty: true)
+sleep 2 && ~/.local/bin/playwright-window-right.sh
+```
+
+This creates a new MCP-managed Chrome window. Chrome initially opens on the **user's currently active workspace**, which may differ from Claude Code's workspace. The `playwright-window-right.sh` script then:
+1. Detects which workspace THIS Claude Code terminal is on (via process tree)
+2. Finds the Chrome window
+3. **Moves it to Claude Code's workspace** (using `MoveToWorkspace` via gdbus)
+4. Positions it on the **right half** of the screen, below the top panel (32px)
+
+**Do NOT use `google-chrome` bash command** — MCP extension manages its own tab groups.
+
+### Step 3: Ensure required tabs are open
+
+Check the tabs returned in Step 1 or Step 2. Two tabs must be open:
+
+1. **`https://ceskarepublika.wiki/`** — production site
+2. **`https://github.com/Olbrasoft/cr/issues`** — project issues
+
+For each URL that is NOT already open in an existing tab:
+```
+mcp__claude-in-chrome__tabs_create_mcp  →  get new tabId
+mcp__claude-in-chrome__navigate  (url, tabId)
+```
+
+If both URLs are already open in existing tabs → do nothing, no new tabs needed.
+
+### Why this matters
+
+Multiple Claude Code instances run on different workspaces. After a restart (e.g., new MCP server loaded), Chrome may already be open from the previous session — launching another instance would create a duplicate window. This check-first approach avoids that.
+
 ## What This Is
 
 **Olbrasoft/cr** — Modern SEO portal about the Czech Republic. Hierarchical territorial navigation: Regions → Districts → ORP → Municipalities, with AI features and high performance.

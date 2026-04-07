@@ -109,7 +109,7 @@ fn is_allowed_stream_url(url: &str) -> bool {
         .map(|h| {
             STREAM_ALLOWED_DOMAINS
                 .iter()
-                .any(|d| h == *d || h.ends_with(&format!(".{d}")))
+                .any(|d| h == *d || h.strip_suffix(d).is_some_and(|p| p.ends_with('.')))
         })
         .unwrap_or(false)
 }
@@ -249,35 +249,27 @@ pub async fn movies_video_url(
     }))
 }
 
-/// Validate video availability via CzProxy
+/// PHP proxy URL for prehraj.to validation (ASP.NET proxy returns 401, PHP works).
+const PREHRAJTO_PHP_PROXY: &str = "http://tumarsrobot.unas.cz/index.php";
+
+/// Validate video availability via PHP proxy (tumarsrobot.unas.cz)
 pub async fn movies_validate(
     State(state): State<AppState>,
     Query(params): Query<ValidateQuery>,
 ) -> Json<ValidateResponse> {
     let url = params.url.trim().to_string();
-    if url.is_empty() {
+    if url.is_empty() || !is_prehrajto_url(&url) {
         return Json(ValidateResponse {
             valid: false,
             status: None,
-            error: Some("Missing url".to_string()),
+            error: Some("Invalid or missing prehraj.to URL".to_string()),
         });
     }
-
-    let config = cz_proxy_config();
-    if config.is_none() {
-        return Json(ValidateResponse {
-            valid: false,
-            status: None,
-            error: Some("Proxy not configured".to_string()),
-        });
-    }
-    let (proxy_url, proxy_key) = config.unwrap();
-
+    // Use PHP proxy for validation — ASP.NET proxy returns 401 for valid CDN URLs
     let req_url = format!(
-        "{}?action=validate&url={}&key={}",
-        proxy_url,
+        "{}?action=validate&url={}",
+        PREHRAJTO_PHP_PROXY,
         urlencoding::encode(&url),
-        proxy_key
     );
 
     match state
@@ -396,5 +388,69 @@ pub async fn movies_stream(
             tracing::error!("Stream proxy failed: {e}");
             (StatusCode::BAD_GATEWAY, "Stream failed").into_response()
         }
+    }
+}
+
+// --- Thumbnail proxy ---
+
+#[derive(Deserialize)]
+pub struct ThumbQuery {
+    pub url: String,
+}
+
+/// Only thumb.prehrajto.cz is allowed to prevent SSRF/open-proxy abuse.
+const MOVIE_THUMB_ALLOWED_HOST: &str = "thumb.prehrajto.cz";
+
+/// Proxy movie thumbnails through our domain so the browser never hits
+/// thumb.prehrajto.cz directly. Keeps the source domain out of the user's
+/// network traffic and lets us add caching headers.
+pub async fn movies_thumb(
+    State(state): State<AppState>,
+    Query(query): Query<ThumbQuery>,
+) -> impl IntoResponse {
+    // Strict host check: URL must parse, use HTTPS, and host must exactly match.
+    let parsed = match reqwest::Url::parse(&query.url) {
+        Ok(u) => u,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
+    };
+    if parsed.scheme() != "https" || parsed.host_str() != Some(MOVIE_THUMB_ALLOWED_HOST) {
+        return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
+    }
+
+    let resp = state
+        .http_client
+        .get(parsed.as_str())
+        .header("User-Agent", "Mozilla/5.0")
+        .header("Referer", "https://prehraj.to/")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let ct = r
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg")
+                .to_string();
+            match r.bytes().await {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, ct),
+                        // Cache for 1 day in browser, 7 days on any CDN in front of us
+                        (
+                            header::CACHE_CONTROL,
+                            "public, max-age=86400, s-maxage=604800, immutable".to_string(),
+                        ),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => (StatusCode::BAD_GATEWAY, "Failed to read upstream body").into_response(),
+            }
+        }
+        _ => (StatusCode::NOT_FOUND, "Thumbnail not available").into_response(),
     }
 }
