@@ -7,6 +7,7 @@ use cr_infra::repositories::{
     PgPoolRepository, PgRegionRepository, PgVideoRepository,
 };
 use cr_infra::streamtape::StreamtapeConfig;
+use cr_infra::video_library::VideoLibraryPipeline;
 use sqlx::PgPool;
 
 use crate::handlers::video_api::VideoDownloads;
@@ -32,12 +33,17 @@ pub struct AppState {
     /// Prepared video downloads waiting to be served.
     pub video_downloads: VideoDownloads,
     /// Streamtape API credentials for the video library. `None` until the
-    /// `STREAMTAPE_LOGIN`/`STREAMTAPE_KEY` env vars are provisioned —
-    /// downstream modules that need Streamtape must check for `Some`.
+    /// `STREAMTAPE_LOGIN`/`STREAMTAPE_KEY` env vars are provisioned. Read
+    /// at startup only — actual use happens via [`AppState::video_library`].
+    #[allow(dead_code)]
     pub streamtape_config: Option<Arc<StreamtapeConfig>>,
     /// Cloudflare R2 credentials for storing video thumbnails. `None` until
-    /// the `R2_*` env vars are provisioned.
+    /// the `R2_*` env vars are provisioned. Read at startup only.
+    #[allow(dead_code)]
     pub r2_config: Option<Arc<R2Config>>,
+    /// Orchestrator that owns the Streamtape + R2 + DB collaborators for
+    /// the hosted video library. `Some` only when both configs are present.
+    pub video_library: Option<VideoLibraryPipeline>,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.

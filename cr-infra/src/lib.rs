@@ -16,3 +16,4 @@ pub mod r2;
 pub mod repositories;
 pub mod streamtape;
 pub mod video;
+pub mod video_library;
