@@ -130,9 +130,26 @@ struct UploadResult {
     url: String,
     id: String,
     name: String,
+    /// Streamtape's upload endpoint sometimes returns size as a JSON
+    /// string ("13704925") rather than a number — accept either via the
+    /// helper below.
+    #[serde(deserialize_with = "deserialize_u64_or_string")]
     size: u64,
     sha256: String,
     content_type: String,
+}
+
+fn deserialize_u64_or_string<'de, D>(d: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| Error::custom("not u64")),
+        serde_json::Value::String(s) => s.parse().map_err(Error::custom),
+        _ => Err(Error::custom("expected u64 or string")),
+    }
 }
 
 // --- dlticket / dl response shapes ---
@@ -148,6 +165,7 @@ struct DlResult {
     #[allow(dead_code)]
     name: String,
     #[allow(dead_code)]
+    #[serde(deserialize_with = "deserialize_u64_or_string")]
     size: u64,
     url: String,
 }
@@ -166,6 +184,7 @@ type InfoResult = std::collections::HashMap<String, Option<InfoEntry>>;
 struct InfoEntry {
     id: String,
     name: String,
+    #[serde(deserialize_with = "deserialize_u64_or_string")]
     size: u64,
     content_type: String,
     status: i64,
