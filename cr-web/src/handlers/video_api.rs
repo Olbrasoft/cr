@@ -291,11 +291,23 @@ pub async fn video_prepare(
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'");
-    let safe_title: String = decoded_title
+    // Strip everything that isn't safe in a filename across OSes. If the
+    // title is *only* emoji or other non-ASCII (e.g. "😭😭😭"), the result
+    // is an empty string and the user would download `.webm` — fall back to
+    // a generic `video` so the file always has a name.
+    let mut safe_title: String = decoded_title
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
         .take(60)
         .collect();
+    if safe_title.trim().is_empty() {
+        safe_title = "video".to_string();
+    }
     let filename = format!("{safe_title}.{}", format.ext);
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
@@ -849,6 +861,159 @@ pub async fn library_play(
         })?;
 
     Ok(Json(LibraryPlayResponse { stream_url }))
+}
+
+/// `GET /api/video/library/{id}/stream` — proxy the video bytes from
+/// Streamtape to the browser so the inline `<video>` element can play
+/// without hitting the Streamtape session/IP-bound URL directly.
+///
+/// We forward the Range header so seeking works, and copy the upstream
+/// content type. The upstream URL is resolved via `get_stream_url` (a
+/// dlticket roundtrip) which is bound to *our* server's IP — exactly
+/// what we want, since this server then makes the request.
+pub async fn library_stream(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    use cr_domain::repository::VideoRepository;
+    let pipeline = match state.video_library.as_ref() {
+        Some(p) => p,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "library disabled").into_response(),
+    };
+    let record = match state.video_repo.find_by_id(id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "video not found").into_response(),
+        Err(e) => {
+            tracing::error!("library_stream find: {e:?}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    };
+    let upstream_url = match pipeline
+        .streamtape_client()
+        .get_stream_url(&record.streamtape_file_id)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(
+                "library_stream get_stream_url failed for {}: {e}",
+                record.streamtape_file_id
+            );
+            return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+        }
+    };
+    proxy_streamtape(state.http_client.clone(), &upstream_url, &headers, None).await
+}
+
+/// `GET /api/video/library/{id}/file` — same upstream proxy as `/stream`
+/// but with a `Content-Disposition: attachment` header derived from the
+/// stored title so the browser triggers a download instead of trying to
+/// play it inline. Used by the Stáhnout button on the library card.
+pub async fn library_file(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    use cr_domain::repository::VideoRepository;
+    let pipeline = match state.video_library.as_ref() {
+        Some(p) => p,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "library disabled").into_response(),
+    };
+    let record = match state.video_repo.find_by_id(id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "video not found").into_response(),
+        Err(e) => {
+            tracing::error!("library_file find: {e:?}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    };
+    let upstream_url = match pipeline
+        .streamtape_client()
+        .get_stream_url(&record.streamtape_file_id)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!("library_file get_stream_url failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+        }
+    };
+    // See video_prepare for the same fallback logic — emoji-only titles
+    // would otherwise leave the user with a nameless `.mp4`.
+    let mut safe_name: String = record
+        .title
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect();
+    if safe_name.trim().is_empty() {
+        safe_name = format!("video-{}", record.id);
+    }
+    let download_name = format!("{safe_name}.{}", record.format_ext);
+    proxy_streamtape(
+        state.http_client.clone(),
+        &upstream_url,
+        &headers,
+        Some(&download_name),
+    )
+    .await
+}
+
+/// Shared upstream proxy for `/stream` and `/file`.
+async fn proxy_streamtape(
+    http: reqwest::Client,
+    upstream_url: &str,
+    incoming: &axum::http::HeaderMap,
+    download_name: Option<&str>,
+) -> axum::response::Response {
+    let mut req = http.get(upstream_url);
+    // Forward Range so seeking + partial content works.
+    if let Some(range) = incoming.get(axum::http::header::RANGE) {
+        req = req.header(axum::http::header::RANGE, range);
+    }
+    let upstream = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("proxy_streamtape upstream send failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "upstream error").into_response();
+        }
+    };
+    let status = upstream.status();
+    let upstream_headers = upstream.headers().clone();
+    let bytes = match upstream.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("proxy_streamtape upstream body read failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "upstream body error").into_response();
+        }
+    };
+
+    let mut response_headers = axum::http::HeaderMap::new();
+    for h in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::CONTENT_RANGE,
+        axum::http::header::ACCEPT_RANGES,
+        axum::http::header::CACHE_CONTROL,
+    ] {
+        if let Some(v) = upstream_headers.get(&h) {
+            response_headers.insert(h, v.clone());
+        }
+    }
+    if let Some(name) = download_name
+        && let Ok(value) =
+            format!("attachment; filename=\"{name}\"").parse::<axum::http::HeaderValue>()
+    {
+        response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+    }
+
+    (status, response_headers, bytes).into_response()
 }
 
 /// `DELETE /api/video/library/{id}` — remove a hosted video from

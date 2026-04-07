@@ -152,6 +152,14 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::library_play),
         )
         .route(
+            "/video/library/{id}/stream",
+            axum::routing::get(handlers::library_stream),
+        )
+        .route(
+            "/video/library/{id}/file",
+            axum::routing::get(handlers::library_file),
+        )
+        .route(
             "/video/library/{id}",
             axum::routing::delete(handlers::library_delete),
         )

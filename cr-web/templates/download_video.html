@@ -462,10 +462,11 @@
     </div>
 </div>
 
-<!-- #322 Video library grid: every video uploaded to Streamtape is rendered
-     here as a card with thumbnail, title, quality badge, play and delete. -->
+<!-- #322 Library of videos hosted on Streamtape: thumbnail + title +
+     inline play + Stáhnout (proxied through cr-web). Public read-only —
+     no delete from the public UI. -->
 <div class="video-library" id="video-library" style="display:none;margin-top:1.5rem;">
-    <h3 style="font-size:1rem;font-weight:700;color:var(--color-black);margin-bottom:0.75rem;">Knihovna videí</h3>
+    <h3 style="font-size:1rem;font-weight:700;color:var(--color-black);margin-bottom:0.75rem;">Stažená videa</h3>
     <div class="library-grid" id="library-grid"></div>
 </div>
 
@@ -943,25 +944,19 @@
         meta.appendChild(size);
         info.appendChild(meta);
 
+        // Stáhnout = direct browser download via /file proxy endpoint.
+        // Streams the bytes through cr-web with Content-Disposition so the
+        // browser triggers a save dialog instead of opening Streamtape's
+        // ad-laden video page in a new tab.
         var actions = document.createElement('div');
         actions.className = 'library-actions';
         var dlBtn = document.createElement('a');
         dlBtn.className = 'library-btn';
         dlBtn.textContent = 'Stáhnout';
-        dlBtn.href = item.streamtape_url;
-        dlBtn.target = '_blank';
-        dlBtn.rel = 'noopener';
-        dlBtn.title = 'Otevřít na Streamtape';
+        dlBtn.href = '/api/video/library/' + item.id + '/file';
+        dlBtn.setAttribute('download', '');
+        dlBtn.title = 'Stáhnout do počítače';
         actions.appendChild(dlBtn);
-        var delBtn = document.createElement('button');
-        delBtn.className = 'library-btn danger';
-        delBtn.textContent = '\u2715';
-        delBtn.title = 'Smazat z knihovny';
-        delBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            deleteLibraryItem(item, card);
-        });
-        actions.appendChild(delBtn);
         info.appendChild(actions);
 
         card.appendChild(info);
@@ -970,54 +965,19 @@
 
     function playLibraryItem(card, item) {
         if (card.querySelector('video')) return;
-        var loading = document.createElement('div');
-        loading.className = 'library-thumb';
-        loading.style.display = 'flex';
-        loading.style.alignItems = 'center';
-        loading.style.justifyContent = 'center';
-        loading.style.background = '#222';
-        loading.style.color = 'white';
-        loading.style.fontSize = '0.85rem';
-        loading.textContent = 'Načítám stream\u2026';
+        // Inline player streams via /stream proxy — Streamtape's direct
+        // CDN URLs are session/IP-bound to whoever called dlticket so we
+        // can't hand them to the browser. The proxy resolves the URL
+        // server-side, fetches Streamtape, and streams through to us
+        // (forwarding Range so seeking still works).
         var existingThumb = card.querySelector('.library-thumb');
         existingThumb.style.display = 'none';
-        card.insertBefore(loading, existingThumb);
-
-        fetch('/api/video/library/' + item.id + '/play')
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
-            .then(function(data) {
-                loading.remove();
-                existingThumb.remove();
-                var v = document.createElement('video');
-                v.controls = true;
-                v.autoplay = true;
-                v.src = data.stream_url;
-                card.classList.add('playing');
-                card.insertBefore(v, card.firstChild);
-            })
-            .catch(function(e) {
-                loading.textContent = 'Stream se nepodařilo načíst';
-                console.warn('library play failed', e);
-            });
-    }
-
-    function deleteLibraryItem(item, card) {
-        if (!confirm('Smazat „' + item.title + '\u201C z knihovny? Akci nelze vrátit.')) return;
-        fetch('/api/video/library/' + item.id, { method: 'DELETE' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                card.remove();
-                if (!document.querySelectorAll('.library-card').length) {
-                    document.getElementById('video-library').style.display = 'none';
-                }
-            })
-            .catch(function(e) {
-                console.warn('library delete failed', e);
-                alert('Smazání selhalo');
-            });
+        var v = document.createElement('video');
+        v.controls = true;
+        v.autoplay = true;
+        v.src = '/api/video/library/' + item.id + '/stream';
+        card.classList.add('playing');
+        card.insertBefore(v, card.firstChild);
     }
 
     loadLibrary();

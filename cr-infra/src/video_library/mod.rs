@@ -229,8 +229,12 @@ fn thumbnail_key_hash(file_id: &str, bytes: &Bytes) -> String {
 
 /// Filesystem-friendly name derived from a video title; the upload
 /// endpoint uses this as the user-visible filename on Streamtape.
+///
+/// Falls back to `"video"` when the input is empty after sanitisation
+/// — emoji-only or non-ASCII titles would otherwise become an empty
+/// string and Streamtape would receive a nameless file.
 fn sanitize_for_filename(title: &str) -> String {
-    title
+    let cleaned: String = title
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
@@ -245,5 +249,39 @@ fn sanitize_for_filename(title: &str) -> String {
         .join(" ")
         .chars()
         .take(80)
-        .collect()
+        .collect();
+    if cleaned.is_empty() {
+        "video".to_string()
+    } else {
+        cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_for_filename;
+
+    #[test]
+    fn keeps_alphanumerics_and_collapses_whitespace() {
+        assert_eq!(sanitize_for_filename("Matrix (1999)"), "Matrix 1999");
+        assert_eq!(sanitize_for_filename("  hello   world  "), "hello world");
+    }
+
+    #[test]
+    fn emoji_only_title_falls_back_to_video() {
+        assert_eq!(sanitize_for_filename("😭😭😭"), "video");
+    }
+
+    #[test]
+    fn empty_title_falls_back_to_video() {
+        assert_eq!(sanitize_for_filename(""), "video");
+        assert_eq!(sanitize_for_filename("   "), "video");
+    }
+
+    #[test]
+    fn truncates_to_80_chars() {
+        let long = "a".repeat(200);
+        let result = sanitize_for_filename(&long);
+        assert_eq!(result.chars().count(), 80);
+    }
 }

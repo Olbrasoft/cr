@@ -94,8 +94,13 @@ impl R2Client {
         Self { inner, config }
     }
 
-    /// Upload bytes to `key` and return the public CDN URL where the
-    /// object will be served from (`{public_base_url}/{key}`).
+    /// Upload bytes to `key` and return the public CDN URL.
+    ///
+    /// The Cloudflare Worker that fronts our R2 bucket
+    /// (`workers/img-proxy`) only handles paths under `/img/*` and strips
+    /// that prefix before doing the R2 GET. So an object stored at key
+    /// `videos/thumbs/abc.jpg` is reachable from the browser at
+    /// `{public_base_url}/img/videos/thumbs/abc.jpg`.
     pub async fn upload_thumbnail(
         &self,
         key: &str,
@@ -113,7 +118,7 @@ impl R2Client {
             .await
             .map_err(|e| R2Error::Put(format!("{e:?}")))?;
         Ok(format!(
-            "{}/{}",
+            "{}/img/{}",
             self.config.public_base_url.trim_end_matches('/'),
             key
         ))
