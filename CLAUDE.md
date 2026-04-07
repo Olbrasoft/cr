@@ -264,7 +264,7 @@ All work is **issue-driven** and the CI/CD pipeline runs **fully autonomously** 
 Events arrive automatically via two mechanisms. No polling, no inotifywait, no flock.
 
 **Deploy notification:**
-GitHub Actions writes event file to `~/.config/claude-channels/deploy-events/Olbrasoft-cr.json` + calls `wake-claude.sh Olbrasoft/cr` → wakes ALL Claude Code sessions for this repo via FIFO.
+GitHub Actions writes a run-unique event file `~/.config/claude-channels/deploy-events/Olbrasoft-cr-deploy-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` and calls `wake-claude.sh Olbrasoft/cr`. The Notifier looks up the PR owner via the PR number derived from the commit SHA and delivers the event to the exact Claude Code session that created the PR. See [Olbrasoft/GitHub.Actions.Notify#22](https://github.com/Olbrasoft/GitHub.Actions.Notify/pull/22) for the session-bound design.
 
 **Code review notification:**
 `gh webhook forward` service receives `pull_request_review` events via WebSocket → `webhook-receiver.py` writes event file + calls `wake-claude.sh Olbrasoft/cr {branch}` → wakes ONLY the session on that PR's branch.
@@ -319,9 +319,9 @@ Pipeline:
 3. Tests (cloud)
 4. Deploy: rsync + docker build + health check (self-hosted runner)
 5. **Notify**: TTS notification via VirtualAssistant (self-hosted runner)
-6. **FIFO wake**: Write `Olbrasoft-cr.json` + call `wake-claude.sh` → FIFO wakes Claude Code
+6. **FIFO wake**: Write `Olbrasoft-cr-deploy-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` + call `wake-claude.sh` → FIFO wakes the PR-owner Claude Code session
 7. **Verify**: Playwright health + homepage check (self-hosted runner)
-8. **FIFO wake**: Write `Olbrasoft-cr-verify.json` + call `wake-claude.sh` → FIFO wakes Claude Code
+8. **FIFO wake**: Write `Olbrasoft-cr-verify-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` + call `wake-claude.sh` → FIFO wakes the PR-owner Claude Code session
 
 **Quick deploy (during active development, ~20s):**
 
