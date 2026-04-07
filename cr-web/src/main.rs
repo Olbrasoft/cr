@@ -3,10 +3,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use cr_infra::r2::{R2Client, R2Config};
 use cr_infra::repositories::{
     PgLandmarkRepository, PgMunicipalityRepository, PgOrpRepository, PgPhotoRepository,
-    PgPoolRepository, PgRegionRepository,
+    PgPoolRepository, PgRegionRepository, PgVideoRepository,
 };
+use cr_infra::streamtape::{StreamtapeClient, StreamtapeConfig};
+use cr_infra::video_library::VideoLibraryPipeline;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -51,6 +54,41 @@ async fn main() -> Result<()> {
         tracing::info!("Dev mode: images proxied from {image_base_url}");
     }
 
+    // Streamtape + R2 credentials for the video library. Optional during
+    // rollout — when env vars are unset, the rest of the app keeps running
+    // and library-related endpoints will refuse the operation cleanly.
+    let streamtape_config = StreamtapeConfig::from_env();
+    let r2_config = R2Config::from_env();
+    match (&streamtape_config, &r2_config) {
+        (Some(_), Some(r2)) => {
+            tracing::info!(
+                "Video library: Streamtape + R2 configured (bucket: {})",
+                r2.bucket
+            )
+        }
+        (None, _) => tracing::warn!(
+            "Video library: STREAMTAPE_LOGIN/STREAMTAPE_KEY missing — uploads disabled"
+        ),
+        (_, None) => {
+            tracing::warn!("Video library: R2_* env vars missing — thumbnail upload disabled")
+        }
+    }
+
+    let video_repo = Arc::new(PgVideoRepository::new(pool.clone()));
+
+    // Build the orchestrator only when both halves of the config are present.
+    // The handler treats `None` as "library disabled" and falls back to the
+    // legacy local-only download flow.
+    let video_library = match (streamtape_config.clone(), r2_config.clone()) {
+        (Some(stc), Some(r2c)) => Some(VideoLibraryPipeline::new(
+            StreamtapeClient::new(reqwest::Client::new(), stc),
+            R2Client::new(r2c),
+            video_repo.clone(),
+            reqwest::Client::new(),
+        )),
+        _ => None,
+    };
+
     let state = AppState {
         region_repo: Arc::new(PgRegionRepository::new(pool.clone())),
         orp_repo: Arc::new(PgOrpRepository::new(pool.clone())),
@@ -58,11 +96,15 @@ async fn main() -> Result<()> {
         landmark_repo: Arc::new(PgLandmarkRepository::new(pool.clone())),
         pool_repo: Arc::new(PgPoolRepository::new(pool.clone())),
         photo_repo: Arc::new(PgPhotoRepository::new(pool.clone())),
+        video_repo,
         db: pool,
         geojson_index: Arc::new(geojson_index),
         image_base_url,
         http_client: reqwest::Client::new(),
         video_downloads: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        streamtape_config: streamtape_config.map(Arc::new),
+        r2_config: r2_config.map(Arc::new),
+        video_library,
     };
 
     // API routes with CORS
@@ -102,6 +144,16 @@ async fn main() -> Result<()> {
         .route(
             "/video/cleanup",
             axum::routing::delete(handlers::video_cleanup),
+        )
+        // --- #321 Video library API ---
+        .route("/video/library", axum::routing::get(handlers::library_list))
+        .route(
+            "/video/library/{id}/play",
+            axum::routing::get(handlers::library_play),
+        )
+        .route(
+            "/video/library/{id}",
+            axum::routing::delete(handlers::library_delete),
         )
         .route(
             "/movies/search",

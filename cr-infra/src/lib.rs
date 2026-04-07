@@ -12,5 +12,8 @@
 //! - `import` (planned) - CSV importer for ČSÚ territorial data
 //! - `github` (planned) - GitHub integration (Octocrab)
 
+pub mod r2;
 pub mod repositories;
+pub mod streamtape;
 pub mod video;
+pub mod video_library;

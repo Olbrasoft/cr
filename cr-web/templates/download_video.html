@@ -299,6 +299,124 @@
     text-decoration: underline;
     text-decoration-color: var(--color-blue);
 }
+/* --- #322 Video library grid --- */
+.library-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+}
+.library-card {
+    background: white;
+    border: 1px solid var(--color-gray-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 0.15s, transform 0.15s;
+}
+.library-card:hover {
+    box-shadow: 0 6px 14px rgba(17, 69, 126, 0.12);
+    transform: translateY(-2px);
+}
+.library-thumb {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #e8e8e8;
+    cursor: pointer;
+    overflow: hidden;
+}
+.library-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.library-thumb .play-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 2.5rem;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+    background: rgba(0,0,0,0.18);
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.library-thumb:hover .play-overlay { opacity: 1; }
+.library-quality-badge {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    padding: 0.15rem 0.5rem;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.library-info {
+    padding: 0.75rem;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.library-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--color-black);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.library-meta {
+    font-size: 0.78rem;
+    color: #888;
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+.library-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: auto;
+}
+.library-btn {
+    flex: 1;
+    background: var(--color-blue);
+    color: white;
+    border: none;
+    border-radius: 18px;
+    padding: 0.45rem 0.6rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: background 0.15s;
+    text-decoration: none;
+    text-align: center;
+}
+.library-btn:hover { background: #0d3962; }
+.library-btn.danger {
+    background: transparent;
+    color: var(--color-red);
+    border: 1px solid var(--color-red);
+    flex: 0 0 auto;
+    padding: 0.45rem 0.7rem;
+}
+.library-btn.danger:hover { background: var(--color-red); color: white; }
+.library-card.playing .library-thumb { display: none; }
+.library-card.playing video {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    display: block;
+    background: black;
+}
 </style>
 {% endblock %}
 
@@ -344,9 +462,11 @@
     </div>
 </div>
 
-<div class="recent-downloads" id="recent-downloads" style="display:none;">
-    <h3 style="font-size:0.95rem;font-weight:600;color:var(--color-black);margin-bottom:0.5rem;">Naposledy stažené</h3>
-    <ul id="recent-list" style="list-style:none;padding:0;margin:0;font-size:0.85rem;color:#555;"></ul>
+<!-- #322 Video library grid: every video uploaded to Streamtape is rendered
+     here as a card with thumbnail, title, quality badge, play and delete. -->
+<div class="video-library" id="video-library" style="display:none;margin-top:1.5rem;">
+    <h3 style="font-size:1rem;font-weight:700;color:var(--color-black);margin-bottom:0.75rem;">Knihovna videí</h3>
+    <div class="library-grid" id="library-grid"></div>
 </div>
 
 <div class="supported-services">
@@ -757,30 +877,150 @@
         setTimeout(loadRecent, 3000);
     }
 
-    function loadRecent() {
-        fetch('/api/video/recent')
+    // --- #322 Video library grid ---
+    function loadRecent() { loadLibrary(); }
+
+    function loadLibrary() {
+        fetch('/api/video/library')
             .then(function(r) { return r.json(); })
-            .then(function(files) {
-                var container = document.getElementById('recent-downloads');
-                var list = document.getElementById('recent-list');
-                if (!files || files.length === 0) {
+            .then(function(items) {
+                var container = document.getElementById('video-library');
+                var grid = document.getElementById('library-grid');
+                if (!Array.isArray(items) || items.length === 0) {
                     container.style.display = 'none';
                     return;
                 }
-                list.innerHTML = '';
-                files.forEach(function(f) {
-                    var li = document.createElement('li');
-                    li.style.padding = '0.3rem 0';
-                    li.style.borderBottom = '1px solid var(--color-gray-border)';
-                    li.textContent = f.filename + ' (' + f.size_mb + ' MB, ' + f.created + ')';
-                    list.appendChild(li);
+                grid.innerHTML = '';
+                items.forEach(function(item) {
+                    grid.appendChild(buildLibraryCard(item));
                 });
                 container.style.display = 'block';
             })
-            .catch(function() {});
+            .catch(function(e) { console.warn('library load failed', e); });
     }
 
-    loadRecent();
+    function buildLibraryCard(item) {
+        var card = document.createElement('div');
+        card.className = 'library-card';
+        card.dataset.id = item.id;
+
+        var thumb = document.createElement('div');
+        thumb.className = 'library-thumb';
+        thumb.title = 'Přehrát ' + item.title;
+        var img = document.createElement('img');
+        img.loading = 'lazy';
+        img.alt = item.title;
+        img.src = item.thumbnail_url || '/static/img/logo-stahnout-video.svg';
+        img.onerror = function() { this.src = '/static/img/logo-stahnout-video.svg'; this.style.objectFit = 'contain'; };
+        thumb.appendChild(img);
+        var quality = document.createElement('div');
+        quality.className = 'library-quality-badge';
+        quality.textContent = item.quality;
+        thumb.appendChild(quality);
+        var overlay = document.createElement('div');
+        overlay.className = 'play-overlay';
+        overlay.textContent = '\u25B6';
+        thumb.appendChild(overlay);
+        thumb.addEventListener('click', function() { playLibraryItem(card, item); });
+        card.appendChild(thumb);
+
+        var info = document.createElement('div');
+        info.className = 'library-info';
+        var title = document.createElement('div');
+        title.className = 'library-title';
+        title.textContent = item.title;
+        info.appendChild(title);
+
+        var meta = document.createElement('div');
+        meta.className = 'library-meta';
+        if (item.duration_sec) {
+            var dur = document.createElement('span');
+            dur.textContent = formatDuration(item.duration_sec);
+            meta.appendChild(dur);
+        }
+        var size = document.createElement('span');
+        size.textContent = item.file_size_mb + ' MB';
+        meta.appendChild(size);
+        info.appendChild(meta);
+
+        var actions = document.createElement('div');
+        actions.className = 'library-actions';
+        var dlBtn = document.createElement('a');
+        dlBtn.className = 'library-btn';
+        dlBtn.textContent = 'Stáhnout';
+        dlBtn.href = item.streamtape_url;
+        dlBtn.target = '_blank';
+        dlBtn.rel = 'noopener';
+        dlBtn.title = 'Otevřít na Streamtape';
+        actions.appendChild(dlBtn);
+        var delBtn = document.createElement('button');
+        delBtn.className = 'library-btn danger';
+        delBtn.textContent = '\u2715';
+        delBtn.title = 'Smazat z knihovny';
+        delBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            deleteLibraryItem(item, card);
+        });
+        actions.appendChild(delBtn);
+        info.appendChild(actions);
+
+        card.appendChild(info);
+        return card;
+    }
+
+    function playLibraryItem(card, item) {
+        if (card.querySelector('video')) return;
+        var loading = document.createElement('div');
+        loading.className = 'library-thumb';
+        loading.style.display = 'flex';
+        loading.style.alignItems = 'center';
+        loading.style.justifyContent = 'center';
+        loading.style.background = '#222';
+        loading.style.color = 'white';
+        loading.style.fontSize = '0.85rem';
+        loading.textContent = 'Načítám stream\u2026';
+        var existingThumb = card.querySelector('.library-thumb');
+        existingThumb.style.display = 'none';
+        card.insertBefore(loading, existingThumb);
+
+        fetch('/api/video/library/' + item.id + '/play')
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                loading.remove();
+                existingThumb.remove();
+                var v = document.createElement('video');
+                v.controls = true;
+                v.autoplay = true;
+                v.src = data.stream_url;
+                card.classList.add('playing');
+                card.insertBefore(v, card.firstChild);
+            })
+            .catch(function(e) {
+                loading.textContent = 'Stream se nepodařilo načíst';
+                console.warn('library play failed', e);
+            });
+    }
+
+    function deleteLibraryItem(item, card) {
+        if (!confirm('Smazat „' + item.title + '\u201C z knihovny? Akci nelze vrátit.')) return;
+        fetch('/api/video/library/' + item.id, { method: 'DELETE' })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                card.remove();
+                if (!document.querySelectorAll('.library-card').length) {
+                    document.getElementById('video-library').style.display = 'none';
+                }
+            })
+            .catch(function(e) {
+                console.warn('library delete failed', e);
+                alert('Smazání selhalo');
+            });
+    }
+
+    loadLibrary();
 })();
 </script>
 {% endblock %}

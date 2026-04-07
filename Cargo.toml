@@ -32,6 +32,11 @@ image = "0.25"
 # HTTP client
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 
+# AWS S3 client (used for Cloudflare R2 via custom endpoint — video thumbnails)
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+aws-credential-types = { version = "1", default-features = false }
+
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate"] }
 

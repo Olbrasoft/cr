@@ -183,6 +183,57 @@ pub async fn video_prepare(
 
     let is_whatsapp = req.quality == "whatsapp";
 
+    // --- #320 Deduplication ---
+    // Library lookup keyed by (source_url, quality). When the user has
+    // already downloaded the same video in the same quality, we skip
+    // yt-dlp + Streamtape entirely and let the response point straight at
+    // the existing library entry. WhatsApp variants are kept under the
+    // pseudo-quality "whatsapp" so they dedup independently of the
+    // resolution-based qualities. Disabled when the library pipeline is
+    // not configured (env vars missing).
+    if let Some(pipeline) = state.video_library.as_ref() {
+        match pipeline.find_existing(&url, &req.quality).await {
+            Ok(Some(existing)) => {
+                let token = uuid::Uuid::new_v4().to_string();
+                let size_mb = existing.file_size_bytes as f64 / (1024.0 * 1024.0);
+                let filename = format!(
+                    "{}.{}",
+                    existing
+                        .title
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                        .take(60)
+                        .collect::<String>()
+                        .trim(),
+                    existing.format_ext
+                );
+                state.video_downloads.lock().await.insert(
+                    token.clone(),
+                    VideoTask {
+                        status: DownloadStatus::Ready {
+                            size_mb: (size_mb * 10.0).round() / 10.0,
+                            filename: filename.clone(),
+                        },
+                        progress: Arc::new(AtomicU8::new(100)),
+                        // No local file — the client will follow the
+                        // streamtape url stored in the library record.
+                        file_path: std::path::PathBuf::new(),
+                        filename,
+                        parts: Vec::new(),
+                        created_at: std::time::Instant::now(),
+                    },
+                );
+                tracing::info!(
+                    "video library dedup hit: token={token} streamtape_id={}",
+                    existing.streamtape_file_id
+                );
+                return Ok(Json(VideoPrepareResponse { token }));
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("library dedup lookup failed: {e:?} — proceeding"),
+        }
+    }
+
     // Find the requested quality
     let quality = &req.quality;
     let format = if is_whatsapp {
@@ -271,6 +322,19 @@ pub async fn video_prepare(
     let dl_resolution = format.resolution.clone();
     let dl_state = state.clone();
     let dl_client = state.http_client.clone();
+    // Captured for the post-download library publish (#319). The publish
+    // happens fire-and-forget after the user-facing Ready status is set,
+    // so a slow Streamtape upload never blocks the local download flow.
+    let publish_meta_template = cr_infra::video_library::PublishMetadata {
+        source_url: url.clone(),
+        title: decoded_title.clone(),
+        description: None,
+        duration_sec: info.duration.map(|d| d as i32),
+        source_extractor: info.uploader.clone(),
+        quality: req.quality.clone(),
+        format_ext: format.ext.clone(),
+        upstream_thumbnail_url: info.thumbnail.clone(),
+    };
 
     // Check concurrency limit before spawning
     let permit = VIDEO_DOWNLOAD_SEMAPHORE.try_acquire();
@@ -390,6 +454,28 @@ pub async fn video_prepare(
                         size_mb: (size_mb * 10.0).round() / 10.0,
                         filename: task.filename.clone(),
                     };
+                    // #319 — fire-and-forget publish to the library. Local
+                    // file is kept until the existing temp cleanup runs so
+                    // the user can still download it via /api/video/file/.
+                    if let Some(pipeline) = dl_state.video_library.clone() {
+                        let publish_path = file_path.clone();
+                        let publish_meta = publish_meta_template.clone();
+                        tokio::spawn(async move {
+                            match pipeline
+                                .publish_local_video(&publish_path, publish_meta)
+                                .await
+                            {
+                                Ok(rec) => tracing::info!(
+                                    "video library publish OK: id={} streamtape_id={}",
+                                    rec.id,
+                                    rec.streamtape_file_id
+                                ),
+                                Err(e) => {
+                                    tracing::warn!("video library publish failed: {e} — local-only")
+                                }
+                            }
+                        });
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Video download failed for {dl_url}: {e}");
@@ -649,6 +735,180 @@ pub async fn video_thumb(
         }
         _ => (StatusCode::NOT_FOUND, "Thumbnail not available").into_response(),
     }
+}
+
+// --- #321 Video library API ---
+
+#[derive(Serialize)]
+pub struct LibraryEntry {
+    id: i32,
+    title: String,
+    duration_sec: Option<i32>,
+    quality: String,
+    format_ext: String,
+    file_size_mb: f64,
+    thumbnail_url: Option<String>,
+    streamtape_url: String,
+    created_at: String,
+}
+
+impl From<cr_domain::repository::VideoRecord> for LibraryEntry {
+    fn from(r: cr_domain::repository::VideoRecord) -> Self {
+        let mb = r.file_size_bytes as f64 / (1024.0 * 1024.0);
+        Self {
+            id: r.id,
+            title: r.title,
+            duration_sec: r.duration_sec,
+            quality: r.quality,
+            format_ext: r.format_ext,
+            file_size_mb: (mb * 10.0).round() / 10.0,
+            thumbnail_url: r.thumbnail_url,
+            streamtape_url: r.streamtape_url,
+            created_at: r.created_at,
+        }
+    }
+}
+
+/// `GET /api/video/library` — list the most recent 50 hosted videos.
+pub async fn library_list(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<LibraryEntry>>, (StatusCode, Json<VideoErrorResponse>)> {
+    use cr_domain::repository::VideoRepository;
+    let rows = state.video_repo.list_recent(50).await.map_err(|e| {
+        tracing::error!("library_list query failed: {e:?}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(VideoErrorResponse {
+                error: "Knihovnu se nepodařilo načíst.".to_string(),
+            }),
+        )
+    })?;
+    Ok(Json(rows.into_iter().map(LibraryEntry::from).collect()))
+}
+
+#[derive(Serialize)]
+pub struct LibraryPlayResponse {
+    stream_url: String,
+}
+
+/// `GET /api/video/library/{id}/play` — resolve a fresh `tapecontent.net`
+/// MP4 URL for inline playback. Costs ~5s on the first call (Streamtape's
+/// dlticket → wait → dl) but is then served instantly until the upstream
+/// token expires; the frontend treats the URL as ephemeral and refetches
+/// when it expires.
+pub async fn library_play(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> Result<Json<LibraryPlayResponse>, (StatusCode, Json<VideoErrorResponse>)> {
+    use cr_domain::repository::VideoRepository;
+    let pipeline = state.video_library.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(VideoErrorResponse {
+                error: "Knihovna není nakonfigurována.".to_string(),
+            }),
+        )
+    })?;
+    let record = state
+        .video_repo
+        .find_by_id(id)
+        .await
+        .map_err(|e| {
+            tracing::error!("library find_by_id failed: {e:?}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(VideoErrorResponse {
+                    error: "Chyba databáze.".to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(VideoErrorResponse {
+                    error: "Video nenalezeno.".to_string(),
+                }),
+            )
+        })?;
+
+    let stream_url = pipeline
+        .streamtape_client()
+        .get_stream_url(&record.streamtape_file_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "get_stream_url failed for {}: {e}",
+                record.streamtape_file_id
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(VideoErrorResponse {
+                    error: "Streamtape URL se nepodařilo získat.".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(LibraryPlayResponse { stream_url }))
+}
+
+/// `DELETE /api/video/library/{id}` — remove a hosted video from
+/// Streamtape, R2 and the DB. Order matters: external services first
+/// so a partial failure leaves the DB row in place to retry, then DB.
+pub async fn library_delete(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> Result<StatusCode, (StatusCode, Json<VideoErrorResponse>)> {
+    use cr_domain::repository::VideoRepository;
+    let record = state
+        .video_repo
+        .find_by_id(id)
+        .await
+        .map_err(|e| {
+            tracing::error!("library_delete find: {e:?}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(VideoErrorResponse {
+                    error: "Chyba databáze.".to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(VideoErrorResponse {
+                    error: "Video nenalezeno.".to_string(),
+                }),
+            )
+        })?;
+
+    if let Some(pipeline) = state.video_library.as_ref() {
+        if let Err(e) = pipeline
+            .streamtape_client()
+            .delete(&record.streamtape_file_id)
+            .await
+        {
+            tracing::warn!(
+                "streamtape delete failed for {}: {e} — continuing with DB delete",
+                record.streamtape_file_id
+            );
+        }
+        if let Some(key) = record.thumbnail_r2_key.as_deref()
+            && let Err(e) = pipeline.r2_client().delete_object(key).await
+        {
+            tracing::warn!("r2 delete failed for {key}: {e} — continuing");
+        }
+    }
+
+    state.video_repo.delete(id).await.map_err(|e| {
+        tracing::error!("library_delete db: {e:?}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(VideoErrorResponse {
+                error: "Chyba databáze.".to_string(),
+            }),
+        )
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Sanitize yt-dlp error messages into user-friendly Czech text.
