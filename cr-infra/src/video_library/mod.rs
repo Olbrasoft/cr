@@ -230,6 +230,7 @@ fn thumbnail_key_hash(file_id: &str, bytes: &Bytes) -> String {
 /// Filesystem-friendly name derived from a video title; the upload
 /// endpoint uses this as the user-visible filename on Streamtape.
 ///
+/// ASCII-only allowlist (alphanumerics + space + dash + underscore).
 /// Falls back to `"video"` when the input is empty after sanitisation
 /// — emoji-only or non-ASCII titles would otherwise become an empty
 /// string and Streamtape would receive a nameless file.
@@ -237,7 +238,7 @@ fn sanitize_for_filename(title: &str) -> String {
     let cleaned: String = title
         .chars()
         .map(|c| {
-            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' {
                 c
             } else {
                 ' '
@@ -270,6 +271,14 @@ mod tests {
     #[test]
     fn emoji_only_title_falls_back_to_video() {
         assert_eq!(sanitize_for_filename("😭😭😭"), "video");
+    }
+
+    #[test]
+    fn cyrillic_only_title_falls_back_to_video() {
+        // Per Copilot review on PR #336 — non-ASCII letters must be
+        // stripped so the filename is safe in HTTP headers.
+        assert_eq!(sanitize_for_filename("Москва"), "video");
+        assert_eq!(sanitize_for_filename("世界"), "video");
     }
 
     #[test]

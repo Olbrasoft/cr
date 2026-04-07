@@ -198,13 +198,7 @@ pub async fn video_prepare(
                 let size_mb = existing.file_size_bytes as f64 / (1024.0 * 1024.0);
                 let filename = format!(
                     "{}.{}",
-                    existing
-                        .title
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                        .take(60)
-                        .collect::<String>()
-                        .trim(),
+                    sanitize_filename_ascii(&existing.title, 60),
                     existing.format_ext
                 );
                 state.video_downloads.lock().await.insert(
@@ -291,23 +285,11 @@ pub async fn video_prepare(
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'");
-    // Strip everything that isn't safe in a filename across OSes. If the
-    // title is *only* emoji or other non-ASCII (e.g. "😭😭😭"), the result
-    // is an empty string and the user would download `.webm` — fall back to
-    // a generic `video` so the file always has a name.
-    let mut safe_title: String = decoded_title
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(60)
-        .collect();
-    if safe_title.trim().is_empty() {
-        safe_title = "video".to_string();
-    }
+    // ASCII-only sanitiser — non-ASCII letters confuse HTTP header parsing
+    // (Content-Disposition expects an ASCII token; the optional `filename*`
+    // form for UTF-8 is not worth the complexity here). Emoji-only titles
+    // collapse to an empty string and fall back to "video".
+    let safe_title = sanitize_filename_ascii(&decoded_title, 60);
     let filename = format!("{safe_title}.{}", format.ext);
     let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
 
@@ -376,15 +358,13 @@ pub async fn video_prepare(
         if let Some(task) = downloads.get_mut(&dl_token) {
             match result {
                 Ok(_size) if is_whatsapp => {
-                    // WhatsApp: convert with ffmpeg
-                    let safe: String = task
+                    // WhatsApp: convert with ffmpeg. ASCII-only sanitiser to
+                    // keep the resulting filename safe in HTTP headers.
+                    let stem = task
                         .filename
                         .trim_end_matches(".mp4")
-                        .trim_end_matches(".webm")
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                        .take(50)
-                        .collect();
+                        .trim_end_matches(".webm");
+                    let safe = sanitize_filename_ascii(stem, 50);
                     task.status = DownloadStatus::Converting {
                         progress_percent: 0,
                     };
@@ -962,20 +942,11 @@ pub async fn library_file(
                 return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
             }
         };
-    // See video_prepare for the same fallback logic — emoji-only titles
-    // would otherwise leave the user with a nameless `.mp4`.
-    let mut safe_name: String = record
-        .title
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(80)
-        .collect();
-    if safe_name.trim().is_empty() {
+    // ASCII-only sanitiser keeps the name HTTP-header-safe so the
+    // Content-Disposition value never silently fails to parse below.
+    // Empty results (emoji-only titles) fall back to "video-{id}".
+    let mut safe_name = sanitize_filename_ascii(&record.title, 80);
+    if safe_name == "video" {
         safe_name = format!("video-{}", record.id);
     }
     let download_name = format!("{safe_name}.{}", record.format_ext);
@@ -1032,15 +1003,82 @@ async fn proxy_streamtape(
     response_headers
         .entry(axum::http::header::ACCEPT_RANGES)
         .or_insert_with(|| axum::http::HeaderValue::from_static("bytes"));
-    if let Some(name) = download_name
-        && let Ok(value) =
-            format!("attachment; filename=\"{name}\"").parse::<axum::http::HeaderValue>()
-    {
-        response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+    if let Some(name) = download_name {
+        // Defence in depth: callers already pass an ASCII-sanitised name,
+        // but if for any reason the parse still fails, fall back to a
+        // bare "video.bin" attachment so the browser still triggers the
+        // save dialog instead of opening the file inline.
+        let header_value = format!("attachment; filename=\"{name}\"")
+            .parse::<axum::http::HeaderValue>()
+            .or_else(|_| axum::http::HeaderValue::from_str("attachment; filename=\"video.bin\""));
+        if let Ok(value) = header_value {
+            response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+        }
     }
 
     let body = axum::body::Body::from_stream(upstream.bytes_stream());
     (status, response_headers, body).into_response()
+}
+
+/// ASCII-only filename sanitiser used by every code path that ends up in
+/// either an HTTP `Content-Disposition` header or an on-disk filename.
+///
+/// Allowlist: ASCII alphanumerics + space + dash + underscore. Whitespace
+/// is collapsed, the result is truncated to `max` characters, and an
+/// empty result falls back to `"video"` (so emoji-only / Cyrillic-only /
+/// CJK-only titles never produce a nameless `.mp4`).
+fn sanitize_filename_ascii(input: &str, max: usize) -> String {
+    let cleaned: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect();
+    if cleaned.is_empty() {
+        "video".to_string()
+    } else {
+        cleaned
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_filename_ascii;
+
+    #[test]
+    fn ascii_title_kept() {
+        assert_eq!(sanitize_filename_ascii("Matrix (1999)", 60), "Matrix 1999");
+    }
+
+    #[test]
+    fn cyrillic_only_falls_back() {
+        assert_eq!(sanitize_filename_ascii("Москва", 60), "video");
+    }
+
+    #[test]
+    fn emoji_only_falls_back() {
+        assert_eq!(sanitize_filename_ascii("😭😭😭", 60), "video");
+    }
+
+    #[test]
+    fn collapses_whitespace_and_truncates() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_filename_ascii(&long, 80).len(), 80);
+        assert_eq!(
+            sanitize_filename_ascii("  hello   world  ", 60),
+            "hello world"
+        );
+    }
 }
 
 /// `DELETE /api/video/library/{id}` — remove a hosted video from
