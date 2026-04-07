@@ -70,6 +70,27 @@ pub trait PhotoRepository {
     ) -> Result<Vec<PhotoRecord>, Self::Error>;
 }
 
+/// Repository for the hosted video library (`videos` table).
+#[allow(async_fn_in_trait)]
+pub trait VideoRepository {
+    type Error: std::fmt::Debug;
+    /// Insert a new video and return the id assigned by the DB.
+    async fn insert(&self, video: NewVideo) -> Result<i32, Self::Error>;
+    /// Look up an existing library entry for `(source_url, quality)` —
+    /// the dedup key. Returns `None` if no row matches.
+    async fn find_by_source_and_quality(
+        &self,
+        source_url: &str,
+        quality: &str,
+    ) -> Result<Option<VideoRecord>, Self::Error>;
+    /// Most recent `limit` library entries, newest first.
+    async fn list_recent(&self, limit: i64) -> Result<Vec<VideoRecord>, Self::Error>;
+    /// Look up by primary id.
+    async fn find_by_id(&self, id: i32) -> Result<Option<VideoRecord>, Self::Error>;
+    /// Delete by primary id; returns `true` if a row was removed.
+    async fn delete(&self, id: i32) -> Result<bool, Self::Error>;
+}
+
 // --- Record types returned by repositories ---
 // These are plain data records (not domain entities) for query results.
 
@@ -195,4 +216,45 @@ pub struct PhotoRecord {
     pub r2_key: String,
     pub width: i16,
     pub height: i16,
+}
+
+/// Hosted video as stored in the `videos` table.
+///
+/// `created_at` is stored as an ISO 8601 string so this record stays
+/// dependency-free (cr-domain has zero external deps by design).
+#[derive(Debug, Clone)]
+pub struct VideoRecord {
+    pub id: i32,
+    pub source_url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub duration_sec: Option<i32>,
+    pub source_extractor: Option<String>,
+    pub quality: String,
+    pub format_ext: String,
+    pub streamtape_file_id: String,
+    pub streamtape_url: String,
+    pub file_size_bytes: i64,
+    pub thumbnail_r2_key: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub created_at: String,
+}
+
+/// Insertion payload for the `videos` table — everything the upload
+/// pipeline knows about a freshly uploaded video. The DB assigns `id`
+/// and `created_at`.
+#[derive(Debug, Clone)]
+pub struct NewVideo {
+    pub source_url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub duration_sec: Option<i32>,
+    pub source_extractor: Option<String>,
+    pub quality: String,
+    pub format_ext: String,
+    pub streamtape_file_id: String,
+    pub streamtape_url: String,
+    pub file_size_bytes: i64,
+    pub thumbnail_r2_key: Option<String>,
+    pub thumbnail_url: Option<String>,
 }

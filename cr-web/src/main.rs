@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use cr_infra::r2::R2Config;
 use cr_infra::repositories::{
     PgLandmarkRepository, PgMunicipalityRepository, PgOrpRepository, PgPhotoRepository,
-    PgPoolRepository, PgRegionRepository,
+    PgPoolRepository, PgRegionRepository, PgVideoRepository,
 };
+use cr_infra::streamtape::StreamtapeConfig;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -51,6 +53,23 @@ async fn main() -> Result<()> {
         tracing::info!("Dev mode: images proxied from {image_base_url}");
     }
 
+    // Streamtape + R2 credentials for the video library. Optional during
+    // rollout — when env vars are unset, the rest of the app keeps running
+    // and library-related endpoints will refuse the operation cleanly.
+    let streamtape_config = StreamtapeConfig::from_env();
+    let r2_config = R2Config::from_env();
+    match (&streamtape_config, &r2_config) {
+        (Some(_), Some(r2)) => {
+            tracing::info!("Video library: Streamtape + R2 configured (bucket: {})", r2.bucket)
+        }
+        (None, _) => tracing::warn!(
+            "Video library: STREAMTAPE_LOGIN/STREAMTAPE_KEY missing — uploads disabled"
+        ),
+        (_, None) => tracing::warn!(
+            "Video library: R2_* env vars missing — thumbnail upload disabled"
+        ),
+    }
+
     let state = AppState {
         region_repo: Arc::new(PgRegionRepository::new(pool.clone())),
         orp_repo: Arc::new(PgOrpRepository::new(pool.clone())),
@@ -58,11 +77,14 @@ async fn main() -> Result<()> {
         landmark_repo: Arc::new(PgLandmarkRepository::new(pool.clone())),
         pool_repo: Arc::new(PgPoolRepository::new(pool.clone())),
         photo_repo: Arc::new(PgPhotoRepository::new(pool.clone())),
+        video_repo: Arc::new(PgVideoRepository::new(pool.clone())),
         db: pool,
         geojson_index: Arc::new(geojson_index),
         image_base_url,
         http_client: reqwest::Client::new(),
         video_downloads: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        streamtape_config: streamtape_config.map(Arc::new),
+        r2_config: r2_config.map(Arc::new),
     };
 
     // API routes with CORS

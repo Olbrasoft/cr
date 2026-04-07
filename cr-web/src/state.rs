@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cr_infra::r2::R2Config;
 use cr_infra::repositories::{
     PgLandmarkRepository, PgMunicipalityRepository, PgOrpRepository, PgPhotoRepository,
-    PgPoolRepository, PgRegionRepository,
+    PgPoolRepository, PgRegionRepository, PgVideoRepository,
 };
+use cr_infra::streamtape::StreamtapeConfig;
 use sqlx::PgPool;
 
 use crate::handlers::video_api::VideoDownloads;
@@ -25,8 +27,17 @@ pub struct AppState {
     pub landmark_repo: Arc<PgLandmarkRepository>,
     pub pool_repo: Arc<PgPoolRepository>,
     pub photo_repo: Arc<PgPhotoRepository>,
+    /// Repository for the hosted video library (`videos` table).
+    pub video_repo: Arc<PgVideoRepository>,
     /// Prepared video downloads waiting to be served.
     pub video_downloads: VideoDownloads,
+    /// Streamtape API credentials for the video library. `None` until the
+    /// `STREAMTAPE_LOGIN`/`STREAMTAPE_KEY` env vars are provisioned —
+    /// downstream modules that need Streamtape must check for `Some`.
+    pub streamtape_config: Option<Arc<StreamtapeConfig>>,
+    /// Cloudflare R2 credentials for storing video thumbnails. `None` until
+    /// the `R2_*` env vars are provisioned.
+    pub r2_config: Option<Arc<R2Config>>,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.
