@@ -1,6 +1,6 @@
 # ceskarepublika.wiki
 
-**Encyklopedický portál o České republice** — [ceskarepublika.wiki](https://ceskarepublika.wiki)
+**Encyklopedický portál o České republice a její kultuře** — [ceskarepublika.wiki](https://ceskarepublika.wiki)
 
 [![Live](https://img.shields.io/badge/Live-ceskarepublika.wiki-blue?style=flat&logo=globe)](https://ceskarepublika.wiki)
 [![Rust](https://img.shields.io/badge/Rust-2024_edition-DEA584?logo=rust)](https://www.rust-lang.org/)

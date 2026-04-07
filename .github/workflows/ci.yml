@@ -142,18 +142,23 @@ jobs:
           fi
 
           if command -v jq >/dev/null 2>&1; then
+            COMMIT_SHA="${GITHUB_SHA:0:7}"
+            # Use a run-unique filename so concurrent deploys, re-runs, and
+            # multiple deploys of the same commit do not overwrite each other.
+            # See Olbrasoft/GitHub.Actions.Notify PR #22 + #23 for the design.
+            EVENT_FILE="$EVENTS_DIR/Olbrasoft-cr-deploy-${COMMIT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
             jq -n \
               --arg event "deploy-complete" \
               --arg status "${{ job.status }}" \
               --arg failedStep "$FAILED_STEP" \
               --arg repository "${{ github.repository }}" \
-              --arg commit "${GITHUB_SHA:0:7}" \
+              --arg commit "$COMMIT_SHA" \
               --arg commitMessage "$(git log -1 --pretty=%s 2>/dev/null || echo unknown)" \
               --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
               --arg environment "production" \
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{event: $event, status: $status, failedStep: $failedStep, repository: $repository, commit: $commit, commitMessage: $commitMessage, runUrl: $runUrl, environment: $environment, timestamp: $timestamp}' \
-              > "$EVENTS_DIR/Olbrasoft-cr.json"
+              > "$EVENT_FILE"
 
             # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
             WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
@@ -190,15 +195,18 @@ jobs:
           mkdir -p "$EVENTS_DIR"
 
           if command -v jq >/dev/null 2>&1; then
+            COMMIT_SHA="${GITHUB_SHA:0:7}"
+            # Run-unique filename — same rationale as the deploy event above.
+            EVENT_FILE="$EVENTS_DIR/Olbrasoft-cr-verify-${COMMIT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
             jq -n \
               --arg event "verify-complete" \
               --arg status "${{ job.status }}" \
               --arg repository "${{ github.repository }}" \
-              --arg commit "${GITHUB_SHA:0:7}" \
+              --arg commit "$COMMIT_SHA" \
               --arg environment "production" \
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{event: $event, status: $status, repository: $repository, commit: $commit, environment: $environment, timestamp: $timestamp}' \
-              > "$EVENTS_DIR/Olbrasoft-cr-verify.json"
+              > "$EVENT_FILE"
 
             # Wake ALL Claude Code sessions for this repo via FIFO (only after successful event write)
             WAKE_SCRIPT="$HOME/.claude/hooks/wake-claude.sh"
