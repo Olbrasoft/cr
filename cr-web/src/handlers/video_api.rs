@@ -871,6 +871,10 @@ pub async fn library_play(
 /// content type. The upstream URL is resolved via `get_stream_url` (a
 /// dlticket roundtrip) which is bound to *our* server's IP — exactly
 /// what we want, since this server then makes the request.
+///
+/// The resolved URL is cached per file_id (~50 min) so a single video
+/// playback session — which makes dozens of Range requests — does not
+/// pay the 5 s dlticket wait on every chunk.
 pub async fn library_stream(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -889,21 +893,43 @@ pub async fn library_stream(
             return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
         }
     };
-    let upstream_url = match pipeline
-        .streamtape_client()
-        .get_stream_url(&record.streamtape_file_id)
-        .await
-    {
-        Ok(u) => u,
-        Err(e) => {
-            tracing::error!(
-                "library_stream get_stream_url failed for {}: {e}",
-                record.streamtape_file_id
-            );
-            return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
-        }
-    };
+    let upstream_url =
+        match resolve_cached_stream_url(&state, pipeline, &record.streamtape_file_id).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!(
+                    "library_stream get_stream_url failed for {}: {e}",
+                    record.streamtape_file_id
+                );
+                return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+            }
+        };
     proxy_streamtape(state.http_client.clone(), &upstream_url, &headers, None).await
+}
+
+/// Returns the cached Streamtape CDN URL for `file_id`, resolving a fresh
+/// one (5 s dlticket wait) only when the cache is empty or the entry is
+/// older than 45 minutes (Streamtape tokens are valid ~50 min).
+async fn resolve_cached_stream_url(
+    state: &AppState,
+    pipeline: &cr_infra::video_library::VideoLibraryPipeline,
+    file_id: &str,
+) -> Result<String, cr_infra::streamtape::StreamtapeError> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+    {
+        let cache = state.streamtape_url_cache.lock().await;
+        if let Some((url, ts)) = cache.get(file_id)
+            && ts.elapsed() < TTL
+        {
+            return Ok(url.clone());
+        }
+    }
+    let url = pipeline.streamtape_client().get_stream_url(file_id).await?;
+    state.streamtape_url_cache.lock().await.insert(
+        file_id.to_string(),
+        (url.clone(), std::time::Instant::now()),
+    );
+    Ok(url)
 }
 
 /// `GET /api/video/library/{id}/file` — same upstream proxy as `/stream`
@@ -928,17 +954,14 @@ pub async fn library_file(
             return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
         }
     };
-    let upstream_url = match pipeline
-        .streamtape_client()
-        .get_stream_url(&record.streamtape_file_id)
-        .await
-    {
-        Ok(u) => u,
-        Err(e) => {
-            tracing::error!("library_file get_stream_url failed: {e}");
-            return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
-        }
-    };
+    let upstream_url =
+        match resolve_cached_stream_url(&state, pipeline, &record.streamtape_file_id).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("library_file get_stream_url failed: {e}");
+                return (StatusCode::BAD_GATEWAY, "stream resolve failed").into_response();
+            }
+        };
     // See video_prepare for the same fallback logic — emoji-only titles
     // would otherwise leave the user with a nameless `.mp4`.
     let mut safe_name: String = record
@@ -966,6 +989,12 @@ pub async fn library_file(
 }
 
 /// Shared upstream proxy for `/stream` and `/file`.
+///
+/// Streams the upstream body chunk-by-chunk via `bytes_stream()` instead
+/// of buffering the whole file in memory. A 100 MB video used to wait for
+/// the full download before sending a single byte to the browser; now the
+/// browser starts receiving the first chunk within ~50 ms of the upstream
+/// response headers landing.
 async fn proxy_streamtape(
     http: reqwest::Client,
     upstream_url: &str,
@@ -986,13 +1015,6 @@ async fn proxy_streamtape(
     };
     let status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    let bytes = match upstream.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("proxy_streamtape upstream body read failed: {e}");
-            return (StatusCode::BAD_GATEWAY, "upstream body error").into_response();
-        }
-    };
 
     let mut response_headers = axum::http::HeaderMap::new();
     for h in [
@@ -1006,6 +1028,10 @@ async fn proxy_streamtape(
             response_headers.insert(h, v.clone());
         }
     }
+    // Make sure the browser knows it can seek even if upstream omits it.
+    response_headers
+        .entry(axum::http::header::ACCEPT_RANGES)
+        .or_insert_with(|| axum::http::HeaderValue::from_static("bytes"));
     if let Some(name) = download_name
         && let Ok(value) =
             format!("attachment; filename=\"{name}\"").parse::<axum::http::HeaderValue>()
@@ -1013,7 +1039,8 @@ async fn proxy_streamtape(
         response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
     }
 
-    (status, response_headers, bytes).into_response()
+    let body = axum::body::Body::from_stream(upstream.bytes_stream());
+    (status, response_headers, body).into_response()
 }
 
 /// `DELETE /api/video/library/{id}` — remove a hosted video from

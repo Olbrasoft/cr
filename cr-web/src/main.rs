@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
         streamtape_config: streamtape_config.map(Arc::new),
         r2_config: r2_config.map(Arc::new),
         video_library,
+        streamtape_url_cache: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // API routes with CORS

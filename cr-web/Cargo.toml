@@ -25,7 +25,7 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 dotenvy = { workspace = true }
 image = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 uuid = { workspace = true }
 ammonia = "4.1.2"
 urlencoding = { workspace = true }
