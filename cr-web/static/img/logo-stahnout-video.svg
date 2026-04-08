@@ -2,19 +2,29 @@
   <!-- Red rounded square background -->
   <rect width="200" height="200" rx="32" fill="#D7141A"/>
 
-  <!-- Inner arc - full closed circle -->
-  <circle cx="100" cy="100" r="52" fill="none" stroke="#FFF" stroke-width="5.5"/>
+  <!-- Inner white filled disk (was outline-only, now filled to remove red ring) -->
+  <circle cx="100" cy="100" r="52" fill="#FFF"/>
 
-  <!-- Outer arc r=70, wider gap with red space around arrow -->
-  <path d="M 132.8 161.8 A 70 70 0 1 1 169.3 109.7"
-        fill="none" stroke="#FFF" stroke-width="6.5" stroke-linecap="round"/>
+  <!-- Outer white rotation arc — thicker stroke (11 vs 6.5) and
+       slightly larger radius (72 vs 70) so the inner edge stays at
+       almost the same place (66.5 vs 66.75 — invisible difference)
+       and the outer edge grows outward to make the white ring look
+       chunkier at small sizes (favicons / inline cards). Endpoints
+       recomputed for the new radius at the same angles, so the
+       angular gap that hosts the download arrow stays identical. -->
+  <path d="M 133.8 163.6 A 72 72 0 1 1 171.3 110.0"
+        fill="none" stroke="#FFF" stroke-width="11" stroke-linecap="round"/>
 
   <!-- White center circle -->
   <circle cx="100" cy="100" r="38" fill="#FFF"/>
 
-  <!-- Blue play triangle (larger) -->
-  <polygon points="84,79 84,121 122,100" fill="#11457E"/>
+  <!-- Blue play triangle — geometric centroid at (100, 100), the
+       white circle's centre. Right vertex sits on the circle's right
+       edge (x=138). Width 57, height 64. -->
+  <polygon points="81,68 81,132 138,100" fill="#11457E"/>
 
-  <!-- White down arrow (shifted more right and down) -->
-  <path d="M 157,130 L 157,148 L 145,148 L 164,176 L 183,148 L 171,148 L 171,130 Z" fill="#FFF"/>
+  <!-- White down arrow — shifted right by 7 px and down by 6 px so
+       the centre of the stem lines up with the end of the white
+       rotation arc and the arrow sits a bit lower in the icon. -->
+  <path d="M 160,130 L 160,154 L 146,154 L 171,190 L 196,154 L 182,154 L 182,130 Z" fill="#FFF"/>
 </svg>

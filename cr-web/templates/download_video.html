@@ -4,10 +4,23 @@
 
 {% block meta_description %}Stáhněte videa z českých serverů — Seznam Zprávy, Novinky.cz a dalších. Zdarma, bez registrace.{% endblock %}
 
+{% block og_title %}Stáhnout video — ceskarepublika.wiki{% endblock %}
+{% block og_description %}Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.{% endblock %}
+{% block og_image %}https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5{% endblock %}
+{% block og_extra %}
+<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Stáhnout video — ceskarepublika.wiki">
+<meta property="og:url" content="https://ceskarepublika.wiki/stahnout-video/">
+<meta property="og:site_name" content="ceskarepublika.wiki">
+{% endblock %}
+
 {% block header_left %}
 <div class="logo-group">
     <a href="/stahnout-video/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
-        <img src="/static/img/logo-stahnout-video.svg"
+        <img src="/static/img/logo-stahnout-video.svg?v=5"
             alt="Logo Stáhnout video" title="Stáhnout video" class="header-emblem">
         <h1>Stáhnout video</h1>
     </a>
@@ -21,6 +34,19 @@
 {% endblock %}
 
 {% block head %}
+<!-- #361 — page-specific SVG favicon (modern browsers pick this up
+     after the global icons in base.html). The ?v= cache buster
+     forces the browser to refetch when we ship a new logo. -->
+<link rel="icon" type="image/svg+xml" href="/static/img/logo-stahnout-video.svg?v=5">
+<!-- Twitter / X large card preview — falls back to og:* if absent
+     but explicit twitter:* tags render more reliably. -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Stáhnout video — ceskarepublika.wiki">
+<meta name="twitter:description" content="Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.">
+<meta name="twitter:image" content="https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5">
+<meta name="twitter:image:alt" content="Stáhnout video — ceskarepublika.wiki">
+<meta name="twitter:domain" content="ceskarepublika.wiki">
+<meta name="twitter:url" content="https://ceskarepublika.wiki/stahnout-video/">
 <style>
 .download-hero {
     text-align: center;
@@ -44,24 +70,33 @@
     padding: 2rem;
     margin-bottom: 2rem;
 }
+/* #360 — URL input is rendered as a single pill that matches the
+   homepage `.search-container`: a rounded white wrapper with a 2 px
+   gray border, a borderless input inside, and the red Načíst info
+   button snapped to the right with its own inner pill background. */
 .url-input-group {
     display: flex;
-    gap: 0.75rem;
+    align-items: center;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 30px;
+    background: white;
+    padding: 4px;
     margin-bottom: 1.25rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.url-input-group:focus-within {
+    border-color: var(--color-blue);
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
 }
 .url-input {
     flex: 1;
-    padding: 0.85rem 1rem;
-    border: 2px solid var(--color-gray-border);
-    border-radius: 24px;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    padding: 0.55rem 1.25rem;
     font-size: 1rem;
     font-family: 'Inter', sans-serif;
-    transition: border-color 0.2s;
-}
-.url-input:focus {
     outline: none;
-    border-color: var(--color-blue);
-    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
 }
 .url-input::placeholder {
     color: #aaa;
@@ -70,14 +105,15 @@
     background: var(--color-red);
     color: white;
     border: none;
-    border-radius: 24px;
-    padding: 0.85rem 1.5rem;
-    font-size: 1rem;
+    border-radius: 25px;
+    padding: 0.6rem 1.5rem;
+    font-size: 0.95rem;
     font-weight: 600;
     font-family: 'Inter', sans-serif;
     cursor: pointer;
     transition: background 0.15s;
     white-space: nowrap;
+    flex: 0 0 auto;
 }
 .btn-primary:hover {
     background: var(--color-blue);
@@ -263,7 +299,16 @@
     width: auto;
 }
 @media (max-width: 600px) {
-    .url-input-group { flex-direction: column; }
+    /* The URL pill stays horizontal on narrow screens — the original
+       (#360) acceptance criterion said "stack cleanly" but stacking a
+       pill-shaped container vertically would split the shared border
+       and break the visual match with the homepage search bar. We
+       keep input + button in one row, shrink padding / font-size so
+       both fit on a 320 px viewport, and rely on .url-input's
+       `min-width: 0` to let long URLs scroll inside the field. The
+       button keeps its 44 px tap target via the rem padding. */
+    .url-input { padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+    .btn-primary { padding: 0.55rem 0.85rem; font-size: 0.85rem; }
     .video-preview.visible { flex-direction: column; }
     .preview-thumb { width: 100%; height: auto; aspect-ratio: 16/9; }
     .download-hero h2 { font-size: 1.5rem; }
@@ -331,20 +376,47 @@
     object-fit: cover;
     display: block;
 }
+/* #358 — always-visible (dimmed) play badge centred on the thumbnail.
+   Without this, users were pressing the audio mini-player below
+   thinking it would play the *video*. The badge is a circular dark
+   translucent disc with a white play triangle inside; default state
+   is dimmed (opacity 0.7), hover brightens it and darkens the disc
+   so it is obvious the thumbnail is interactive and will play the
+   actual video clip. */
 .library-thumb .play-overlay {
     position: absolute;
-    inset: 0;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
     display: flex;
     align-items: center;
     justify-content: center;
     color: white;
-    font-size: 2.5rem;
-    text-shadow: 0 2px 6px rgba(0,0,0,0.6);
-    background: rgba(0,0,0,0.18);
-    opacity: 0;
-    transition: opacity 0.15s;
+    opacity: 0.7;
+    transition: opacity 0.15s, background 0.15s, transform 0.15s;
+    pointer-events: none;
 }
-.library-thumb:hover .play-overlay { opacity: 1; }
+.library-thumb .play-overlay svg {
+    width: 28px;
+    height: 28px;
+    fill: currentColor;
+    /* Optical centering — the SVG triangle's centroid is offset
+       right of its bounding-box centre (the apex sticks out to the
+       right), so the bounding box itself needs to shift right to
+       make the triangle appear centred. 2 px to the right pulls the
+       perceived weight of the triangle back to the badge centre. */
+    margin-left: 2px;
+    display: block;
+}
+.library-thumb:hover .play-overlay {
+    opacity: 1;
+    background: rgba(0, 0, 0, 0.75);
+    transform: translate(-50%, -50%) scale(1.05);
+}
 .library-quality-badge {
     position: absolute;
     top: 0.5rem;
@@ -441,35 +513,114 @@
     align-items: center;
     gap: 0.6rem;
 }
-/* Play button styled to match the project logo (red ring around a
-   white inset with a gold play triangle). On hover the triangle
-   flips to the blue brand colour so it visually balances the gold
-   audio scrubber below it. SVG icons inherit currentColor, so a
-   single CSS color transition recolours the glyph cleanly. */
-.library-audio-play {
-    width: 42px;
-    height: 42px;
+/* #355 — minimalist control buttons that look like a stripped-down
+   native <audio controls> bar. Default state is just a black SVG
+   icon with no background; on :hover a soft circular ring fades in
+   so the click target is obvious. The same .library-audio-iconbtn
+   class powers both the play/pause toggle and the mute toggle. */
+.library-audio-iconbtn {
+    width: 32px;
+    height: 32px;
     flex: 0 0 auto;
     border-radius: 50%;
-    border: 3px solid var(--color-red);
-    background: white;
-    color: var(--color-gold);
+    border: none;
+    background: transparent;
+    color: #1f2937;
     line-height: 1;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.15s, transform 0.1s;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
     padding: 0;
 }
-.library-audio-play:hover { color: var(--color-blue); }
-.library-audio-play:active { transform: scale(0.95); }
-.library-audio-play:focus-visible { outline: 2px solid var(--color-blue); outline-offset: 2px; }
-.library-audio-play svg {
+.library-audio-iconbtn:hover { background: rgba(0, 0, 0, 0.08); }
+.library-audio-iconbtn:active { transform: scale(0.94); }
+.library-audio-iconbtn:focus-visible {
+    outline: 2px solid var(--color-blue);
+    outline-offset: 2px;
+}
+.library-audio-iconbtn svg {
     width: 18px;
     height: 18px;
     fill: currentColor;
     display: block;
+}
+.library-audio-spacer { flex: 1 1 auto; }
+/* Volume control: speaker icon + slim horizontal slider that fades in
+   when the user hovers over the speaker (mirrors how the native
+   HTML5 <audio controls> bar reveals its volume slider). */
+.library-audio-volume-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.library-audio-volume {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 0;
+    max-width: 0;
+    height: 24px;
+    background: transparent;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0;
+    overflow: hidden;
+    transition: width 0.18s ease, max-width 0.18s ease, opacity 0.18s ease;
+    touch-action: manipulation;
+}
+.library-audio-volume-wrap:hover .library-audio-volume,
+.library-audio-volume-wrap:focus-within .library-audio-volume {
+    width: 64px;
+    max-width: 64px;
+    opacity: 1;
+}
+.library-audio-volume:focus { outline: none; }
+.library-audio-volume:focus-visible {
+    outline: 2px solid var(--color-blue);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+.library-audio-volume::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+        to right,
+        #1f2937 0%,
+        #1f2937 var(--vol-progress, 100%),
+        #d1d5db var(--vol-progress, 100%),
+        #d1d5db 100%
+    );
+}
+.library-audio-volume::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: #d1d5db;
+}
+.library-audio-volume::-moz-range-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: #1f2937;
+}
+.library-audio-volume::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #1f2937;
+    border: none;
+    margin-top: -4px;
+    cursor: pointer;
+}
+.library-audio-volume::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #1f2937;
+    border: none;
+    cursor: pointer;
 }
 .library-audio-time {
     font-size: 0.85rem;
@@ -495,47 +646,66 @@
     outline-offset: 4px;
     border-radius: 6px;
 }
+/* #355 — neutral gray slider that matches the minimal player. The
+   filled portion uses a slightly darker gray than the empty track so
+   you can see the playback progress without resorting to brand
+   colours. The thumb is solid dark gray (no border, no shadow halo)
+   and stays 24×24 px so it remains finger-friendly on mobile. */
 .library-audio-range::-webkit-slider-runnable-track {
-    height: 8px;
-    border-radius: 4px;
+    height: 6px;
+    border-radius: 3px;
     background: linear-gradient(
         to right,
-        var(--color-gold) 0%,
-        var(--color-gold) var(--progress, 0%),
+        #6b7280 0%,
+        #6b7280 var(--progress, 0%),
         #e5e7eb var(--progress, 0%),
         #e5e7eb 100%
     );
 }
 .library-audio-range::-moz-range-track {
-    height: 8px;
-    border-radius: 4px;
+    height: 6px;
+    border-radius: 3px;
     background: #e5e7eb;
 }
 .library-audio-range::-moz-range-progress {
-    height: 8px;
-    border-radius: 4px;
-    background: var(--color-gold);
+    height: 6px;
+    border-radius: 3px;
+    background: #6b7280;
 }
+/* Thumb is transparent by default — the empty/filled track halves
+   already show progress. The dark dot only appears on hover, focus,
+   or active drag, mirroring the native HTML5 audio control. The
+   24×24 hit-box stays so the click target remains finger-friendly. */
 .library-audio-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: var(--color-gold);
-    border: 2px solid white;
-    margin-top: -8px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    background: transparent;
+    border: none;
+    margin-top: -9px;
     cursor: pointer;
+    transition: background 0.15s;
 }
 .library-audio-range::-moz-range-thumb {
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: var(--color-gold);
-    border: 2px solid white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    background: transparent;
+    border: none;
     cursor: pointer;
+    transition: background 0.15s;
+}
+.library-audio-range:hover::-webkit-slider-thumb,
+.library-audio-range:focus-visible::-webkit-slider-thumb,
+.library-audio-range:active::-webkit-slider-thumb {
+    background: #1f2937;
+}
+.library-audio-range:hover::-moz-range-thumb,
+.library-audio-range:focus-visible::-moz-range-thumb,
+.library-audio-range:active::-moz-range-thumb {
+    background: #1f2937;
 }
 .library-audio-element { display: none; }
 /* #342 — fade-in for cards prepended after a fresh preparation. */
@@ -801,6 +971,22 @@
             e.preventDefault();
             btnFetch.click();
         }
+    });
+
+    // #359 — Auto-trigger Načíst info on paste. 99 % of users paste
+    // a URL from the clipboard and immediately want the metadata
+    // fetch to run; making them press Enter or click the button is
+    // friction. We defer to the next tick so the browser has time
+    // to populate `urlInput.value` from the paste event, then check
+    // that the trimmed value looks like an http(s) URL before firing
+    // the fetch — that way pasting plain text by mistake stays inert.
+    urlInput.addEventListener('paste', function() {
+        setTimeout(function() {
+            var url = urlInput.value.trim();
+            if (/^https?:\/\//i.test(url)) {
+                btnFetch.click();
+            }
+        }, 0);
     });
 
     var statusSpinner = document.getElementById('status-spinner');
@@ -1137,7 +1323,11 @@
         thumb.appendChild(quality);
         var overlay = document.createElement('div');
         overlay.className = 'play-overlay';
-        overlay.textContent = '\u25B6';
+        // #358 — same SVG as the audio play button. White-on-dark
+        // circular badge that is always visible on the thumbnail and
+        // brightens on hover, so users immediately understand that
+        // clicking the picture plays the video.
+        overlay.innerHTML = ICON_PLAY;
         thumb.appendChild(overlay);
         thumb.addEventListener('click', function() { playLibraryItem(card, item); });
         card.appendChild(thumb);
@@ -1151,11 +1341,9 @@
 
         var meta = document.createElement('div');
         meta.className = 'library-meta';
-        if (item.duration_sec) {
-            var dur = document.createElement('span');
-            dur.textContent = formatDuration(item.duration_sec);
-            meta.appendChild(dur);
-        }
+        // #357 — duration is shown by the audio mini-player below as
+        // `0:00 / <total>`. Don't repeat it in the meta row — only the
+        // file size is unique to this row.
         var size = document.createElement('span');
         size.textContent = item.file_size_mb + ' MB';
         meta.appendChild(size);
@@ -1180,12 +1368,16 @@
         return card;
     }
 
-    // SVG icons for the audio mini-player play / pause toggle. Inline
-    // strings (not files) so a card can swap them with innerHTML
-    // without an extra fetch. fill="currentColor" lets the CSS color
-    // rule on .library-audio-play recolour the glyph on hover.
+    // SVG icons for the audio mini-player. Inline strings (not files)
+    // so a card can swap them with innerHTML without an extra fetch.
+    // fill="currentColor" lets the CSS color rule on .library-audio-iconbtn
+    // recolour the glyph on hover / state change.
     var ICON_PLAY = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>';
     var ICON_PAUSE = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+    // Material-style speaker icons; the path with the wave is the
+    // unmuted state, the one with the diagonal cross-out is muted.
+    var ICON_VOLUME = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+    var ICON_VOLUME_MUTED = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
 
     function buildLibraryAudioMini(card, item) {
         var mini = document.createElement('div');
@@ -1193,7 +1385,12 @@
 
         var label = document.createElement('div');
         label.className = 'library-audio-label';
-        label.textContent = '\uD83C\uDFA7 Poslouchat jako podcast';
+        // #356 — 'Pustit jen audio' is the honest description: this
+        // feature plays just the audio track of the saved video. No
+        // icon — earlier attempts (🎧, 👂, custom SVG) all looked
+        // wrong against the muted gray meta row, so we ship the
+        // plain Czech wording on its own.
+        label.textContent = 'Pustit jen audio';
         mini.appendChild(label);
 
         var row = document.createElement('div');
@@ -1201,7 +1398,7 @@
 
         var playBtn = document.createElement('button');
         playBtn.type = 'button';
-        playBtn.className = 'library-audio-play';
+        playBtn.className = 'library-audio-iconbtn library-audio-play';
         playBtn.setAttribute('aria-label', 'Spustit zvuk');
         // aria-pressed reflects the toggle state for assistive tech;
         // aria-label additionally describes the action.
@@ -1220,6 +1417,40 @@
         var totalText = item.duration_sec ? formatDuration(item.duration_sec) : '--:--';
         time.textContent = '0:00 / ' + totalText;
         row.appendChild(time);
+
+        // #355 — push the volume controls to the right edge so the
+        // layout mirrors a native HTML5 <audio controls> element:
+        // play | time …flex spacer… volume slider + speaker.
+        var spacer = document.createElement('div');
+        spacer.className = 'library-audio-spacer';
+        row.appendChild(spacer);
+
+        // Volume wrapper holds both the slim slider and the mute
+        // button. Hovering anywhere on the wrapper expands the
+        // slider (CSS), so the speaker icon doubles as both the
+        // hover target and a one-click mute toggle.
+        var volWrap = document.createElement('div');
+        volWrap.className = 'library-audio-volume-wrap';
+
+        var volRange = document.createElement('input');
+        volRange.type = 'range';
+        volRange.className = 'library-audio-volume';
+        volRange.min = '0';
+        volRange.max = '1';
+        volRange.step = '0.01';
+        volRange.value = '1';
+        volRange.setAttribute('aria-label', 'Hlasitost');
+        volWrap.appendChild(volRange);
+
+        var muteBtn = document.createElement('button');
+        muteBtn.type = 'button';
+        muteBtn.className = 'library-audio-iconbtn library-audio-mute';
+        muteBtn.setAttribute('aria-label', 'Ztlumit zvuk');
+        muteBtn.setAttribute('aria-pressed', 'false');
+        muteBtn.innerHTML = ICON_VOLUME;
+        volWrap.appendChild(muteBtn);
+
+        row.appendChild(volWrap);
 
         mini.appendChild(row);
 
@@ -1282,6 +1513,45 @@
             }
         });
 
+        // #355 — mute toggle + volume slider. We listen on
+        // `volumechange` (instead of toggling icons inside the click
+        // handler) so that programmatic changes — and the OS
+        // lock-screen mute, when wired through Media Session — also
+        // stay in sync with the UI.
+        muteBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            audio.muted = !audio.muted;
+        });
+        // Stop click bubbling on the volume slider so dragging it
+        // doesn't accidentally trigger the play button or card click.
+        volRange.addEventListener('click', function(e) { e.stopPropagation(); });
+        volRange.addEventListener('input', function() {
+            var v = parseFloat(volRange.value);
+            audio.volume = v;
+            // Touching the slider always unmutes — otherwise the user
+            // pulls the slider up and hears nothing because the mute
+            // toggle is still on.
+            if (audio.muted && v > 0) audio.muted = false;
+        });
+        audio.addEventListener('volumechange', function() {
+            if (audio.muted || audio.volume === 0) {
+                muteBtn.innerHTML = ICON_VOLUME_MUTED;
+                muteBtn.setAttribute('aria-label', 'Zrušit ztlumení');
+                muteBtn.setAttribute('aria-pressed', 'true');
+            } else {
+                muteBtn.innerHTML = ICON_VOLUME;
+                muteBtn.setAttribute('aria-label', 'Ztlumit zvuk');
+                muteBtn.setAttribute('aria-pressed', 'false');
+            }
+            // Sync the slider position with the underlying volume so
+            // the dark fill bar correctly reflects the level.
+            var displayVol = audio.muted ? 0 : audio.volume;
+            volRange.value = String(displayVol);
+            volRange.style.setProperty('--vol-progress', (displayVol * 100) + '%');
+        });
+        // Initialise volume slider fill at 100% (default audio.volume).
+        volRange.style.setProperty('--vol-progress', '100%');
+
         audio.addEventListener('play', function() {
             playBtn.innerHTML = ICON_PAUSE;
             playBtn.setAttribute('aria-label', 'Pozastavit zvuk');
@@ -1340,7 +1610,7 @@
             seeking = false;
         });
 
-        // Initialize progress var so the gold fill is correct at 0%.
+        // Initialize the --progress CSS var so the slider fill is at 0%.
         updateProgress(0, item.duration_sec || 0);
 
         return mini;
