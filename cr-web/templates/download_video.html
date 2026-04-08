@@ -299,12 +299,16 @@
     width: auto;
 }
 @media (max-width: 600px) {
-    /* On narrow screens the URL is often longer than the visible
-       width of the input. Keep the pill horizontal and let the
-       button stay snapped to the right; the input scrolls if the
-       URL is wider than the available space. */
-    .url-input { padding: 0.55rem 0.85rem; font-size: 0.92rem; }
-    .btn-primary { padding: 0.55rem 1rem; font-size: 0.88rem; }
+    /* The URL pill stays horizontal on narrow screens — the original
+       (#360) acceptance criterion said "stack cleanly" but stacking a
+       pill-shaped container vertically would split the shared border
+       and break the visual match with the homepage search bar. We
+       keep input + button in one row, shrink padding / font-size so
+       both fit on a 320 px viewport, and rely on .url-input's
+       `min-width: 0` to let long URLs scroll inside the field. The
+       button keeps its 44 px tap target via the rem padding. */
+    .url-input { padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+    .btn-primary { padding: 0.55rem 0.85rem; font-size: 0.85rem; }
     .video-preview.visible { flex-direction: column; }
     .preview-thumb { width: 100%; height: auto; aspect-ratio: 16/9; }
     .download-hero h2 { font-size: 1.5rem; }
@@ -400,9 +404,11 @@
     width: 28px;
     height: 28px;
     fill: currentColor;
-    /* Optical centering — play triangles look right-shifted because
-       the right half is heavier; nudge left by 2px so it sits on the
-       perceived centre of the badge. */
+    /* Optical centering — the SVG triangle's centroid is offset
+       right of its bounding-box centre (the apex sticks out to the
+       right), so the bounding box itself needs to shift right to
+       make the triangle appear centred. 2 px to the right pulls the
+       perceived weight of the triangle back to the badge centre. */
     margin-left: 2px;
     display: block;
 }
