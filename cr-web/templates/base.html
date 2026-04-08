@@ -16,11 +16,17 @@
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="icon" href="/static/favicon.ico" sizes="32x32" type="image/x-icon">
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <!-- Brand accent: colours the left border of Discord embed cards
+         and the address bar / tab strip in mobile Chrome / Edge.
+         Using the project red (#D7141A) so the embed strip matches
+         the logo. -->
+    <meta name="theme-color" content="#D7141A">
     {% block og_meta %}
     <meta property="og:title" content="{% block og_title %}ceskarepublika.wiki{% endblock %}">
     <meta property="og:description" content="{% block og_description %}Encyklopedický portál o České republice{% endblock %}">
     <meta property="og:image" content="{% block og_image %}https://ceskarepublika.wiki/static/favicon.svg{% endblock %}">
     <meta property="og:type" content="website">
+    {% block og_extra %}{% endblock %}
     {% endblock %}
     {% block head %}{% endblock %}
 </head>

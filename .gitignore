@@ -38,6 +38,10 @@ data/geojson/*_wgs84.geojson
 # Playwright screenshots
 .playwright-mcp/
 *.png
+# …but DO commit Open Graph / share / static images that live in
+# the public static dir — they need to be deployed by CI.
+!cr-web/static/img/*.png
+!cr-web/static/img/**/*.png
 
 # AI agent skills
 .agents/
