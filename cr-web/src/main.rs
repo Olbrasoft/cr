@@ -89,6 +89,17 @@ async fn main() -> Result<()> {
         _ => None,
     };
 
+    let video_downloads: handlers::video_api::VideoDownloads =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+    // #192 — periodic reaper for /tmp/cr-videos/. Deletes anything older
+    // than 30 minutes so temp videos left behind by `publish_local_video`
+    // (kept on disk on purpose for the /api/video/file/{token} ready-link,
+    // see #363) don't accumulate and exhaust the VPS disk. Also prunes
+    // matching in-memory `video_downloads` entries so `/status/{token}`
+    // doesn't report `Ready` for a file that's already been reaped.
+    let _cleanup_task = handlers::video_api::spawn_temp_video_cleanup_loop(video_downloads.clone());
+
     let state = AppState {
         region_repo: Arc::new(PgRegionRepository::new(pool.clone())),
         orp_repo: Arc::new(PgOrpRepository::new(pool.clone())),
@@ -101,7 +112,7 @@ async fn main() -> Result<()> {
         geojson_index: Arc::new(geojson_index),
         image_base_url,
         http_client: reqwest::Client::new(),
-        video_downloads: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        video_downloads,
         streamtape_config: streamtape_config.map(Arc::new),
         r2_config: r2_config.map(Arc::new),
         video_library,
