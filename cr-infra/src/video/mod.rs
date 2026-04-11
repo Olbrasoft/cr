@@ -346,7 +346,7 @@ fn container_matches(ffprobe_format: &str, container: &str) -> bool {
         "mp4" => parts.iter().any(|p| matches!(*p, "mp4" | "mov" | "m4a")),
         "webm" => parts.iter().any(|p| matches!(*p, "webm" | "matroska")),
         "mkv" => parts.iter().any(|p| matches!(*p, "matroska" | "webm")),
-        other => parts.iter().any(|p| *p == other),
+        other => parts.contains(&other),
     }
 }
 
