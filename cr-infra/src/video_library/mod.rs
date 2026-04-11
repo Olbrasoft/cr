@@ -28,6 +28,11 @@ pub struct PublishMetadata {
     pub source_extractor: Option<String>,
     pub quality: String,
     pub format_ext: String,
+    /// Human-readable resolution like `"1080p"` or `"720p"` as yt-dlp
+    /// reported it on the `format.resolution` field for the picked
+    /// stream. Drives the library card's top-right badge — see #366.
+    /// `None` means the source didn't report a resolution (rare).
+    pub resolution: Option<String>,
     /// Optional upstream thumbnail URL provided by yt-dlp. The pipeline
     /// downloads it and stores it on R2; if missing or download fails,
     /// the pipeline falls back to Streamtape's `getsplash`.
@@ -75,15 +80,30 @@ impl VideoLibraryPipeline {
     }
 
     /// Dedup check used by the handler before invoking yt-dlp at all.
-    /// Returns `Some(record)` if `(source_url, quality)` already exists.
+    /// Returns `Some(record)` if `(source_url, quality, format_ext)`
+    /// already exists. In practice the library only ever stores MP4
+    /// rows (Streamtape re-encodes everything we upload), so the
+    /// handler always queries with `format_ext = "mp4"` regardless
+    /// of what container the user actually picked — see #366.
     pub async fn find_existing(
         &self,
         source_url: &str,
         quality: &str,
+        format_ext: &str,
     ) -> Result<Option<VideoRecord>, sqlx::Error> {
         self.repo
-            .find_by_source_and_quality(source_url, quality)
+            .find_by_source_quality_and_format(source_url, quality, format_ext)
             .await
+    }
+
+    /// Bump `last_accessed_at` on the row identified by `id`. The
+    /// handler calls this whenever a dedup lookup returns a hit —
+    /// both when serving the existing MP4 via the library redirect
+    /// and when doing a fresh non-MP4 transcode alongside an
+    /// already-published MP4 row — so the card slides to the top of
+    /// the "Stažená videa" grid (#366).
+    pub async fn touch(&self, id: i32) -> Result<(), sqlx::Error> {
+        self.repo.touch(id).await
     }
 
     /// Borrowed view of the underlying Streamtape client — used by the
@@ -159,6 +179,7 @@ impl VideoLibraryPipeline {
             file_size_bytes: uploaded.size_bytes as i64,
             thumbnail_r2_key: thumb_key,
             thumbnail_url: thumb_url,
+            resolution: meta.resolution,
         };
         let id = self.repo.insert(new).await?;
         let record = self

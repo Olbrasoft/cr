@@ -78,25 +78,49 @@ pub async fn extract_video_info(client: &reqwest::Client, url: &str) -> Result<V
 }
 
 /// Download a video file. Uses direct HTTP for Seznam/Instagram, yt-dlp for others.
+/// After the download, always enforces the requested container format
+/// via [`ensure_container`] so the caller gets exactly `.{container}`.
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
     format_id: &str,
     resolution: &str,
+    container: &str,
     output_path: &std::path::Path,
 ) -> Result<u64> {
-    download_video_with_progress(client, url, format_id, resolution, output_path, None).await
+    download_video_with_progress(
+        client,
+        url,
+        format_id,
+        resolution,
+        container,
+        output_path,
+        None,
+    )
+    .await
 }
 
-/// Download a video file with optional progress tracking.
+/// Download a video file with optional progress tracking, guaranteeing
+/// the output is in the requested container (MP4 / WebM).
+///
+/// The `output_path` must already carry the `.{container}` extension
+/// set by the caller. After the per-extractor download step finishes,
+/// the file goes through [`ensure_container`] which ffprobes the real
+/// on-disk container and, if it doesn't match, transcodes via ffmpeg
+/// (see #366).
 pub async fn download_video_with_progress(
     client: &reqwest::Client,
     url: &str,
     format_id: &str,
     resolution: &str,
+    container: &str,
     output_path: &std::path::Path,
     progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 ) -> Result<u64> {
+    // Raw-bytes extractors (Seznam / Instagram) and the Nova proxy
+    // hand us arbitrary containers — yt-dlp's container-level flags
+    // don't apply here, so the post-download `ensure_container` step
+    // is the single source of truth for the final file format.
     if is_seznam_url(url) {
         let info = seznam_extract_info(client, url).await?;
         let fmt = info
@@ -105,7 +129,7 @@ pub async fn download_video_with_progress(
             .find(|f| f.format_id == format_id)
             .or(info.formats.last())
             .context("No format available")?;
-        download_direct(client, &fmt.url, output_path).await
+        download_direct(client, &fmt.url, output_path).await?;
     } else if is_instagram_url(url) {
         let info = instagram_extract_info(client, url).await?;
         let fmt = info
@@ -114,15 +138,215 @@ pub async fn download_video_with_progress(
             .find(|f| f.format_id == format_id)
             .or(info.formats.last())
             .context("No format available")?;
-        download_direct(client, &fmt.url, output_path).await
+        download_direct(client, &fmt.url, output_path).await?;
     } else if format_id == "proxy-hls" {
         // Nova.cz proxy fallback — `format_id` is a sentinel, not the direct m3u8 URL.
         // Re-extract to obtain a fresh tokenized manifest URL from `info.formats[0].url`.
         let info = nova_proxy_extract_info(client, url).await?;
         let m3u8 = &info.formats[0].url;
-        ytdlp_download(m3u8, "best", output_path, progress).await
+        ytdlp_download(m3u8, "best", container, output_path, progress.clone()).await?;
     } else {
-        ytdlp_download(url, resolution, output_path, progress).await
+        ytdlp_download(url, resolution, container, output_path, progress.clone()).await?;
+    }
+
+    // Single source of truth for the final container (#366).
+    ensure_container(output_path, container, progress.clone()).await?;
+
+    let meta = tokio::fs::metadata(output_path)
+        .await
+        .context("Output file missing after ensure_container")?;
+    Ok(meta.len())
+}
+
+/// Force `path` to be in `container` format (`"mp4"` or `"webm"`). If
+/// ffprobe reports the file is already in that container, returns
+/// without doing any work. Otherwise runs an ffmpeg transcode in
+/// place — first a remux attempt with `-c copy` (fast, works when
+/// codecs are compatible), then a full codec re-encode fallback when
+/// the remux fails due to codec incompatibility.
+///
+/// Bumps the shared progress atomic during transcode so the UI's
+/// existing progress bar keeps moving instead of looking frozen (#366).
+pub async fn ensure_container(
+    path: &std::path::Path,
+    container: &str,
+    progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+
+    let actual = probe_container(path).await.unwrap_or_default();
+    if container_matches(&actual, container) {
+        return Ok(());
+    }
+
+    tracing::info!("ensure_container: {path:?} is {actual:?}, transcoding to {container}");
+    if let Some(p) = &progress {
+        p.store(40, Ordering::Relaxed);
+    }
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("Input path has no stem")?;
+    let tmp = parent.join(format!("{stem}.reencoded.{container}"));
+
+    // 1) Fast path — remux with -c copy. Works whenever the existing
+    //    codecs can live in the target container (e.g. H.264/AAC → mp4,
+    //    VP9/Opus → webm). Fails fast on mismatched codecs.
+    let remux = run_ffmpeg_transcode(path, &tmp, container, /*recode*/ false).await;
+    let transcoded = match remux {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("ensure_container: remux failed ({e}), falling back to full re-encode");
+            if let Some(p) = &progress {
+                p.store(50, Ordering::Relaxed);
+            }
+            run_ffmpeg_transcode(path, &tmp, container, /*recode*/ true)
+                .await
+                .context("ffmpeg full re-encode failed")?;
+            true
+        }
+    };
+
+    if transcoded {
+        tokio::fs::rename(&tmp, path)
+            .await
+            .context("Failed to swap transcoded file into place")?;
+    }
+
+    if let Some(p) = &progress {
+        p.store(95, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Run ffmpeg to produce `output` in `container` from `input`. When
+/// `recode` is false, codecs are copied (`-c copy`) — fast remux path
+/// that fails when the source codecs can't live in the target
+/// container. When `recode` is true, video and audio are re-encoded
+/// with container-appropriate codecs: H.264/AAC for MP4, VP9/Opus
+/// for WebM.
+async fn run_ffmpeg_transcode(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    container: &str,
+    recode: bool,
+) -> Result<()> {
+    let input_str = input.to_str().context("Invalid input path")?;
+    let output_str = output.to_str().context("Invalid output path")?;
+
+    let mut args: Vec<&str> = vec!["-y", "-i", input_str];
+
+    if recode {
+        match container {
+            "mp4" | "mkv" => {
+                // H.264/AAC is compatible with both MP4 and MKV and
+                // plays everywhere; MKV just wraps it in the Matroska
+                // container instead of ISO/BMFF. The `+faststart`
+                // flag is MP4-only — skip it for MKV.
+                args.extend([
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k",
+                ]);
+                if container == "mp4" {
+                    args.extend(["-movflags", "+faststart"]);
+                }
+            }
+            "webm" => {
+                args.extend([
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-b:v",
+                    "0",
+                    "-crf",
+                    "32",
+                    "-deadline",
+                    "good",
+                    "-cpu-used",
+                    "4",
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "128k",
+                ]);
+            }
+            other => anyhow::bail!("Unsupported container for re-encode: {other}"),
+        }
+    } else {
+        // Fast-path remux — copy streams, let ffmpeg error out if the
+        // target container can't hold them. MKV accepts essentially
+        // any codec so this path almost always succeeds for MKV.
+        args.extend(["-c", "copy"]);
+        if container == "mp4" {
+            args.extend(["-movflags", "+faststart"]);
+        }
+    }
+
+    args.push(output_str);
+
+    let out = tokio::process::Command::new("ffmpeg")
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .context("Failed to spawn ffmpeg")?;
+
+    if !out.status.success() {
+        // Clean up any partial output so the fallback re-encode starts clean.
+        let _ = tokio::fs::remove_file(output).await;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: String = stderr.lines().rev().take(4).collect::<Vec<_>>().join(" | ");
+        anyhow::bail!("ffmpeg exited with {}: {}", out.status, tail);
+    }
+    Ok(())
+}
+
+/// Probe the real container of a video file using `ffprobe`. Returns
+/// the first entry from the comma-separated `format_name` list
+/// (e.g. `"mov,mp4,m4a,3gp,3g2,mj2"` → `"mov"`). Returns an empty
+/// string on any error so the caller can fall through to transcoding.
+async fn probe_container(path: &std::path::Path) -> Result<String> {
+    let path_str = path.to_str().context("Invalid path for ffprobe")?;
+    let out = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=format_name",
+            "-of",
+            "default=nokey=1:noprint_wrappers=1",
+            path_str,
+        ])
+        .output()
+        .await
+        .context("Failed to spawn ffprobe")?;
+    if !out.status.success() {
+        anyhow::bail!("ffprobe failed for {path:?}");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Decide whether a `format_name` string reported by ffprobe matches
+/// the requested container tag. ffprobe returns comma-separated lists
+/// like `mov,mp4,m4a,3gp,3g2,mj2` for MP4 and `matroska,webm` for
+/// both WebM and MKV (they share the Matroska family) — we accept
+/// any member that represents the target container.
+///
+/// Note the MKV ↔ WebM overlap: ffprobe can't distinguish them from
+/// the format-name list alone, so both match `matroska`. The file
+/// extension we renamed to post-download is what actually ties the
+/// file to one or the other — and since both containers hold the
+/// same codecs, a WebM-encoded file renamed to `.mkv` is a perfectly
+/// valid MKV (just with web-friendly codecs inside).
+fn container_matches(ffprobe_format: &str, container: &str) -> bool {
+    let parts: Vec<&str> = ffprobe_format.split(',').map(|s| s.trim()).collect();
+    match container {
+        "mp4" => parts.iter().any(|p| matches!(*p, "mp4" | "mov" | "m4a")),
+        "webm" => parts.iter().any(|p| matches!(*p, "webm" | "matroska")),
+        "mkv" => parts.iter().any(|p| matches!(*p, "matroska" | "webm")),
+        other => parts.iter().any(|p| *p == other),
     }
 }
 
@@ -507,39 +731,93 @@ async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
     })
 }
 
+/// Build a yt-dlp `-f` selector that prefers the requested container
+/// and then falls back to the generic `bestvideo+bestaudio` chain if
+/// no container-native stream is available.
+fn build_format_selector(height: &str, container: &str) -> String {
+    // Pairs the container with its best audio codec partner so that
+    // yt-dlp picks streams that can be merged directly into the
+    // requested output container without re-encoding. For MKV there
+    // is no native source extension — Matroska happily wraps MP4
+    // streams, so we bias toward MP4 sources which are the most
+    // common and remux without re-encoding (`-c copy`).
+    let (video_ext, audio_ext) = match container {
+        "mp4" | "mkv" => ("mp4", "m4a"),
+        "webm" => ("webm", "webm"),
+        _ => ("mp4", "m4a"),
+    };
+    if height.is_empty() {
+        format!(
+            "bestvideo[ext={video_ext}]+bestaudio[ext={audio_ext}]/\
+             best[ext={video_ext}]/\
+             bestvideo+bestaudio/best"
+        )
+    } else {
+        format!(
+            "bestvideo[ext={video_ext}][height<={height}]+bestaudio[ext={audio_ext}]/\
+             best[ext={video_ext}][height<={height}]/\
+             bestvideo[height<={height}]+bestaudio/\
+             best[height<={height}]/best"
+        )
+    }
+}
+
 /// Download a video using yt-dlp subprocess.
-/// Uses format selector that merges video+audio (YouTube serves them separately).
+///
+/// Uses a container-aware format selector that prefers streams that
+/// can be muxed directly into the requested container — MP4 streams
+/// when `container = "mp4"`, WebM streams when `container = "webm"`.
+/// Falls back to the generic `bestvideo+bestaudio` selector when no
+/// container-native stream is available.
+///
+/// Deliberately does **not** pass `--merge-output-format` or
+/// `--remux-video` — those flags hard-fail yt-dlp when the selected
+/// codecs can't live in the requested container (e.g. asking for
+/// WebM on an H.264/AAC TikTok source), and the caller's
+/// [`ensure_container`] pass already does the right thing with
+/// ffmpeg remux + re-encode fallback (#366). Instead we ask yt-dlp
+/// to write `{stem}.%(ext)s` so its natural extension choice wins,
+/// then rename the result to `{output_path}` so the caller sees a
+/// stable filename regardless of the real on-disk container.
 async fn ytdlp_download(
     url: &str,
     resolution: &str,
+    container: &str,
     output_path: &std::path::Path,
     progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 ) -> Result<u64> {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let output_str = output_path.to_str().context("Invalid output path")?;
+    let parent = output_path.parent().context("No parent directory")?;
+    let stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("No file stem")?;
+    let output_template = parent.join(format!("{stem}.%(ext)s"));
+    let output_template_str = output_template
+        .to_str()
+        .context("Invalid output template path")?;
 
     let height: String = resolution
         .chars()
         .take_while(|c| c.is_ascii_digit())
         .collect();
 
-    let format_selector = if !height.is_empty() {
-        format!("bestvideo[height<={height}]+bestaudio/best[height<={height}]/best")
-    } else {
-        "bestvideo+bestaudio/best".to_string()
-    };
+    // Container-preferred format selector, then generic fallback.
+    // Example for mp4 @ 720p:
+    //   bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/
+    //   best[ext=mp4][height<=720]/
+    //   bestvideo[height<=720]+bestaudio/best[height<=720]/best
+    let format_selector = build_format_selector(&height, container);
 
     let mut child = ytdlp_command()
         .args([
             "-f",
             &format_selector,
-            "--merge-output-format",
-            "mp4",
             "--newline",
             "-o",
-            output_str,
+            output_template_str,
             "--no-warnings",
             url,
         ])
@@ -597,32 +875,29 @@ async fn ytdlp_download(
         progress.store(100, Ordering::Relaxed);
     }
 
-    // yt-dlp may create file with different extension (e.g., token.webm.mp4)
-    // Find the actual file by prefix match
-    if tokio::fs::metadata(output_str).await.is_ok() {
-        let metadata = tokio::fs::metadata(output_str).await?;
-        return Ok(metadata.len());
-    }
-
-    // Fallback: find file matching token prefix in the output directory
-    let parent = output_path.parent().context("No parent directory")?;
-    let stem = output_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .context("No file stem")?;
-
+    // yt-dlp wrote `{stem}.{whatever}` — find it, rename to the
+    // caller's canonical `{stem}.{container}` path regardless of
+    // actual container. The post-download `ensure_container` pass
+    // will ffprobe the real format and transcode if it doesn't
+    // match the extension, so the extension-to-content mismatch
+    // window is handled one level up.
     let mut entries = tokio::fs::read_dir(parent).await?;
     while let Some(entry) = entries.next_entry().await? {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with(stem)
+        if name_str.starts_with(&format!("{stem}."))
             && !name_str.ends_with(".part")
             && !name_str.ends_with(".ytdl")
         {
             let actual_path = entry.path();
-            // Rename to expected path
-            tokio::fs::rename(&actual_path, output_path).await?;
-            let metadata = tokio::fs::metadata(output_str).await?;
+            if actual_path != output_path {
+                // If a stale target exists (e.g. from an earlier
+                // failed attempt), remove it so `rename` doesn't
+                // leave two files behind.
+                let _ = tokio::fs::remove_file(output_path).await;
+                tokio::fs::rename(&actual_path, output_path).await?;
+            }
+            let metadata = tokio::fs::metadata(output_path).await?;
             return Ok(metadata.len());
         }
     }

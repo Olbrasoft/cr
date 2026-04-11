@@ -41,6 +41,12 @@ pub struct VideoTask {
     pub parts: Vec<PartInfo>,
     #[allow(dead_code)]
     pub created_at: std::time::Instant,
+    /// Set for tasks that hit the library dedup path — the client's
+    /// ready-link delegates to `/api/video/library/{id}/file` via a
+    /// 302 from `video_file` because there is no local temp file for
+    /// deduped downloads (the content lives only on Streamtape/R2).
+    /// `None` for normal downloads where `file_path` carries the bytes.
+    pub library_id: Option<i32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -100,6 +106,12 @@ pub struct VideoPrepareRequest {
     format: String,
     #[serde(default = "default_quality")]
     quality: String,
+    /// Output container chosen by the user (#366). Either `"mp4"` or
+    /// `"webm"` — anything else is rejected as 400. The ready-link,
+    /// filename and library row all carry this container, regardless
+    /// of what yt-dlp happened to pick internally.
+    #[serde(default = "default_container")]
+    container: String,
 }
 
 fn default_format() -> String {
@@ -108,6 +120,21 @@ fn default_format() -> String {
 fn default_quality() -> String {
     "480p".to_string()
 }
+fn default_container() -> String {
+    "mp4".to_string()
+}
+
+/// User-pickable containers on `/stahnout-video/` — all other values
+/// are rejected at the handler boundary to keep the file-path and
+/// ffmpeg codepaths bounded to shapes we have actually tested.
+///
+/// - `mp4`  — the universal default. Plays in every browser, every
+///   editor, every chat app. H.264/AAC interior.
+/// - `webm` — open-source stack for web embedding. VP9/Opus interior.
+/// - `mkv`  — Matroska Swiss army knife. Holds practically any codec
+///   so the fast `-c copy` remux path works for almost every source
+///   and re-encode is rarely needed.
+const ALLOWED_CONTAINERS: &[&str] = &["mp4", "webm", "mkv"];
 
 #[derive(Serialize)]
 pub struct VideoPrepareResponse {
@@ -184,6 +211,20 @@ pub async fn video_prepare(
 ) -> Result<Json<VideoPrepareResponse>, (StatusCode, Json<VideoErrorResponse>)> {
     let url = req.url.trim().to_string();
 
+    // #366 — validate container; reject anything outside the tested set.
+    let container = req.container.trim().to_lowercase();
+    if !ALLOWED_CONTAINERS.contains(&container.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(VideoErrorResponse {
+                error: format!(
+                    "Neznámý formát '{container}' — podporujeme pouze {}.",
+                    ALLOWED_CONTAINERS.join(", ")
+                ),
+            }),
+        ));
+    }
+
     // Extract video info to get download URL
     let info = cr_infra::video::extract_video_info(&state.http_client, &url)
         .await
@@ -198,46 +239,82 @@ pub async fn video_prepare(
         })?;
 
     let is_whatsapp = req.quality == "whatsapp";
+    // WhatsApp always produces MP4 (H.264/AAC) via ffmpeg post-processing —
+    // the user-picked container doesn't apply to that variant.
+    let effective_container: &str = if is_whatsapp { "mp4" } else { &container };
 
-    // --- #320 Deduplication ---
-    // Library lookup keyed by (source_url, quality). When the user has
-    // already downloaded the same video in the same quality, we skip
-    // yt-dlp + Streamtape entirely and let the response point straight at
-    // the existing library entry. WhatsApp variants are kept under the
-    // pseudo-quality "whatsapp" so they dedup independently of the
-    // resolution-based qualities. Disabled when the library pipeline is
-    // not configured (env vars missing).
+    // --- #320/#366 Library lookup ---
+    // Library rows are always MP4 (Streamtape re-encodes every upload
+    // to H.264 MP4 regardless of the file we hand it), so the dedup
+    // lookup is hard-coded to `format_ext = "mp4"`. Three outcomes:
+    //
+    //   1. Hit + user asked for MP4: redirect the ready-link at the
+    //      library file proxy and skip yt-dlp entirely. `video_file`
+    //      303s onto `/api/video/library/{id}/file` which streams
+    //      from Streamtape.
+    //
+    //   2. Hit + user asked for WebM/MKV: we can't serve the stored
+    //      row (bytes are MP4, badge would lie), so we go through
+    //      the full yt-dlp + ffmpeg transcode path to produce a
+    //      fresh temp file in the requested container. The existing
+    //      library row is **not** republished — `should_publish`
+    //      below is false — and we `touch` it so the card still
+    //      slides to the top of the grid.
+    //
+    //   3. No hit: yt-dlp + ensure_container produce the temp file,
+    //      publish fires on success, a new MP4 library row is born.
+    //
+    // Anything other than a successful hit keeps `should_publish = true`.
+    let mut should_publish = true;
     if let Some(pipeline) = state.video_library.as_ref() {
-        match pipeline.find_existing(&url, &req.quality).await {
+        match pipeline.find_existing(&url, &req.quality, "mp4").await {
             Ok(Some(existing)) => {
-                let token = uuid::Uuid::new_v4().to_string();
-                let size_mb = existing.file_size_bytes as f64 / (1024.0 * 1024.0);
-                let filename = format!(
-                    "{}.{}",
-                    sanitize_filename_ascii(&existing.title, 60),
-                    existing.format_ext
-                );
-                state.video_downloads.lock().await.insert(
-                    token.clone(),
-                    VideoTask {
-                        status: DownloadStatus::Ready {
-                            size_mb: (size_mb * 10.0).round() / 10.0,
-                            filename: filename.clone(),
+                // Bump the card to the top of the grid, regardless of
+                // which branch we take next.
+                if let Err(e) = pipeline.touch(existing.id).await {
+                    tracing::warn!("library touch failed: {e:?} — continuing");
+                }
+                should_publish = false;
+
+                if effective_container == "mp4" {
+                    // Branch 1 — serve directly from the library.
+                    let token = uuid::Uuid::new_v4().to_string();
+                    let size_mb = existing.file_size_bytes as f64 / (1024.0 * 1024.0);
+                    let filename = format!(
+                        "{}.{}",
+                        sanitize_filename_ascii(&existing.title, 60),
+                        existing.format_ext
+                    );
+                    state.video_downloads.lock().await.insert(
+                        token.clone(),
+                        VideoTask {
+                            status: DownloadStatus::Ready {
+                                size_mb: (size_mb * 10.0).round() / 10.0,
+                                filename: filename.clone(),
+                            },
+                            progress: Arc::new(AtomicU8::new(100)),
+                            // No local file — `video_file` will 303
+                            // the client onto `/api/video/library/{id}/file`.
+                            file_path: std::path::PathBuf::new(),
+                            filename,
+                            parts: Vec::new(),
+                            created_at: std::time::Instant::now(),
+                            library_id: Some(existing.id),
                         },
-                        progress: Arc::new(AtomicU8::new(100)),
-                        // No local file — the client will follow the
-                        // streamtape url stored in the library record.
-                        file_path: std::path::PathBuf::new(),
-                        filename,
-                        parts: Vec::new(),
-                        created_at: std::time::Instant::now(),
-                    },
-                );
+                    );
+                    tracing::info!(
+                        "video library dedup hit: token={token} streamtape_id={}",
+                        existing.streamtape_file_id
+                    );
+                    return Ok(Json(VideoPrepareResponse { token }));
+                }
+                // Branch 2 — fall through to the fresh yt-dlp path
+                // below. `should_publish` is now false so the spawn
+                // task will skip the Streamtape re-upload.
                 tracing::info!(
-                    "video library dedup hit: token={token} streamtape_id={}",
-                    existing.streamtape_file_id
+                    "library has MP4 for {url} but user asked for {effective_container} — \
+                     doing fresh transcode without republish"
                 );
-                return Ok(Json(VideoPrepareResponse { token }));
             }
             Ok(None) => {}
             Err(e) => tracing::warn!("library dedup lookup failed: {e:?} — proceeding"),
@@ -247,7 +324,14 @@ pub async fn video_prepare(
     // Find the requested quality
     let quality = &req.quality;
     let format = if is_whatsapp {
-        // For WhatsApp, pick 480p or lower to keep file small and conversion fast
+        // #366 — WhatsApp downloads at ≤480p for a fast user-facing
+        // turnaround. `convert_for_whatsapp` downscales / re-encodes
+        // further as needed to fit the 16 MB WhatsApp limit; each
+        // resulting wa file is independently published to the
+        // library so users see one card per WhatsApp variant in the
+        // "Stažená videa" grid — single-file output gives one card,
+        // a 3-way split gives three cards, matching the "treat a
+        // WhatsApp download like any other video" rule.
         info.formats
             .iter()
             .filter(|f| {
@@ -306,8 +390,11 @@ pub async fn video_prepare(
     // form for UTF-8 is not worth the complexity here). Emoji-only titles
     // collapse to an empty string and fall back to "video".
     let safe_title = sanitize_filename_ascii(&decoded_title, 60);
-    let filename = format!("{safe_title}.{}", format.ext);
-    let file_path = tmp_dir.join(format!("{token}.{}", format.ext));
+    // #366 — the on-disk file is always `.{container}` regardless of
+    // what yt-dlp picks internally. `ensure_container` (infra) will
+    // transcode via ffmpeg when needed so the invariant holds.
+    let filename = format!("{safe_title}.{effective_container}");
+    let file_path = tmp_dir.join(format!("{token}.{effective_container}"));
 
     // Store task as "downloading" with shared progress counter
     let progress = Arc::new(AtomicU8::new(0));
@@ -322,6 +409,7 @@ pub async fn video_prepare(
             filename,
             parts: Vec::new(),
             created_at: std::time::Instant::now(),
+            library_id: None,
         },
     );
 
@@ -330,19 +418,39 @@ pub async fn video_prepare(
     let dl_url = url.clone();
     let dl_format_id = format.format_id.clone();
     let dl_resolution = format.resolution.clone();
+    let dl_container = effective_container.to_string();
     let dl_state = state.clone();
     let dl_client = state.http_client.clone();
     // Captured for the post-download library publish (#319). The publish
     // happens fire-and-forget after the user-facing Ready status is set,
     // so a slow Streamtape upload never blocks the local download flow.
+    //
+    // `format_ext` is hard-coded to `"mp4"` because Streamtape
+    // re-encodes every upload to H.264 MP4 regardless of what file
+    // we hand it (#366). Storing `"webm"` or `"mkv"` would be a lie
+    // — the library bytes are always MP4. The user's container
+    // choice only affects the local temp file served via the
+    // ready-link; the library publish path is container-agnostic.
+    //
+    // `quality` comes from the picked format, not from the raw
+    // request — this matters for WhatsApp, where the request
+    // quality is the `"whatsapp"` sentinel but we actually download
+    // a full-resolution MP4 (`"1080p"` / `"720p"` / ...) so the user
+    // gets both a shareable WhatsApp file and a permanent library
+    // card at the real source quality.
     let publish_meta_template = cr_infra::video_library::PublishMetadata {
         source_url: url.clone(),
         title: decoded_title.clone(),
         description: None,
         duration_sec: info.duration.map(|d| d as i32),
         source_extractor: info.uploader.clone(),
-        quality: req.quality.clone(),
-        format_ext: format.ext.clone(),
+        quality: format.format_id.clone(),
+        format_ext: "mp4".to_string(),
+        // #366 — store the human-readable resolution yt-dlp reported
+        // on the picked format (e.g. "720p"). Used by the library
+        // card's top-right badge; falls back to hidden when yt-dlp
+        // couldn't tell us a resolution for this source.
+        resolution: Some(format.resolution.clone()).filter(|s| !s.is_empty()),
         upstream_thumbnail_url: info.thumbnail.clone(),
     };
 
@@ -365,6 +473,7 @@ pub async fn video_prepare(
             &dl_url,
             &dl_format_id,
             &dl_resolution,
+            &dl_container,
             &file_path,
             Some(progress.clone()),
         )
@@ -394,16 +503,13 @@ pub async fn video_prepare(
                     )
                     .await;
 
-                    // Clean up source file
-                    let _ = tokio::fs::remove_file(&file_path).await;
-
                     let mut downloads = dl_state.video_downloads.lock().await;
                     if let Some(task) = downloads.get_mut(&dl_token) {
                         match wa_result {
                             Ok(cr_infra::video::WhatsAppResult::Single { path, size }) => {
                                 let size_mb = size as f64 / (1024.0 * 1024.0);
                                 let fname = format!("{safe} (WhatsApp).mp4");
-                                task.file_path = path;
+                                task.file_path = path.clone();
                                 task.filename = fname.clone();
                                 task.status = DownloadStatus::Ready {
                                     size_mb: (size_mb * 10.0).round() / 10.0,
@@ -412,8 +518,37 @@ pub async fn video_prepare(
                                 tracing::info!(
                                     "WhatsApp video ready: {dl_token} ({size_mb:.1} MB)"
                                 );
+                                drop(downloads);
+
+                                // #366 — publish the WhatsApp wa file
+                                // to the library as its own row. The
+                                // quality is `"whatsapp"` so it
+                                // coexists with any regular-download
+                                // row for the same URL under a
+                                // different dedup key.
+                                if should_publish
+                                    && let Some(pipeline) = dl_state.video_library.clone()
+                                {
+                                    let mut meta = publish_meta_template.clone();
+                                    meta.quality = "whatsapp".to_string();
+                                    meta.resolution = Some("480p".to_string());
+                                    let path = path.clone();
+                                    tokio::spawn(async move {
+                                        match pipeline.publish_local_video(&path, meta).await {
+                                            Ok(rec) => tracing::info!(
+                                                "whatsapp library publish OK: id={} streamtape_id={}",
+                                                rec.id,
+                                                rec.streamtape_file_id
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                "whatsapp library publish failed: {e}"
+                                            ),
+                                        }
+                                    });
+                                }
                             }
                             Ok(cr_infra::video::WhatsAppResult::Parts(parts)) => {
+                                let part_count = parts.len();
                                 let part_infos: Vec<PartInfo> = parts
                                     .iter()
                                     .map(|p| {
@@ -437,14 +572,54 @@ pub async fn video_prepare(
                                         size_mb: p.size_mb,
                                     })
                                     .collect();
-                                task.parts = part_infos;
+                                task.parts = part_infos.clone();
                                 task.status = DownloadStatus::ReadyParts {
                                     parts: part_responses,
                                 };
                                 tracing::info!(
-                                    "WhatsApp video ready: {dl_token} ({} parts)",
-                                    parts.len()
+                                    "WhatsApp video ready: {dl_token} ({part_count} parts)"
                                 );
+                                drop(downloads);
+
+                                // #366 — publish each WhatsApp part as
+                                // its own library row. Quality is
+                                // `"whatsapp-part{i}"` so all N parts
+                                // live under distinct dedup keys and
+                                // show up as N independent cards in
+                                // the grid. Title carries an "X/N"
+                                // suffix so the user can distinguish
+                                // them at a glance.
+                                if should_publish
+                                    && let Some(pipeline) = dl_state.video_library.clone()
+                                {
+                                    let base_title = publish_meta_template.title.clone();
+                                    let base_meta = publish_meta_template.clone();
+                                    for p in &part_infos {
+                                        let mut meta = base_meta.clone();
+                                        meta.title = format!(
+                                            "{base_title} — WhatsApp část {}/{}",
+                                            p.index + 1,
+                                            part_count
+                                        );
+                                        meta.quality = format!("whatsapp-part{}", p.index);
+                                        meta.resolution = Some("480p".to_string());
+                                        let path = p.file_path.clone();
+                                        let pipeline = pipeline.clone();
+                                        let idx = p.index;
+                                        tokio::spawn(async move {
+                                            match pipeline.publish_local_video(&path, meta).await {
+                                                Ok(rec) => tracing::info!(
+                                                    "whatsapp part{idx} library publish OK: id={} streamtape_id={}",
+                                                    rec.id,
+                                                    rec.streamtape_file_id
+                                                ),
+                                                Err(e) => tracing::warn!(
+                                                    "whatsapp part{idx} library publish failed: {e}"
+                                                ),
+                                            }
+                                        });
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::error!("WhatsApp conversion failed: {e}");
@@ -467,7 +642,17 @@ pub async fn video_prepare(
                     // (see #363) so the user can still download it via
                     // `/api/video/file/{token}` after the upload finishes.
                     // Temp files are reaped by `DELETE /api/video/cleanup`.
-                    if let Some(pipeline) = dl_state.video_library.clone() {
+                    //
+                    // #366 — skip publish entirely when the library
+                    // already has a MP4 row for this URL+quality
+                    // (`should_publish = false`). That happens when
+                    // the user asked for WebM/MKV and we did a fresh
+                    // yt-dlp + transcode alongside an existing MP4
+                    // row: republishing would either hit the unique
+                    // constraint or duplicate work Streamtape just
+                    // did. The `touch` call already bumped the row
+                    // to the top of the grid in the handler above.
+                    if should_publish && let Some(pipeline) = dl_state.video_library.clone() {
                         let publish_path = file_path.clone();
                         let publish_meta = publish_meta_template.clone();
                         tokio::spawn(async move {
@@ -541,19 +726,38 @@ pub async fn video_file(
     State(state): State<AppState>,
     Path(token): Path<String>,
 ) -> impl IntoResponse {
-    let downloads = state.video_downloads.lock().await;
-    let task = match downloads.get(&token) {
-        Some(t) if matches!(t.status, DownloadStatus::Ready { .. }) => t,
-        Some(_) => {
-            return (StatusCode::CONFLICT, "Video is still downloading").into_response();
-        }
-        None => {
-            return (StatusCode::NOT_FOUND, "Video not found or expired").into_response();
-        }
+    // Extract what we need from the task and drop the lock before any
+    // I/O so a slow filesystem read never blocks other handlers.
+    let (file_path, filename, library_id) = {
+        let downloads = state.video_downloads.lock().await;
+        let task = match downloads.get(&token) {
+            Some(t) if matches!(t.status, DownloadStatus::Ready { .. }) => t,
+            Some(_) => {
+                return (StatusCode::CONFLICT, "Video is still downloading").into_response();
+            }
+            None => {
+                return (StatusCode::NOT_FOUND, "Video not found or expired").into_response();
+            }
+        };
+        (
+            task.file_path.clone(),
+            task.filename.clone(),
+            task.library_id,
+        )
     };
-    let prepared = task;
 
-    let bytes = match tokio::fs::read(&prepared.file_path).await {
+    // Deduped downloads have no local temp file — point the client at
+    // the library proxy instead so Streamtape serves the bytes. Using
+    // 303 See Other preserves the GET method and avoids Chrome's POST
+    // redirection quirks for any hypothetical future caller that uses
+    // a non-GET verb. Browsers follow this transparently for the
+    // `download` attribute on the anchor that triggered it.
+    if let Some(id) = library_id {
+        return axum::response::Redirect::to(&format!("/api/video/library/{id}/file"))
+            .into_response();
+    }
+
+    let bytes = match tokio::fs::read(&file_path).await {
         Ok(b) => b,
         Err(e) => {
             tracing::error!("Failed to read video file: {e}");
@@ -561,19 +765,36 @@ pub async fn video_file(
         }
     };
 
-    let filename = &prepared.filename;
     let content_disposition = format!("attachment; filename=\"{filename}\"");
+    // #366 — derive Content-Type from the filename extension so a
+    // WebM/MKV download doesn't advertise itself as `video/mp4`.
+    let content_type = content_type_for_filename(&filename).to_string();
 
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "video/mp4".to_string()),
+            (header::CONTENT_TYPE, content_type),
             (header::CONTENT_DISPOSITION, content_disposition),
             (header::CONTENT_LENGTH, bytes.len().to_string()),
         ],
         bytes,
     )
         .into_response()
+}
+
+/// Map a file extension to a Content-Type mime string, defaulting to
+/// `video/mp4` for anything we don't recognise so browsers at least
+/// treat the response as some kind of video.
+fn content_type_for_filename(name: &str) -> &'static str {
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("webm") => "video/webm",
+        Some("mkv") => "video/x-matroska",
+        _ => "video/mp4",
+    }
 }
 
 pub async fn video_file_part(
@@ -921,6 +1142,7 @@ mod temp_cleanup_tests {
                 parts: Vec::new(),
                 // Back-date created_at by subtracting from Instant::now().
                 created_at: std::time::Instant::now() - age,
+                library_id: None,
             }
         }
 
@@ -1003,6 +1225,11 @@ pub struct LibraryEntry {
     duration_sec: Option<i32>,
     quality: String,
     format_ext: String,
+    /// Human-readable resolution from yt-dlp (e.g. `"1080p"`). Drives
+    /// the card's top-right badge — #366. `None` on legacy rows
+    /// where the backfill regex failed, in which case the JS hides
+    /// the badge entirely.
+    resolution: Option<String>,
     file_size_mb: f64,
     thumbnail_url: Option<String>,
     streamtape_url: String,
@@ -1018,6 +1245,7 @@ impl From<cr_domain::repository::VideoRecord> for LibraryEntry {
             duration_sec: r.duration_sec,
             quality: r.quality,
             format_ext: r.format_ext,
+            resolution: r.resolution,
             file_size_mb: (mb * 10.0).round() / 10.0,
             thumbnail_url: r.thumbnail_url,
             streamtape_url: r.streamtape_url,
@@ -1537,6 +1765,13 @@ fn sanitize_error(raw: &str) -> String {
     }
     if raw.contains("Failed to parse video manifest") {
         return "Nepodařilo se načíst video — server nevrátil platná data.".to_string();
+    }
+    if raw.contains("ensure_container")
+        || raw.contains("ffmpeg")
+        || raw.contains("full re-encode failed")
+    {
+        return "Požadovaný formát není dostupný a konverze se nezdařila — zkuste jiný formát."
+            .to_string();
     }
     // Generic fallback — don't expose raw yt-dlp output
     "Nepodařilo se získat informace o videu. Zkuste jiný odkaz.".to_string()
