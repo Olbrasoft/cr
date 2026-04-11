@@ -76,19 +76,36 @@ pub trait VideoRepository {
     type Error: std::fmt::Debug;
     /// Insert a new video and return the id assigned by the DB.
     async fn insert(&self, video: NewVideo) -> Result<i32, Self::Error>;
-    /// Look up an existing library entry for `(source_url, quality)` —
-    /// the dedup key. Returns `None` if no row matches.
-    async fn find_by_source_and_quality(
+    /// Look up an existing library entry for the dedup key
+    /// `(source_url, quality, format_ext)`. Returns `None` if no row
+    /// matches. In practice (#366) library rows are always MP4 because
+    /// Streamtape re-encodes uploads to H.264 MP4 regardless of the
+    /// file we hand it, so the `format_ext` parameter is effectively
+    /// always `"mp4"` from the handler — we keep it parameterised
+    /// anyway so the trait stays symmetric with `NewVideo.format_ext`.
+    async fn find_by_source_quality_and_format(
         &self,
         source_url: &str,
         quality: &str,
+        format_ext: &str,
     ) -> Result<Option<VideoRecord>, Self::Error>;
-    /// Most recent `limit` library entries, newest first.
+    /// Most recent `limit` library entries, ordered by
+    /// `last_accessed_at DESC`. A row slides to the top of the list
+    /// every time [`touch`](Self::touch) bumps its timestamp — either
+    /// directly when the user re-requests an existing URL+quality
+    /// (see the dedup path in `video_prepare`) or indirectly via the
+    /// unique constraint swallowing a duplicate publish.
     async fn list_recent(&self, limit: i64) -> Result<Vec<VideoRecord>, Self::Error>;
     /// Look up by primary id.
     async fn find_by_id(&self, id: i32) -> Result<Option<VideoRecord>, Self::Error>;
     /// Delete by primary id; returns `true` if a row was removed.
     async fn delete(&self, id: i32) -> Result<bool, Self::Error>;
+    /// Bump `last_accessed_at` to `NOW()` on the row identified by
+    /// `id`. Used whenever the handler spots an existing library
+    /// entry for the requested URL (even if the user asked for a
+    /// different container) so the card slides to the top of the
+    /// library grid — see #366.
+    async fn touch(&self, id: i32) -> Result<(), Self::Error>;
 }
 
 // --- Record types returned by repositories ---
@@ -238,6 +255,18 @@ pub struct VideoRecord {
     pub thumbnail_r2_key: Option<String>,
     pub thumbnail_url: Option<String>,
     pub created_at: String,
+    /// Bumped to `NOW()` whenever the handler spots an existing
+    /// library entry for the requested URL+quality, so the card
+    /// slides to the top of the library grid. See #366.
+    pub last_accessed_at: String,
+    /// Human-readable resolution like `"1080p"` or `"720p"` parsed
+    /// from yt-dlp's `format.resolution` field. Separate from
+    /// `quality` because `quality` is the raw yt-dlp format_id
+    /// which is source-specific garbage (`"137"` on YouTube,
+    /// `"bytevc1_720p_..."` on TikTok, `"mp4"` on Seznam). `None`
+    /// on legacy rows where the backfill regex couldn't find a
+    /// `\d+p` substring. See #366.
+    pub resolution: Option<String>,
 }
 
 /// Insertion payload for the `videos` table — everything the upload
@@ -257,4 +286,7 @@ pub struct NewVideo {
     pub file_size_bytes: i64,
     pub thumbnail_r2_key: Option<String>,
     pub thumbnail_url: Option<String>,
+    /// Human-readable resolution (e.g. `"720p"`). See
+    /// [`VideoRecord::resolution`] for rationale.
+    pub resolution: Option<String>,
 }

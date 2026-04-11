@@ -6,15 +6,57 @@
 
 {% block og_title %}Stáhnout video — ceskarepublika.wiki{% endblock %}
 {% block og_description %}Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.{% endblock %}
-{% block og_image %}https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5{% endblock %}
+{# #367 — og:image without query string. Seznam/Lidé.cz preview
+   scraper historically ignored URLs containing `?` for the og:image
+   fetch ("dynamic content"), even though the file is a plain PNG.
+   Rename the cache buster into the filename instead. #}
+{% block og_image %}https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png{% endblock %}
+{# #367 — og:type=article triggers the "big preview card" branch in
+   Seznam/Lidé.cz share renderer. Same trick every Czech news site
+   (Aktualne.cz, Novinky, iDnes) uses — `website` gets the text-only
+   fallback, `article` gets the large image card. #}
+{% block og_type %}article{% endblock %}
+
+{# #367 — Download page doesn't render a map, so skip Leaflet
+   entirely. The ~150 KB synchronous script in <head> was blocking
+   Seznam/Lidé.cz headless-browser preview scraper long enough that
+   it timed out and fell back to a text-only card. #}
+{% block leaflet %}{% endblock %}
 {% block og_extra %}
-<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5">
+<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Stáhnout video — ceskarepublika.wiki">
 <meta property="og:url" content="https://ceskarepublika.wiki/stahnout-video/">
 <meta property="og:site_name" content="ceskarepublika.wiki">
+{# #367 — JSON-LD WebPage schema. Some Seznam properties (Lidé.cz
+   comments, Zboží embeds) look at schema.org structured data before
+   falling back to og:*. Having both maximizes the chance the big
+   play+download card renders as a large preview rather than a
+   title-only fallback. #}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Stáhnout video — ceskarepublika.wiki",
+  "description": "Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.",
+  "url": "https://ceskarepublika.wiki/stahnout-video/",
+  "inLanguage": "cs-CZ",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "ceskarepublika.wiki",
+    "url": "https://ceskarepublika.wiki/"
+  },
+  "primaryImageOfPage": {
+    "@type": "ImageObject",
+    "url": "https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png",
+    "width": 1200,
+    "height": 630
+  },
+  "image": "https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png"
+}
+</script>
 {% endblock %}
 
 {% block header_left %}
@@ -38,14 +80,19 @@
      after the global icons in base.html). The ?v= cache buster
      forces the browser to refetch when we ship a new logo. -->
 <link rel="icon" type="image/svg+xml" href="/static/img/logo-stahnout-video.svg?v=5">
-<!-- Twitter / X large card preview — falls back to og:* if absent
-     but explicit twitter:* tags render more reliably. -->
-<meta name="twitter:card" content="summary_large_image">
+<!-- #367 — Canonical URL. Seznam/Lidé.cz share preview scraper
+     dereferences canonical before it fetches og:image, so without it
+     the preview falls back to a text-only card (exactly the broken
+     state we observed on Lidé.cz). Every Czech news site that
+     renders a big preview card has this tag. -->
+<link rel="canonical" href="https://ceskarepublika.wiki/stahnout-video/">
+<!-- Per-page Twitter metadata only — base.html emits default
+     `robots`, `twitter:card` and `twitter:domain` tags, so we don't
+     repeat them here (#371 review). -->
 <meta name="twitter:title" content="Stáhnout video — ceskarepublika.wiki">
 <meta name="twitter:description" content="Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.">
-<meta name="twitter:image" content="https://ceskarepublika.wiki/static/img/og-stahnout-video.png?v=5">
+<meta name="twitter:image" content="https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png">
 <meta name="twitter:image:alt" content="Stáhnout video — ceskarepublika.wiki">
-<meta name="twitter:domain" content="ceskarepublika.wiki">
 <meta name="twitter:url" content="https://ceskarepublika.wiki/stahnout-video/">
 <style>
 .download-hero {
@@ -165,6 +212,46 @@
 .whatsapp-parts-note {
     font-size: 0.75rem;
     color: #888;
+}
+/* #366 — container selector row. Same pill buttons as the quality
+   selector but nested in its own hidden container that only lights
+   up once `Načíst info` has populated the quality buttons. */
+.format-selector {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+}
+.format-selector.visible {
+    display: flex;
+}
+.format-selector-label {
+    font-size: 0.8rem;
+    color: #555;
+    font-weight: 500;
+    margin-right: 0.25rem;
+}
+.format-btn {
+    padding: 0.4rem 0.9rem;
+    border: 2px solid var(--color-gray-border);
+    border-radius: 20px;
+    background: white;
+    font-size: 0.85rem;
+    font-weight: 500;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    color: #555;
+}
+.format-btn.active {
+    border-color: var(--color-gold);
+    background: var(--color-gold);
+    color: white;
+}
+.format-btn:hover:not(.active) {
+    border-color: var(--color-gold);
+    color: var(--color-gold);
 }
 /* Preview card */
 .video-preview {
@@ -743,6 +830,19 @@
     <div class="quality-selector" id="quality-selector">
     </div>
 
+    <!-- #366 — container format picker. Hidden until `Načíst info`
+         populates the preview, hidden again once the ready-link is
+         shown (picking a new format is meaningless after the current
+         download finished). The JS auto-selects whichever container
+         matches the source extension reported by yt-dlp so that
+         no-conversion downloads are the default path. -->
+    <div class="format-selector" id="format-selector">
+        <span class="format-selector-label">Formát:</span>
+        <button type="button" class="format-btn active" data-container="mp4">MP4</button>
+        <button type="button" class="format-btn" data-container="webm">WebM</button>
+        <button type="button" class="format-btn" data-container="mkv">MKV</button>
+    </div>
+
     <div class="video-preview" id="video-preview">
         <img class="preview-thumb" id="preview-thumb" src="" alt="" width="200" height="112">
         <div class="preview-info">
@@ -819,8 +919,68 @@
     var statusEl = document.getElementById('status-message');
     var actionsEl = document.getElementById('download-actions');
     var qualityEl = document.getElementById('quality-selector');
+    var formatEl = document.getElementById('format-selector');
     var selectedFormat = 'video';
     var selectedQuality = 'best';
+    // #366 — output container. Re-initialised from the source format
+    // on every successful `Načíst info` so the no-conversion path
+    // (same container as the source) is always the default.
+    var selectedContainer = 'mp4';
+
+    // #366 — map a yt-dlp `ext` value reported for one of the source
+    // formats to the closest supported output container. Anything we
+    // don't know about collapses to MP4 which is universally playable.
+    function extToContainer(ext) {
+        if (!ext) return null;
+        var lower = String(ext).toLowerCase();
+        if (lower === 'mp4' || lower === 'm4a' || lower === 'mov') return 'mp4';
+        if (lower === 'webm') return 'webm';
+        if (lower === 'mkv' || lower === 'matroska') return 'mkv';
+        return null;
+    }
+
+    // #366 — set the active format button from outside the click
+    // handler. Used both by the button's own click flow and by the
+    // auto-default that fires on `Načíst info` success.
+    function setSelectedContainer(container) {
+        if (!container || container === selectedContainer) {
+            return false;
+        }
+        selectedContainer = container;
+        Array.prototype.forEach.call(formatEl.querySelectorAll('.format-btn'), function(b) {
+            b.classList.toggle('active', b.getAttribute('data-container') === container);
+        });
+        return true;
+    }
+
+    // Wire up container buttons once. The row stays in the DOM —
+    // only its visibility flips with the surrounding workflow.
+    Array.prototype.forEach.call(formatEl.querySelectorAll('.format-btn'), function(btn) {
+        btn.addEventListener('click', function() {
+            var container = btn.getAttribute('data-container');
+            if (!setSelectedContainer(container)) return;
+            // Switching formats invalidates any previously displayed
+            // ready-link because the file on disk is a different
+            // container. Hide it and re-show the Stáhnout button so
+            // the user can re-run the prepare step in the new format.
+            resetReadyDownload();
+        });
+    });
+
+    // #366 — pick the default output container from the formats yt-dlp
+    // reports for the source. If any format lives in MP4 we default to
+    // MP4 (most universal), otherwise WebM (YouTube-style VP9/Opus),
+    // otherwise MKV as a Swiss-army fallback.
+    function pickDefaultContainerFromFormats(formats) {
+        if (!Array.isArray(formats) || formats.length === 0) return 'mp4';
+        var mapped = formats
+            .map(function(f) { return extToContainer(f && f.ext); })
+            .filter(Boolean);
+        if (mapped.indexOf('mp4') !== -1) return 'mp4';
+        if (mapped.indexOf('webm') !== -1) return 'webm';
+        if (mapped.indexOf('mkv') !== -1) return 'mkv';
+        return 'mp4';
+    }
 
     // Fetch info
     btnFetch.addEventListener('click', function() {
@@ -839,6 +999,11 @@
         actionsEl.classList.remove('visible');
         qualityEl.classList.remove('visible');
         qualityEl.innerHTML = '';
+        // #366 — hide the format selector while the fetch is pending
+        // (no preview → no meaningful format choice) and wait for the
+        // success branch to re-show it after we know which container
+        // the source uses.
+        formatEl.classList.remove('visible');
         selectedQuality = 'best';
         btnDownload.style.display = '';
         btnDownload.disabled = false;
@@ -871,7 +1036,15 @@
             }
             previewEl.classList.add('visible');
             actionsEl.classList.add('visible');
+            formatEl.classList.add('visible');
             hideStatus();
+
+            // #366 — auto-pick the output container that matches the
+            // source, so "download without conversion" is the default
+            // path. Source-MP4 → MP4, source-WebM → WebM, etc.
+            setSelectedContainer(
+                pickDefaultContainerFromFormats(data.formats)
+            );
 
             // Update quality buttons from available formats
             if (data.formats && data.formats.length > 0) {
@@ -900,7 +1073,8 @@
             body: JSON.stringify({
                 url: url,
                 format: selectedFormat,
-                quality: selectedQuality
+                quality: selectedQuality,
+                container: selectedContainer
             })
         })
         .then(function(r) {
@@ -1024,11 +1198,16 @@
     // Stáhnout button is hidden. If the user then switches quality, the old
     // file is no longer what they want — clear the stale link and bring back
     // the Stáhnout button so they can re-download in the new quality.
+    // #366 — also re-show the format selector because the user is back in
+    // pre-download mode and a new format choice is once again meaningful.
     function resetReadyDownload() {
         if (statusEl.querySelector('.download-ready-link')) {
             hideStatus();
             btnDownload.style.display = '';
             btnDownload.disabled = false;
+            if (previewEl.classList.contains('visible')) {
+                formatEl.classList.add('visible');
+            }
         }
     }
 
@@ -1081,6 +1260,11 @@
                 document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
                 btn.classList.add('active');
                 selectedQuality = fmt.format_id;
+                // #366 — regular quality picks bring the format
+                // selector back; WhatsApp pick hides it (see below).
+                if (previewEl.classList.contains('visible')) {
+                    formatEl.classList.add('visible');
+                }
             });
             container.appendChild(btn);
         });
@@ -1106,6 +1290,18 @@
             document.querySelectorAll('.quality-btn').forEach(function(b) { b.classList.remove('active'); });
             waBtn.classList.add('active');
             selectedQuality = 'whatsapp';
+            // #366 — WhatsApp only reliably accepts H.264/AAC MP4
+            // (no WebM / MKV / VP9 / AV1 playback on mobile client).
+            // `convert_for_whatsapp` always produces MP4 regardless
+            // of what the user clicked in the format selector, so
+            // offering WebM/MKV here would be misleading. Hide the
+            // selector while WhatsApp is active; the regular quality
+            // click handlers above bring it back.
+            formatEl.classList.remove('visible');
+            // Also force the internal container state back to mp4 so
+            // any stray reference (e.g. a re-click on Stáhnout
+            // without touching the selector) uses the right value.
+            setSelectedContainer('mp4');
         });
         container.appendChild(waBtn);
 
@@ -1125,6 +1321,9 @@
         var fname = status.filename || 'video.mp4';
         var fileUrl = '/api/video/file/' + token;
         btnDownload.style.display = 'none';
+        // #366 — workflow for this URL is done; the format choice no
+        // longer applies to anything until the user fetches a new URL.
+        formatEl.classList.remove('visible');
         var readyLink = document.createElement('a');
         readyLink.href = fileUrl;
         readyLink.download = fname;
@@ -1155,6 +1354,8 @@
 
     function showMultiPartDownload(token, parts) {
         btnDownload.style.display = 'none';
+        // #366 — same as the single-download path: this URL is done.
+        formatEl.classList.remove('visible');
         statusEl.textContent = '';
         statusEl.style.display = 'block';
         statusEl.style.color = '';
@@ -1317,10 +1518,18 @@
         img.src = item.thumbnail_url || '/static/img/logo-stahnout-video.svg';
         img.onerror = function() { this.src = '/static/img/logo-stahnout-video.svg'; this.style.objectFit = 'contain'; };
         thumb.appendChild(img);
-        var quality = document.createElement('div');
-        quality.className = 'library-quality-badge';
-        quality.textContent = item.quality;
-        thumb.appendChild(quality);
+        // #366 — the top-right badge shows the human-readable
+        // resolution (e.g. "1080p") from `item.resolution`, not the
+        // raw yt-dlp `format_id` in `item.quality` which is source-
+        // specific garbage ("137" on YouTube, "bytevc1_720p_..." on
+        // TikTok, "mp4" on Seznam). Legacy rows without a backfilled
+        // resolution hide the badge entirely.
+        if (item.resolution) {
+            var quality = document.createElement('div');
+            quality.className = 'library-quality-badge';
+            quality.textContent = item.resolution;
+            thumb.appendChild(quality);
+        }
         var overlay = document.createElement('div');
         overlay.className = 'play-overlay';
         // #358 — same SVG as the audio play button. White-on-dark
@@ -1342,8 +1551,12 @@
         var meta = document.createElement('div');
         meta.className = 'library-meta';
         // #357 — duration is shown by the audio mini-player below as
-        // `0:00 / <total>`. Don't repeat it in the meta row — only the
-        // file size is unique to this row.
+        // `0:00 / <total>`. Don't repeat it in the meta row.
+        // #366 — no per-card format badge: every library row lives
+        // on Streamtape which always stores H.264 MP4 regardless of
+        // what container the user picked. Showing "MP4" next to every
+        // size would be pure noise; the user sees the actual extension
+        // in the filename when they save via the in-player ⋮ menu.
         var size = document.createElement('span');
         size.textContent = item.file_size_mb + ' MB';
         meta.appendChild(size);

@@ -6,7 +6,27 @@
 
 {% block og_title %}{% match og_title %}{% when Some with (t) %}{{ t }}{% when None %}Filmy a seriály | ceskarepublika.wiki{% endmatch %}{% endblock %}
 {% block og_description %}Sledujte nejen české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.{% endblock %}
-{% block og_image %}{% match og_image %}{% when Some with (url) %}{{ url }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy.png?v=2{% endmatch %}{% endblock %}
+{# #367 — 1200×630 banner-sized PNG without color profile chunks.
+   The original og-filmy-a-serialy.png was 512×512 (rendered as a
+   small thumbnail on every platform instead of a large card) and
+   the URL had a ?v=2 query string (Seznam's image fetcher skips
+   query-stringed URLs). Cache buster is now in the filename. #}
+{% block og_image %}{% match og_image %}{% when Some with (url) %}{{ url }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+{# #367 — og:type=article + full image metadata. See SKILL
+   social-share-previews for the full list of tags required to
+   render as a big preview card on Czech platforms. #}
+{% block og_type %}article{% endblock %}
+{% block og_extra %}
+<meta property="og:image:secure_url" content="{% match og_image %}{% when Some with (url) %}{{ url }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}">
+{# #371 review — derive og:image:type from the actual URL extension
+   so scrapers don't see `image/jpeg` when the override URL is a PNG. #}
+<meta property="og:image:type" content="image/{% match og_image %}{% when Some with (url) %}{% if url.ends_with(".png") %}png{% else if url.ends_with(".webp") %}webp{% else if url.ends_with(".gif") %}gif{% else %}jpeg{% endif %}{% when None %}png{% endmatch %}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Filmy a seriály — ceskarepublika.wiki">
+<meta property="og:url" content="https://ceskarepublika.wiki/filmy-a-serialy/">
+<meta property="og:site_name" content="ceskarepublika.wiki">
+{% endblock %}
 
 {% block header_left %}
 <div class="logo-group">
@@ -25,6 +45,15 @@
 {% endblock %}
 
 {% block head %}
+{# #367 — Canonical + per-page Twitter metadata only. base.html
+   emits default `robots`, `twitter:card` and `twitter:domain` tags,
+   so we don't repeat them here (#371 review). #}
+<link rel="canonical" href="https://ceskarepublika.wiki/filmy-a-serialy/">
+<meta name="twitter:title" content="{% match og_title %}{% when Some with (t) %}{{ t }}{% when None %}Filmy a seriály | ceskarepublika.wiki{% endmatch %}">
+<meta name="twitter:description" content="Sledujte nejen české filmy a seriály online zdarma. Vyhledávejte a přehrávejte přímo v prohlížeči.">
+<meta name="twitter:image" content="{% match og_image %}{% when Some with (url) %}{{ url }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}">
+<meta name="twitter:image:alt" content="Filmy a seriály — ceskarepublika.wiki">
+<meta name="twitter:url" content="https://ceskarepublika.wiki/filmy-a-serialy/">
 <style>
 .movies-hero {
     text-align: center;

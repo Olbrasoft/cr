@@ -8,8 +8,22 @@
     <link rel="stylesheet" href="/static/css/index.css?v=4">
     <link rel="stylesheet" href="/static/css/map.css?v=5">
     <link rel="stylesheet" href="/static/css/lightbox.css?v=2">
+    {# #367 — Leaflet CSS + JS is ~150 KB of synchronous network
+       traffic from unpkg.com. Headless-browser preview scrapers
+       (Seznam/Lidé.cz, Slack, Discord) time out waiting for it,
+       and pages that don't render a map (e.g. /stahnout-video/)
+       shouldn't pay the cost anyway. Pages that need the map
+       inherit the default; pages that don't override with empty. #}
+    {# #367 — Leaflet must stay synchronous (no `defer`) because
+       municipality/orp/landmark/pool templates run inline
+       `L.map(...)` / `L.tileLayer(...)` inside {% block scripts %}
+       during HTML parsing. Deferring the script leaves `L` undefined
+       at the time the inline code runs. Pages that don't render a
+       map override the `leaflet` block with an empty body below. #}
+    {% block leaflet %}
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    {% endblock %}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -21,12 +35,35 @@
          Using the project red (#D7141A) so the embed strip matches
          the logo. -->
     <meta name="theme-color" content="#D7141A">
+    {# #367 — Czech-platform signals that push Seznam/Lidé.cz share
+       preview to the "large image card" branch. `max-image-preview:
+       large` is the Google-snippet flag Seznam also honors. Default
+       Twitter card is `summary_large_image` so embeds render as a
+       big card on X / Discord / Slack. Per-page templates override
+       twitter:title / twitter:description / twitter:image in the
+       `head` block to match the specific route's content. #}
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:domain" content="ceskarepublika.wiki">
     {% block og_meta %}
     <meta property="og:title" content="{% block og_title %}ceskarepublika.wiki{% endblock %}">
     <meta property="og:description" content="{% block og_description %}Encyklopedický portál o České republice{% endblock %}">
-    <meta property="og:image" content="{% block og_image %}https://ceskarepublika.wiki/static/favicon.svg{% endblock %}">
-    <meta property="og:type" content="website">
-    {% block og_extra %}{% endblock %}
+    {# #367 — default og:image must be a raster (SVG is not supported
+       by WhatsApp/Discord preview scrapers). The file is a clean PNG
+       without any color-profile chunks (see SKILL social-share-previews
+       on the cHRM-without-sRGB trap that caused a full-white render
+       on Seznam/Lidé.cz). Pages override `og_image` for topic-specific
+       banners; everything else gets the state emblem. #}
+    <meta property="og:image" content="{% block og_image %}https://ceskarepublika.wiki/static/img/og-default-v4.png{% endblock %}">
+    <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+    <meta property="og:locale" content="cs_CZ">
+    {% block og_extra %}
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Česká republika — ceskarepublika.wiki">
+    <meta property="og:site_name" content="ceskarepublika.wiki">
+    {% endblock %}
     {% endblock %}
     {% block head %}{% endblock %}
 </head>
