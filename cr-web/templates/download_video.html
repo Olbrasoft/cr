@@ -86,18 +86,13 @@
      state we observed on Lidé.cz). Every Czech news site that
      renders a big preview card has this tag. -->
 <link rel="canonical" href="https://ceskarepublika.wiki/stahnout-video/">
-<!-- #367 — `max-image-preview:large` is the Google snippet flag that
-     most Czech crawlers (Seznam included) piggy-back on to decide
-     whether to render a large image card vs. a text-only summary. -->
-<meta name="robots" content="index, follow, max-image-preview:large">
-<!-- Twitter / X large card preview — falls back to og:* if absent
-     but explicit twitter:* tags render more reliably. -->
-<meta name="twitter:card" content="summary_large_image">
+<!-- Per-page Twitter metadata only — base.html emits default
+     `robots`, `twitter:card` and `twitter:domain` tags, so we don't
+     repeat them here (#371 review). -->
 <meta name="twitter:title" content="Stáhnout video — ceskarepublika.wiki">
 <meta name="twitter:description" content="Stáhněte si video z YouTube, Seznam Zpráv, Novinek a dalších serverů. Zdarma, bez registrace, přímo v prohlížeči.">
 <meta name="twitter:image" content="https://ceskarepublika.wiki/static/img/og-stahnout-video-v11.png">
 <meta name="twitter:image:alt" content="Stáhnout video — ceskarepublika.wiki">
-<meta name="twitter:domain" content="ceskarepublika.wiki">
 <meta name="twitter:url" content="https://ceskarepublika.wiki/stahnout-video/">
 <style>
 .download-hero {

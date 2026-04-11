@@ -340,11 +340,17 @@ async fn probe_container(path: &std::path::Path) -> Result<String> {
 /// file to one or the other — and since both containers hold the
 /// same codecs, a WebM-encoded file renamed to `.mkv` is a perfectly
 /// valid MKV (just with web-friendly codecs inside).
+///
+/// For a requested `webm` output we must require an explicit `webm`
+/// token — we can't accept a generic Matroska file here because MKV
+/// can carry non-WebM codecs (H.264/AAC) that wouldn't play in a
+/// `.webm` container. For `mkv` we stay permissive because WebM is
+/// Matroska-based and plays fine in an `.mkv` container.
 fn container_matches(ffprobe_format: &str, container: &str) -> bool {
     let parts: Vec<&str> = ffprobe_format.split(',').map(|s| s.trim()).collect();
     match container {
         "mp4" => parts.iter().any(|p| matches!(*p, "mp4" | "mov" | "m4a")),
-        "webm" => parts.iter().any(|p| matches!(*p, "webm" | "matroska")),
+        "webm" => parts.contains(&"webm"),
         "mkv" => parts.iter().any(|p| matches!(*p, "matroska" | "webm")),
         other => parts.contains(&other),
     }

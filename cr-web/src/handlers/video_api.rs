@@ -43,9 +43,10 @@ pub struct VideoTask {
     pub created_at: std::time::Instant,
     /// Set for tasks that hit the library dedup path — the client's
     /// ready-link delegates to `/api/video/library/{id}/file` via a
-    /// 302 from `video_file` because there is no local temp file for
-    /// deduped downloads (the content lives only on Streamtape/R2).
-    /// `None` for normal downloads where `file_path` carries the bytes.
+    /// 303 See Other from `video_file` (`Redirect::to(...)`) because
+    /// there is no local temp file for deduped downloads (the content
+    /// lives only on Streamtape/R2). `None` for normal downloads
+    /// where `file_path` carries the bytes.
     pub library_id: Option<i32>,
 }
 
@@ -106,10 +107,12 @@ pub struct VideoPrepareRequest {
     format: String,
     #[serde(default = "default_quality")]
     quality: String,
-    /// Output container chosen by the user (#366). Either `"mp4"` or
-    /// `"webm"` — anything else is rejected as 400. The ready-link,
-    /// filename and library row all carry this container, regardless
-    /// of what yt-dlp happened to pick internally.
+    /// Output container chosen by the user (#366). Accepted values
+    /// are `"mp4"`, `"webm"`, or `"mkv"` (see [`ALLOWED_CONTAINERS`]);
+    /// anything else is rejected as 400. The ready-link and filename
+    /// always carry this container, regardless of what yt-dlp picked
+    /// internally. The library row is always published as `"mp4"`
+    /// because Streamtape re-encodes every upload.
     #[serde(default = "default_container")]
     container: String,
 }
@@ -520,6 +523,19 @@ pub async fn video_prepare(
                                 );
                                 drop(downloads);
 
+                                // #371 review — the pre-conversion yt-dlp
+                                // temp file is no longer referenced by
+                                // anything (task.file_path now points at
+                                // the wa output). Unlink it immediately
+                                // so disk usage drops right away instead
+                                // of waiting for the 30-min reaper.
+                                if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                                    tracing::warn!(
+                                        "failed to unlink pre-WhatsApp temp file {:?}: {e}",
+                                        file_path
+                                    );
+                                }
+
                                 // #366 — publish the WhatsApp wa file
                                 // to the library as its own row. The
                                 // quality is `"whatsapp"` so it
@@ -580,6 +596,19 @@ pub async fn video_prepare(
                                     "WhatsApp video ready: {dl_token} ({part_count} parts)"
                                 );
                                 drop(downloads);
+
+                                // #371 review — the pre-conversion yt-dlp
+                                // temp file is no longer referenced by
+                                // anything (task.parts now point at the
+                                // split wa outputs). Unlink it immediately
+                                // so disk usage drops right away instead
+                                // of waiting for the 30-min reaper.
+                                if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                                    tracing::warn!(
+                                        "failed to unlink pre-WhatsApp temp file {:?}: {e}",
+                                        file_path
+                                    );
+                                }
 
                                 // #366 — publish each WhatsApp part as
                                 // its own library row. Quality is
