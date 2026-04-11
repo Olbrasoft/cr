@@ -447,8 +447,10 @@ pub async fn video_prepare(
                         filename: task.filename.clone(),
                     };
                     // #319 — fire-and-forget publish to the library. Local
-                    // file is kept until the existing temp cleanup runs so
-                    // the user can still download it via /api/video/file/.
+                    // file is intentionally kept on disk by `publish_local_video`
+                    // (see #363) so the user can still download it via
+                    // `/api/video/file/{token}` after the upload finishes.
+                    // Temp files are reaped by `DELETE /api/video/cleanup`.
                     if let Some(pipeline) = dl_state.video_library.clone() {
                         let publish_path = file_path.clone();
                         let publish_meta = publish_meta_template.clone();

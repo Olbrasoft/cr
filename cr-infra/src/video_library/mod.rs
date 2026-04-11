@@ -101,7 +101,15 @@ impl VideoLibraryPipeline {
 
     /// Publish a freshly downloaded local file to the library: upload to
     /// Streamtape, upload thumbnail to R2 (with `getsplash` fallback),
-    /// insert into the `videos` table, and remove the local copy.
+    /// and insert into the `videos` table.
+    ///
+    /// The local copy is intentionally **left on disk** so the user can
+    /// still download it via `/api/video/file/{token}` after publish —
+    /// see issue #363, where an earlier version of this method deleted
+    /// the file here and broke the "Stáhnout" ready-link as soon as the
+    /// background upload finished. Temp files are reaped by the manual
+    /// `DELETE /api/video/cleanup` endpoint and the future periodic
+    /// cleanup tracked in #192.
     pub async fn publish_local_video(
         &self,
         local_path: &Path,
@@ -159,11 +167,11 @@ impl VideoLibraryPipeline {
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
 
-        // 4) Best-effort cleanup of the temp file. Don't fail the publish
-        //    if removal hits a permission error or the file is already gone.
-        if let Err(e) = tokio::fs::remove_file(local_path).await {
-            tracing::warn!("could not remove temp file {local_path:?}: {e}");
-        }
+        // 4) Keep the local temp file on disk on purpose — the handler's
+        //    `/api/video/file/{token}` ready-link still points at it and
+        //    needs to succeed after publish finishes (issue #363). The
+        //    file is cleaned up by `DELETE /api/video/cleanup` and the
+        //    future periodic reaper (#192).
 
         Ok(record)
     }
