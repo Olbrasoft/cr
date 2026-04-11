@@ -257,6 +257,12 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {addr}");
 
+    // #192 — periodic reaper for /tmp/cr-videos/. Deletes anything older
+    // than 30 minutes so temp videos left behind by `publish_local_video`
+    // (kept on disk on purpose for the /api/video/file/{token} ready-link,
+    // see #363) don't accumulate and exhaust the VPS disk.
+    let _cleanup_task = handlers::video_api::spawn_temp_video_cleanup_loop();
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

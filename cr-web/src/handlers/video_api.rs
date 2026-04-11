@@ -12,6 +12,22 @@ use tokio::sync::{Mutex, Semaphore};
 /// Maximum concurrent video downloads.
 pub static VIDEO_DOWNLOAD_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 
+/// On-disk directory where yt-dlp drops freshly downloaded videos before
+/// they are either served to the user via `/api/video/file/{token}` or
+/// published to the library pipeline.
+pub(crate) const TMP_VIDEO_DIR: &str = "/tmp/cr-videos";
+
+/// Maximum age a temp video may sit on disk before the periodic reaper
+/// removes it. See issue #192 — the VPS has limited disk and we can't
+/// keep videos around forever after the user has finished downloading
+/// them (the library copy on Streamtape + R2 is the canonical long-term
+/// store).
+pub(crate) const TMP_VIDEO_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// How often the periodic reaper wakes up to scan the temp dir.
+pub(crate) const TMP_VIDEO_CLEANUP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
+
 use crate::state::AppState;
 
 /// Shared state for tracking video download tasks (async).
@@ -681,6 +697,180 @@ pub async fn video_cleanup(State(state): State<AppState>) -> Json<CleanupRespons
         deleted,
         freed_mb: (freed_mb * 10.0).round() / 10.0,
     })
+}
+
+// --- Periodic temp video cleanup (#192) ---
+
+/// Scan `dir` once and delete any regular file whose last-modified
+/// timestamp is older than `max_age`. Returns `(deleted_count,
+/// bytes_freed)`.
+///
+/// Errors (failing to open the dir, failing to read an entry, failing
+/// to delete a single file) are logged and skipped — the reaper runs
+/// every few minutes so any transient issue will be retried on the
+/// next tick.
+pub(crate) async fn purge_stale_temp_videos(
+    dir: &std::path::Path,
+    max_age: std::time::Duration,
+) -> (usize, u64) {
+    let mut deleted = 0usize;
+    let mut freed = 0u64;
+
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (0, 0),
+        Err(e) => {
+            tracing::warn!("temp cleanup: cannot open {dir:?}: {e}");
+            return (0, 0);
+        }
+    };
+
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("temp cleanup: read_dir error: {e}");
+                break;
+            }
+        };
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("temp cleanup: stat {:?}: {e}", entry.path());
+                continue;
+            }
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .unwrap_or_default();
+        if age < max_age {
+            continue;
+        }
+        let path = entry.path();
+        let size = meta.len();
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                deleted += 1;
+                freed += size;
+                tracing::debug!(
+                    "temp cleanup: removed {path:?} (age={}s, size={} bytes)",
+                    age.as_secs(),
+                    size
+                );
+            }
+            Err(e) => {
+                tracing::warn!("temp cleanup: remove {path:?}: {e}");
+            }
+        }
+    }
+
+    (deleted, freed)
+}
+
+/// Spawn the long-running periodic reaper. Call once at startup from
+/// `main.rs`; the returned handle is detached (the task ends only when
+/// the process exits).
+///
+/// Every `TMP_VIDEO_CLEANUP_INTERVAL` it scans [`TMP_VIDEO_DIR`] and
+/// deletes any file older than `TMP_VIDEO_MAX_AGE`. The first tick
+/// fires on the interval boundary — not immediately on startup —
+/// which deliberately gives in-flight downloads time to complete
+/// before the reaper runs the first time.
+pub fn spawn_temp_video_cleanup_loop() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let dir = std::path::PathBuf::from(TMP_VIDEO_DIR);
+        let mut ticker = tokio::time::interval(TMP_VIDEO_CLEANUP_INTERVAL);
+        // Skip the immediate tick `interval` fires at t=0 — we want the
+        // first scan to land `TMP_VIDEO_CLEANUP_INTERVAL` after startup
+        // so any download racing the boot doesn't get swept mid-write.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let (deleted, freed) = purge_stale_temp_videos(&dir, TMP_VIDEO_MAX_AGE).await;
+            if deleted > 0 {
+                let freed_mb = freed as f64 / (1024.0 * 1024.0);
+                tracing::info!(
+                    "periodic temp cleanup: deleted {deleted} files older than {}m, freed {freed_mb:.1} MB",
+                    TMP_VIDEO_MAX_AGE.as_secs() / 60
+                );
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod temp_cleanup_tests {
+    use super::purge_stale_temp_videos;
+    use std::time::Duration;
+
+    /// Create a file in `dir` whose mtime is `age_secs` in the past and
+    /// whose body is `size` bytes of zeros. Returns the full path.
+    async fn write_aged_file(dir: &std::path::Path, name: &str, size: usize, age_secs: u64) {
+        let path = dir.join(name);
+        tokio::fs::write(&path, vec![0u8; size]).await.unwrap();
+        // Back-date the mtime so the reaper thinks the file is stale.
+        let past = std::time::SystemTime::now() - Duration::from_secs(age_secs);
+        let ft = filetime::FileTime::from_system_time(past);
+        filetime::set_file_mtime(&path, ft).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletes_only_files_older_than_max_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 2 stale files, 1 fresh file.
+        write_aged_file(tmp.path(), "old1.mp4", 1024, 3600).await;
+        write_aged_file(tmp.path(), "old2.mp4", 2048, 3600).await;
+        write_aged_file(tmp.path(), "fresh.mp4", 512, 10).await;
+
+        let (deleted, freed) =
+            purge_stale_temp_videos(tmp.path(), Duration::from_secs(30 * 60)).await;
+
+        assert_eq!(deleted, 2, "should delete the two old files");
+        assert_eq!(freed, 1024 + 2048, "should free the exact byte count");
+        assert!(
+            tmp.path().join("fresh.mp4").exists(),
+            "fresh file must survive"
+        );
+        assert!(!tmp.path().join("old1.mp4").exists());
+        assert!(!tmp.path().join("old2.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn missing_dir_is_a_no_op() {
+        let missing = std::path::PathBuf::from("/tmp/cr-videos-periodic-cleanup-does-not-exist");
+        let (deleted, freed) =
+            purge_stale_temp_videos(&missing, Duration::from_secs(30 * 60)).await;
+        assert_eq!(deleted, 0);
+        assert_eq!(freed, 0);
+    }
+
+    #[tokio::test]
+    async fn empty_dir_deletes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (deleted, freed) =
+            purge_stale_temp_videos(tmp.path(), Duration::from_secs(30 * 60)).await;
+        assert_eq!(deleted, 0);
+        assert_eq!(freed, 0);
+    }
+
+    #[tokio::test]
+    async fn skips_subdirectories() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(tmp.path().join("subdir"))
+            .await
+            .unwrap();
+        write_aged_file(tmp.path(), "old.mp4", 100, 3600).await;
+
+        let (deleted, _) = purge_stale_temp_videos(tmp.path(), Duration::from_secs(30 * 60)).await;
+        assert_eq!(deleted, 1, "only the file should be deleted, not the dir");
+        assert!(tmp.path().join("subdir").exists());
+    }
 }
 
 // --- Thumbnail proxy ---
