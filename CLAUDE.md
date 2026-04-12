@@ -56,11 +56,11 @@ Before marking any UI change as done, EVERY visible element on the page must be 
 - Docker image must be minimal — only production binary + static assets + data
 - No Python, no test frameworks, no browsers on the server
 
-**CI/CD feedback is push-based via FIFO pipes — no CronCreate polling needed.**
-Deploy and code review events arrive automatically via event files + FIFO wake. Claude Code wakes instantly from idle when events arrive. See `ci-workflow-monitor` skill for event handling details.
+**Code review feedback is push-based via FIFO pipes — no CronCreate polling needed.**
+Code review events arrive automatically via event files + FIFO wake. Claude Code wakes instantly from idle when events arrive.
 
 **NEVER close a GitHub issue before production verification.** Closing an issue means the work is DONE and verified on production. The sequence is:
-1. PR merged → deploy runs → Playwright verifies → THEN close issue
+1. PR merged → local deploy → Playwright verifies → THEN close issue
 2. If Playwright shows the changes are NOT visible or broken → fix, push, new PR → repeat
 
 **NEVER use `gh issue close` before Playwright confirms the changes work on production.**
@@ -81,8 +81,8 @@ gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" --jq '.check_runs[] | sel
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
 - Merge blocked: "Merge blokován — čekám na dokončení checks." (NOT "merguju")
-- After merge: "PR mergnut, sleduji deploy." (NOT "Issue hotová")
-- After deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
+- After merge: "PR mergnut, deployuji lokálně." (NOT "Issue hotová")
+- After local deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
 
 ## Startup — Chrome Browser (MANDATORY)
 
@@ -288,30 +288,27 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 ## Development Workflow
 
-### Issue-Driven Development with Autonomous CI/CD Feedback
+### Issue-Driven Development with Local Deploy
 
-All work is **issue-driven** and the CI/CD pipeline runs **fully autonomously** — never ask the user, just act.
+All work is **issue-driven**. CI checks run on GitHub, **deploy runs locally** from the developer's machine.
 
-**CI/CD feedback is push-based via FIFO pipes** — no CronCreate polling needed. Events arrive automatically.
+**Code review feedback is push-based via FIFO pipes** — no CronCreate polling needed.
 
-#### Full Lifecycle (FIFO push-based, automatic)
+#### Full Lifecycle
 
 1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
 2. **Implement** — Create feature branch, write code, test locally
-3. **PR** — Push branch, create PR
+3. **PR** — Push branch, create PR → CI checks ("Check & Clippy", fmt, test) + Copilot code review run on GitHub
 4. **Continue working** — Start next issue while CI/review runs (pipeline processing)
 5. *(FIFO push)* Code review completes → `wake-claude.sh` wakes session by branch → read comments, fix, push
-6. *(FIFO push)* CI passes + review done → merge PR
-7. *(FIFO push)* Deploy completes → `wake-claude.sh` wakes ALL sessions → verify production
-8. *(FIFO push)* Read issue description → verify issue-specific changes on production via Playwright/curl
+6. CI passes + review done → merge PR
+7. **Local deploy** — Pull main, cross-compile locally, upload binary to VPS (~20s)
+8. **Playwright verify** — Test issue-specific changes on production
 9. Notify result → close issue
 
 #### FIFO-Based Push Wake Notifications
 
-Events arrive automatically via two mechanisms. No polling, no inotifywait, no flock.
-
-**Deploy notification:**
-GitHub Actions writes a run-unique event file `~/.config/claude-channels/deploy-events/Olbrasoft-cr-deploy-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` and calls `wake-claude.sh Olbrasoft/cr`. The Notifier looks up the PR owner via the PR number derived from the commit SHA and delivers the event to the exact Claude Code session that created the PR. See [Olbrasoft/GitHub.Actions.Notify#22](https://github.com/Olbrasoft/GitHub.Actions.Notify/pull/22) for the session-bound design.
+Code review events arrive automatically. No polling, no inotifywait, no flock.
 
 **Code review notification:**
 `gh webhook forward` service receives `pull_request_review` events via WebSocket → `webhook-receiver.py` writes event file + calls `wake-claude.sh Olbrasoft/cr {branch}` → wakes ONLY the session on that PR's branch.
@@ -320,23 +317,14 @@ GitHub Actions writes a run-unique event file `~/.config/claude-channels/deploy-
 
 | Event | Status | Action |
 |---|---|---|
-| `deploy-complete` | `success` | Verify: `curl https://ceskarepublika.wiki/health`. Run Playwright verification. Notify user. |
-| `deploy-complete` | `failure` | Check `failedStep` field: `validate`/`sync`/`build-restart`/`health-check`. Read logs: `gh run view <ID> --log-failed`. Fix and push. |
-| `deploy-complete` | `cancelled` | Notify user: "Deploy zrušen." Include run URL. Investigate and re-run if needed. |
-| `verify-complete` | `success` | Production verified by CI. Run issue-specific Playwright test. Close issue if OK. |
-| `verify-complete` | `failure` | Notify user. Investigate and fix. |
-| `verify-complete` | `cancelled` | Notify user: "Verifikace zrušena." Investigate and re-run if needed. |
 | `code-review-complete` | `commented` | Read comments: `gh api repos/Olbrasoft/cr/pulls/{PR}/comments`. Fix ALL. Push. |
-
-See `ci-workflow-monitor` skill for full event handling details.
 
 #### Parent Issues with Sub-Issues (Pipeline Processing)
 
 Follow [Continuous PR Processing Workflow](~/GitHub/Olbrasoft/engineering-handbook/development-guidelines/workflow/continuous-pr-processing-workflow.md):
 - **Independent sub-issues**: start next issue immediately after creating PR (don't wait for review)
 - **Dependent sub-issues**: wait for previous PR to be merged before starting next
-- Push notifications handle each PR independently — no polling overhead
-- After ALL sub-issues done: verify all changes on production
+- After ALL sub-issues done: deploy and verify all changes on production
 
 ### Branch Naming
 
@@ -358,29 +346,24 @@ cargo run -p cr-web    # Listens on port 3000
 
 ### Deploy to Production
 
-**Automatic:** Merge PR to main → GitHub Actions CI (cloud) → Deploy on self-hosted runner → TTS notification → Playwright verify.
+**Local deploy only.** GitHub Actions runs CI checks (check, clippy, fmt, test) — deploy is done from the local machine.
 
-Pipeline:
-1. Check & Clippy (cloud)
-2. Format check (cloud)
-3. Tests (cloud)
-4. Deploy: rsync + docker build + health check (self-hosted runner)
-5. **Notify**: TTS notification via VirtualAssistant (self-hosted runner)
-6. **FIFO wake**: Write `Olbrasoft-cr-deploy-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` + call `wake-claude.sh` → FIFO wakes the PR-owner Claude Code session
-7. **Verify**: Playwright health + homepage check (self-hosted runner)
-8. **FIFO wake**: Write `Olbrasoft-cr-verify-{COMMIT_SHA}-{RUN_ID}-{RUN_ATTEMPT}.json` + call `wake-claude.sh` → FIFO wakes the PR-owner Claude Code session
-
-**Quick deploy (during active development, ~20s):**
-
-Cross-compile locally with musl static linking, upload binary, restart container.
-
+After merge to main:
 ```bash
-# 1. Cross-compile (first build ~47s, subsequent ~10s)
+# 1. Pull latest main
+git checkout main && git pull
+
+# 2. Cross-compile (~10s incremental, ~47s first build)
 SQLX_OFFLINE=true cargo zigbuild --release --target aarch64-unknown-linux-musl -p cr-web
 
-# 2. Upload binary + replace in container + restart (~10s)
+# 3. Upload binary + replace in container + restart (~10s)
 scp -P 2222 target/aarch64-unknown-linux-musl/release/cr-web root@46.225.101.253:/tmp/cr-web-new
 ssh -p 2222 root@46.225.101.253 "docker cp /tmp/cr-web-new cr-web-1:/app/cr-web && docker compose -f /opt/cr/docker-compose.yml restart web"
+
+# 4. Health check
+curl -s -o /dev/null -w "%{http_code}" https://ceskarepublika.wiki/health
+
+# 5. Playwright verify (from local PC)
 ```
 
 **For template/static file changes** (no Rust recompilation needed):
