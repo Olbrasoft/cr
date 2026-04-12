@@ -298,7 +298,7 @@ All work is **issue-driven**. CI checks run on GitHub, **deploy runs locally** f
 
 1. **Plan** — Create GitHub issues (use `github-issues` skill for parent + sub-issues)
 2. **Implement** — Create feature branch, write code, test locally
-3. **PR** — Push branch, create PR → CI checks (check, fmt, test) + Copilot code review run on GitHub
+3. **PR** — Push branch, create PR → CI checks ("Check & Clippy", fmt, test) + Copilot code review run on GitHub
 4. **Continue working** — Start next issue while CI/review runs (pipeline processing)
 5. *(FIFO push)* Code review completes → `wake-claude.sh` wakes session by branch → read comments, fix, push
 6. CI passes + review done → merge PR
