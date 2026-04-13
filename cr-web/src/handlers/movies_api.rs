@@ -588,6 +588,100 @@ pub async fn stream_resolve(
     }
 }
 
+/// Proxy-stream: resolve + proxy video bytes to the client.
+/// For providers where the CDN URL is IP-bound to the server.
+pub async fn movies_proxy_stream(
+    State(state): State<AppState>,
+    Query(params): Query<StreamResolveQuery>,
+    req: axum::http::Request<axum::body::Body>,
+) -> impl IntoResponse {
+    let provider = params.provider.trim().to_lowercase();
+    let code = params.code.trim().to_string();
+
+    // Resolve stream URL (uses cache if available)
+    let Json(resolve_result) = stream_resolve(Query(StreamResolveQuery {
+        provider: provider.clone(),
+        code: code.clone(),
+    }))
+    .await;
+
+    let stream_url = match resolve_result.stream_url {
+        Some(url) => url,
+        None => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                resolve_result.error.unwrap_or("Resolve failed".to_string()),
+            )
+                .into_response();
+        }
+    };
+
+    // Proxy the video bytes to client
+    let mut proxy_req = state
+        .http_client
+        .get(&stream_url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145",
+        )
+        .timeout(Duration::from_secs(300));
+
+    // Forward Range header for seeking
+    if let Some(range) = req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        proxy_req = proxy_req.header("Range", range);
+    }
+
+    match proxy_req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("video/mp4")
+                .to_string();
+            let content_length = resp
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let content_range = resp
+                .headers()
+                .get("content-range")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                "*".parse().unwrap(),
+            );
+            headers.insert(
+                header::HeaderName::from_static("accept-ranges"),
+                "bytes".parse().unwrap(),
+            );
+            if let Some(cl) = content_length {
+                headers.insert(header::CONTENT_LENGTH, cl.parse().unwrap());
+            }
+            if let Some(cr) = content_range {
+                headers.insert(
+                    header::HeaderName::from_static("content-range"),
+                    cr.parse().unwrap(),
+                );
+            }
+
+            let body = axum::body::Body::from_stream(resp.bytes_stream());
+            (status, headers, body).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("Proxy error: {e}")).into_response(),
+    }
+}
+
 /// Backwards-compatible wrapper — calls stream_resolve with provider=filemoon.
 pub async fn filemoon_resolve(
     Query(params): Query<StreamResolveQuery>,

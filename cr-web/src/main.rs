@@ -203,6 +203,10 @@ async fn main() -> Result<()> {
             "/movies/stream-resolve",
             axum::routing::get(handlers::movies_api::stream_resolve),
         )
+        .route(
+            "/movies/proxy-stream",
+            axum::routing::get(handlers::movies_api::movies_proxy_stream),
+        )
         .route("/films/search", axum::routing::get(handlers::films_search))
         .route(
             "/films/sktorrent-resolve",
