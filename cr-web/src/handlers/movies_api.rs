@@ -547,13 +547,6 @@ pub async fn stream_resolve(
         }
     }
 
-    // Resolve stream URL — pure HTTP + regex (no Playwright needed for streamtape/mixdrop)
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
-
     // Use Playwright (Python script) for all providers — it handles browser
     // session, cookies, and JS execution needed for CDN token generation.
     // Pure-HTTP resolvers (resolve_streamtape, resolve_mixdrop) extract tokens
@@ -715,6 +708,7 @@ pub async fn filemoon_resolve(
 // ── Pure-HTTP stream resolvers (no Playwright) ───────────────────
 
 /// Resolve streamtape embed → direct MP4 URL via regex on inline JS.
+#[allow(dead_code)]
 async fn resolve_streamtape(
     client: &reqwest::Client,
     code: &str,
@@ -799,6 +793,7 @@ async fn resolve_streamtape(
 }
 
 /// Resolve mixdrop embed → direct MP4 URL by unpacking p,a,c,k,e,d JS.
+#[allow(dead_code)]
 async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String, String), String> {
     let url = format!("https://mixdrop.ag/e/{code}");
     let html = client
@@ -852,6 +847,7 @@ async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String
 }
 
 /// Simple p,a,c,k,e,d JS unpacker.
+#[allow(dead_code)]
 fn unpack_js(packed: &str, base: u32, count: usize, keywords: &[&str]) -> String {
     let word_re = regex::Regex::new(r"\b\w+\b").unwrap();
     word_re
@@ -872,6 +868,7 @@ fn unpack_js(packed: &str, base: u32, count: usize, keywords: &[&str]) -> String
 }
 
 /// Decode a base-N string (supports up to base 62: 0-9, a-z, A-Z).
+#[allow(dead_code)]
 fn decode_base_n(s: &str, base: u32) -> Option<u32> {
     let mut result: u32 = 0;
     for ch in s.chars() {
@@ -942,6 +939,7 @@ async fn resolve_via_playwright(provider: &str, code: &str) -> Result<Playwright
 }
 
 /// Resolve via CZ proxy (chobotnice.aspfree.cz) — for providers that need CZ IP or browser.
+#[allow(dead_code)]
 async fn resolve_via_cz_proxy(
     _client: &reqwest::Client,
     provider: &str,
