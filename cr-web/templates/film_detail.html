@@ -78,10 +78,14 @@
             </div>
         </div>
 
-        {# Pass sktorrent video_id to JS for resolve #}
+        {# Pass sktorrent data to JS — use static CDN URLs (sktorrent page is geo-blocked from non-CZ IPs) #}
         {% match film.sktorrent_video_id %}
         {% when Some with (vid) %}
-        <script>var sktorrentVideoId = {{ vid }};</script>
+        <script>
+        var sktorrentVideoId = {{ vid }};
+        var sktorrentCdn = {% match film.sktorrent_cdn %}{% when Some with (cdn) %}{{ cdn }}{% when None %}0{% endmatch %};
+        var sktorrentQualities = "{% match film.sktorrent_qualities %}{% when Some with (q) %}{{ q }}{% when None %}480p{% endmatch %}".split(",").filter(function(q) { return q.match(/^\d+p$/); });
+        </script>
         {% when None %}
         {% endmatch %}
     </div>
@@ -270,20 +274,12 @@ function resolveAndPlay(provider, code, btn) {
                 playUrl(data.stream_url, data.format);
                 status.textContent = provider + ' — ' + (data.format || 'mp4').toUpperCase();
             } else {
-                // Zdroj smazán — skrýt tab
-                btn.style.display = 'none';
-                status.textContent = '';
-                // Přepnout zpět na sktorrent pokud existuje
-                var sktBtn = document.querySelector('.source-tab');
-                if (sktBtn && typeof sktorrentVideoId !== 'undefined') {
-                    showSktorrent(sktBtn);
-                }
+                status.textContent = 'Zdroj nedostupný: ' + (data.error || 'neznámá chyba');
             }
         })
         .catch(function(e) {
             btn.classList.remove('loading');
-            btn.style.display = 'none';
-            status.textContent = '';
+            status.textContent = 'Chyba: ' + e.message;
         });
 }
 
@@ -380,46 +376,39 @@ function playPrehrajto(movie, item) {
         });
 }
 
-/* --- Resolve sktorrent sources on page load --- */
+/* --- Initialize sktorrent player from static CDN URLs --- */
 var sktorrentSources = [];
 
 (function() {
-    if (typeof sktorrentVideoId === 'undefined') return;
+    if (typeof sktorrentVideoId === 'undefined' || !sktorrentCdn || !sktorrentQualities.length) return;
     var player = document.getElementById('film-player');
     var qualDiv = document.getElementById('sktorrent-quality');
-    var status = document.getElementById('source-status');
     if (!player || !qualDiv) return;
 
-    status.textContent = 'Načítání zdrojů...';
-
-    fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.error || !data.sources || !data.sources.length) {
-                status.textContent = 'Zdroj nedostupný';
-                return;
-            }
-
-            sktorrentSources = data.sources;
-            // Sort by resolution desc — prefer 720p
-            sktorrentSources.sort(function(a, b) { return b.res - a.res; });
-
-            // Build quality buttons
-            sktorrentSources.forEach(function(s, i) {
-                var btn = document.createElement('button');
-                btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
-                btn.textContent = s.quality;
-                btn.onclick = function() { playSktorrent(i, btn); };
-                qualDiv.appendChild(btn);
-            });
-
-            // Play best quality (first = highest res, ideally 720p+)
-            playSktorrent(0, qualDiv.querySelector('.quality-btn'));
-            status.textContent = '';
-        })
-        .catch(function(e) {
-            status.textContent = 'Chyba: ' + e.message;
+    // Build sources from DB data — CDN URLs work globally (no geo-block)
+    sktorrentQualities.forEach(function(q) {
+        var res = parseInt(q);
+        sktorrentSources.push({
+            url: 'https://online' + sktorrentCdn + '.sktorrent.eu/media/videos//h264/' + sktorrentVideoId + '_' + q + '.mp4',
+            quality: q,
+            res: res
         });
+    });
+
+    // Sort by resolution desc — prefer highest
+    sktorrentSources.sort(function(a, b) { return b.res - a.res; });
+
+    // Build quality buttons
+    sktorrentSources.forEach(function(s, i) {
+        var btn = document.createElement('button');
+        btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
+        btn.textContent = s.quality;
+        btn.onclick = function() { playSktorrent(i, btn); };
+        qualDiv.appendChild(btn);
+    });
+
+    // Play best quality immediately
+    playSktorrent(0, qualDiv.querySelector('.quality-btn'));
 })();
 
 function playSktorrent(index, btn) {
