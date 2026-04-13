@@ -554,25 +554,29 @@ pub async fn stream_resolve(
         .build()
         .unwrap_or_default();
 
-    let result = match provider.as_str() {
-        "streamtape" => resolve_streamtape(&client, &code).await,
-        "mixdrop" => resolve_mixdrop(&client, &code).await,
-        "filemoon" => resolve_via_cz_proxy(&client, &provider, &code).await,
-        "vidlink" => resolve_via_cz_proxy(&client, &provider, &code).await,
-        _ => Err("Unsupported provider".to_string()),
-    };
+    // Use Playwright (Python script) for all providers — it handles browser
+    // session, cookies, and JS execution needed for CDN token generation.
+    // Pure-HTTP resolvers (resolve_streamtape, resolve_mixdrop) extract tokens
+    // that are session-bound and don't work for streaming.
+    let result = resolve_via_playwright(&provider, &code).await;
 
     match result {
-        Ok((url, fmt)) => {
+        Ok(pr) => {
             {
                 let mut cache = FILEMOON_CACHE.lock().await;
-                cache.insert(cache_key, (url.clone(), Instant::now()));
+                // Store URL + cookies in cache (cookies separated by \n)
+                let cache_val = if let Some(ref cookies) = pr.cookies {
+                    format!("{}\n{cookies}", pr.url)
+                } else {
+                    pr.url.clone()
+                };
+                cache.insert(cache_key, (cache_val, Instant::now()));
             }
             Json(StreamResolveResponse {
                 provider,
                 code,
-                stream_url: Some(url),
-                format: Some(fmt),
+                stream_url: Some(pr.url),
+                format: Some(pr.format),
                 error: None,
                 cached: false,
             })
@@ -598,25 +602,43 @@ pub async fn movies_proxy_stream(
     let provider = params.provider.trim().to_lowercase();
     let code = params.code.trim().to_string();
 
-    // Resolve stream URL (uses cache if available)
-    let Json(resolve_result) = stream_resolve(Query(StreamResolveQuery {
-        provider: provider.clone(),
-        code: code.clone(),
-    }))
-    .await;
+    // Resolve stream URL + cookies via Playwright
+    let cache_key = format!("{provider}:{code}");
+    let cache_ttl = Duration::from_secs(2 * 3600);
 
-    let stream_url = match resolve_result.stream_url {
-        Some(url) => url,
-        None => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                resolve_result.error.unwrap_or("Resolve failed".to_string()),
-            )
-                .into_response();
+    // Check cache first (stores "url\ncookies" or just "url")
+    let (stream_url, cookies) = {
+        let cache = FILEMOON_CACHE.lock().await;
+        if let Some((cached_val, resolved_at)) = cache.get(&cache_key)
+            && resolved_at.elapsed() < cache_ttl
+        {
+            let parts: Vec<&str> = cached_val.splitn(2, '\n').collect();
+            let url = parts[0].to_string();
+            let cookies = parts.get(1).map(|s| s.to_string());
+            (url, cookies)
+        } else {
+            drop(cache); // Release lock before calling resolve
+            // Resolve fresh
+            let result = resolve_via_playwright(&provider, &code).await;
+            match result {
+                Ok(pr) => {
+                    let mut cache = FILEMOON_CACHE.lock().await;
+                    let cache_val = if let Some(ref c) = pr.cookies {
+                        format!("{}\n{c}", pr.url)
+                    } else {
+                        pr.url.clone()
+                    };
+                    cache.insert(cache_key, (cache_val, Instant::now()));
+                    (pr.url, pr.cookies)
+                }
+                Err(e) => {
+                    return (StatusCode::BAD_GATEWAY, e).into_response();
+                }
+            }
         }
     };
 
-    // Proxy the video bytes to client
+    // Proxy the video bytes to client (with cookies from Playwright session)
     let mut proxy_req = state
         .http_client
         .get(&stream_url)
@@ -625,6 +647,10 @@ pub async fn movies_proxy_stream(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145",
         )
         .timeout(Duration::from_secs(300));
+
+    if let Some(ref cookie_str) = cookies {
+        proxy_req = proxy_req.header("Cookie", cookie_str.as_str());
+    }
 
     // Forward Range header for seeking
     if let Some(range) = req
@@ -861,6 +887,61 @@ fn decode_base_n(s: &str, base: u32) -> Option<u32> {
         result = result.checked_mul(base)?.checked_add(digit)?;
     }
     Some(result)
+}
+
+/// Result from Playwright resolve — URL + optional cookies for CDN access.
+struct PlaywrightResult {
+    url: String,
+    format: String,
+    cookies: Option<String>,
+}
+
+/// Resolve via Playwright (Python extract-stream.py script).
+async fn resolve_via_playwright(
+    provider: &str,
+    code: &str,
+) -> Result<PlaywrightResult, String> {
+    let script_path = std::env::current_dir()
+        .map(|p| p.join("scripts/extract-stream.py"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("scripts/extract-stream.py"));
+
+    if !script_path.exists() {
+        return Err(format!(
+            "extract-stream.py not found at {}",
+            script_path.display()
+        ));
+    }
+
+    let output = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg(provider)
+        .arg(code)
+        .output()
+        .await
+        .map_err(|e| format!("Script execution failed: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let val: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|e| format!("Invalid script output: {e}"))?;
+
+    if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
+        let fmt = val
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("mp4");
+        let cookies = val.get("cookies").and_then(|v| v.as_str()).map(String::from);
+        Ok(PlaywrightResult {
+            url: url.to_string(),
+            format: fmt.to_string(),
+            cookies,
+        })
+    } else {
+        Err(val
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error")
+            .to_string())
+    }
 }
 
 /// Resolve via CZ proxy (chobotnice.aspfree.cz) — for providers that need CZ IP or browser.
