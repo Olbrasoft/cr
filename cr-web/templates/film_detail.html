@@ -220,6 +220,9 @@
 .prehrajto-item .pt-title { font-weight: 500; font-size: 0.9rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prehrajto-item .pt-meta { font-size: 0.8rem; color: #888; }
 .prehrajto-item.loading { opacity: 0.5; cursor: wait; }
+.pt-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.7rem; font-weight: 600; margin-left: 0.3rem; }
+.pt-badge.direct { background: #27ae60; color: white; }
+.pt-badge.proxy { background: #f39c12; color: white; }
 </style>
 
 <script>
@@ -293,11 +296,12 @@ function showSktorrent(btn) {
     }
 }
 
-/* --- Přehraj.to search on page load --- */
+/* --- Přehraj.to: search, validate (direct vs proxy), auto-play if no SK Torrent --- */
 (function() {
     var filmTitle = "{{ film.title }}";
     var section = document.getElementById('prehrajto-section');
     var container = document.getElementById('prehrajto-results');
+    var hasSktorrent = typeof sktorrentVideoId !== 'undefined' && sktorrentCdn;
     if (!section || !container || !filmTitle) return;
 
     fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
@@ -306,25 +310,72 @@ function showSktorrent(btn) {
             if (!data.success || !data.movies || !data.movies.length) return;
 
             section.style.display = '';
-            data.movies.forEach(function(movie) {
-                var item = document.createElement('div');
-                item.className = 'prehrajto-item';
-                item.onclick = function() { playPrehrajto(movie, item); };
+            var movies = data.movies;
+            var directMovies = [];
+            var proxyMovies = [];
+            var checked = 0;
+            var autoPlayed = false;
 
-                var thumb = movie.thumbnail
-                    ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
-                    : '';
-                var year = movie.year ? ' (' + movie.year + ')' : '';
+            // Validate each result (direct vs proxy) in batches of 3
+            function validateBatch(startIdx) {
+                var batch = movies.slice(startIdx, startIdx + 3);
+                if (!batch.length) return;
 
-                item.innerHTML = thumb
-                    + '<div class="pt-info">'
-                    + '<span class="pt-title">' + movie.title + year + '</span>'
-                    + '<span class="pt-meta">Přehraj.to</span>'
-                    + '</div>';
-                container.appendChild(item);
-            });
+                batch.forEach(function(movie) {
+                    fetch('/api/movies/validate?url=' + encodeURIComponent(movie.url))
+                        .then(function(r) { return r.json(); })
+                        .then(function(vdata) {
+                            checked++;
+                            if (vdata.valid) {
+                                var item = createItem(movie, true);
+                                directMovies.push(item);
+                                // Insert before proxy items
+                                var firstProxy = container.querySelector('.proxy-item');
+                                if (firstProxy) container.insertBefore(item, firstProxy);
+                                else container.appendChild(item);
+
+                                // Auto-play first direct result if no SK Torrent
+                                if (!hasSktorrent && !autoPlayed) {
+                                    autoPlayed = true;
+                                    playPrehrajto(movie, item);
+                                }
+                            } else {
+                                // Proxy needed — add at end
+                                var item = createItem(movie, false);
+                                item.classList.add('proxy-item');
+                                proxyMovies.push(item);
+                                container.appendChild(item);
+                            }
+
+                            if (checked >= movies.length || checked >= 15) return;
+                            if (checked === startIdx + batch.length) validateBatch(startIdx + 3);
+                        })
+                        .catch(function() { checked++; });
+                });
+            }
+
+            validateBatch(0);
         })
-        .catch(function() { /* silently ignore */ });
+        .catch(function() {});
+
+    function createItem(movie, isDirect) {
+        var item = document.createElement('div');
+        item.className = 'prehrajto-item';
+        item.onclick = function() { playPrehrajto(movie, item); };
+
+        var thumb = movie.thumbnail
+            ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
+            : '';
+        var year = movie.year ? ' (' + movie.year + ')' : '';
+        var badge = isDirect ? '<span class="pt-badge direct">přímý</span>' : '<span class="pt-badge proxy">proxy</span>';
+
+        item.innerHTML = thumb
+            + '<div class="pt-info">'
+            + '<span class="pt-title">' + movie.title + year + '</span>'
+            + '<span class="pt-meta">Přehraj.to ' + badge + '</span>'
+            + '</div>';
+        return item;
+    }
 })();
 
 function playPrehrajto(movie, item) {
