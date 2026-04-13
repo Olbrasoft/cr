@@ -265,18 +265,13 @@ function resolveAndPlay(provider, code, btn) {
     player.removeAttribute('src');
     player.load();
 
-    // Use proxy-stream endpoint — streams video bytes through our server
-    // (CDN URLs are IP-bound to the resolving server, can't be played directly from client)
-    var proxyUrl = '/api/movies/proxy-stream?provider=' + provider + '&code=' + encodeURIComponent(code);
-
-    // First check if resolve works
     fetch('/api/movies/stream-resolve?provider=' + provider + '&code=' + encodeURIComponent(code))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             btn.classList.remove('loading');
             if (data.stream_url) {
-                resolveCache[cacheKey] = { url: proxyUrl, format: data.format };
-                playUrl(proxyUrl, data.format === 'hls' ? 'hls' : 'mp4');
+                resolveCache[cacheKey] = { url: data.stream_url, format: data.format };
+                playUrl(data.stream_url, data.format === 'hls' ? 'hls' : 'mp4');
                 status.textContent = provider + ' — ' + (data.format || 'mp4').toUpperCase();
             } else {
                 status.textContent = 'Zdroj nedostupný: ' + (data.error || 'neznámá chyba');

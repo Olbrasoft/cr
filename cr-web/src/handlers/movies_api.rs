@@ -717,14 +717,32 @@ async fn resolve_streamtape(
         regex::Regex::new(r#"<div[^>]*id="robotlink"[^>]*>([^<]*get_video[^<]*)</div>"#).unwrap();
     if let Some(cap) = re_div.captures(&html) {
         let raw = cap[1].trim();
-        let mp4_url = if raw.starts_with("//") {
+        let get_video_url = if raw.starts_with("//") {
             format!("https:{raw}")
         } else if raw.starts_with('/') {
             format!("https:/{raw}")
         } else {
             format!("https://{raw}")
         };
-        return Ok((mp4_url, "mp4".to_string()));
+
+        // get_video does a 302 redirect to tapecontent.net CDN — follow it to get final URL
+        let no_redirect = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
+        if let Ok(resp) = no_redirect
+            .get(&get_video_url)
+            .header("User-Agent", "Mozilla/5.0")
+            .send()
+            .await
+            && resp.status().is_redirection()
+            && let Some(location) = resp.headers().get("location").and_then(|v| v.to_str().ok())
+        {
+            return Ok((location.to_string(), "mp4".to_string()));
+        }
+
+        // If redirect fails, return get_video URL anyway
+        return Ok((get_video_url, "mp4".to_string()));
     }
 
     // JS pattern: getElementById('robotlink').innerHTML = 'PREFIX' + ... ('INNER').substring(N).substring(M)
