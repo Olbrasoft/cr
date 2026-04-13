@@ -38,13 +38,12 @@ struct FilmGenreNameRow {
 }
 
 #[derive(sqlx::FromRow)]
+#[allow(dead_code)]
 struct FilmSourceRow {
     provider: String,
     code: String,
     language: Option<String>,
-    #[allow(dead_code)]
     audio_type: Option<String>,
-    #[allow(dead_code)]
     stream_format: Option<String>,
 }
 
