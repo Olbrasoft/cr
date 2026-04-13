@@ -43,24 +43,16 @@
     {# Video player section #}
     {% if film.sktorrent_video_id.is_some() || !sources.is_empty() %}
     <div class="player-section">
-        {# Source tabs — SK Torrent + bombuj.si providers via Playwright resolve #}
+        {# SK Torrent — direct CDN MP4 (no server load, scalable).
+           Bombuj providers (Filemoon/Streamtape/Mixdrop) removed — CDN URLs
+           are session-bound, proxy-streaming doesn't scale (#407).
+           Přehraj.to section below provides additional sources. #}
         <div class="source-tabs">
             {% match film.sktorrent_video_id %}
             {% when Some with (vid) %}
-            <button class="source-tab active" onclick="showSktorrent(this)">SK Torrent</button>
+            <button class="source-tab active">SK Torrent</button>
             {% when None %}
             {% endmatch %}
-            {% for s in sources %}
-            {% match s.provider.as_str() %}
-            {% when "filemoon" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Filemoon{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when "streamtape" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Streamtape{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when "mixdrop" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Mixdrop{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when _ %}
-            {% endmatch %}
-            {% endfor %}
         </div>
 
         {# Video player — auto-select best available quality #}
