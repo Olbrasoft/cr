@@ -506,19 +506,19 @@ pub async fn sktorrent_resolve(
         if let Some((sources, resolved_at)) = cache.get(&video_id)
             && resolved_at.elapsed() < cache_ttl
         {
-                return axum::Json(SktorrentResolveResponse {
-                    video_id,
-                    sources: sources
-                        .iter()
-                        .map(|s| SktorrentSource {
-                            url: s.url.clone(),
-                            quality: s.quality.clone(),
-                            res: s.res,
-                        })
-                        .collect(),
-                    error: None,
-                    cached: true,
-                });
+            return axum::Json(SktorrentResolveResponse {
+                video_id,
+                sources: sources
+                    .iter()
+                    .map(|s| SktorrentSource {
+                        url: s.url.clone(),
+                        quality: s.quality.clone(),
+                        res: s.res,
+                    })
+                    .collect(),
+                error: None,
+                cached: true,
+            });
         }
     }
 

@@ -657,10 +657,7 @@ pub async fn movies_proxy_stream(
 
             let mut headers = axum::http::HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                "*".parse().unwrap(),
-            );
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
             headers.insert(
                 header::HeaderName::from_static("accept-ranges"),
                 "bytes".parse().unwrap(),
@@ -699,7 +696,10 @@ async fn resolve_streamtape(
     let url = format!("https://streamtape.com/e/{code}");
     let html = client
         .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145",
+        )
         .send()
         .await
         .map_err(|e| format!("Fetch failed: {e}"))?
@@ -773,14 +773,14 @@ async fn resolve_streamtape(
 }
 
 /// Resolve mixdrop embed → direct MP4 URL by unpacking p,a,c,k,e,d JS.
-async fn resolve_mixdrop(
-    client: &reqwest::Client,
-    code: &str,
-) -> Result<(String, String), String> {
+async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String, String), String> {
     let url = format!("https://mixdrop.ag/e/{code}");
     let html = client
         .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145",
+        )
         .send()
         .await
         .map_err(|e| format!("Fetch failed: {e}"))?
@@ -869,8 +869,8 @@ async fn resolve_via_cz_proxy(
     provider: &str,
     code: &str,
 ) -> Result<(String, String), String> {
-    let (_proxy_url, _proxy_key) = cz_proxy_config()
-        .ok_or("CZ proxy not configured (CZ_PROXY_URL/CZ_PROXY_KEY)")?;
+    let (_proxy_url, _proxy_key) =
+        cz_proxy_config().ok_or("CZ proxy not configured (CZ_PROXY_URL/CZ_PROXY_KEY)")?;
 
     // Try the Python script as fallback (if available locally)
     let script_path = std::env::current_dir()
@@ -888,10 +888,7 @@ async fn resolve_via_cz_proxy(
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
             if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
-                let fmt = val
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("mp4");
+                let fmt = val.get("format").and_then(|v| v.as_str()).unwrap_or("mp4");
                 return Ok((url.to_string(), fmt.to_string()));
             }
             if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
