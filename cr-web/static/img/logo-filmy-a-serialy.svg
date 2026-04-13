@@ -23,6 +23,9 @@
     </mask>
   </defs>
 
+  <!-- White background so perforations stay white on dark tab bars -->
+  <rect width="298" height="300" rx="32" fill="#FFF"/>
+
   <!-- Red film strip with transparent holes -->
   <rect width="298" height="300" fill="#D50000" mask="url(#film-mask)"/>
 

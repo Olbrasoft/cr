@@ -43,8 +43,10 @@
     {# Video player section #}
     {% if film.sktorrent_video_id.is_some() || !sources.is_empty() %}
     <div class="player-section">
-        {# Source tab — SK Torrent is the only direct-play source for now.
-           Filemoon/Streamtape/Mixdrop require Playwright (issue #407). #}
+        {# SK Torrent — direct CDN MP4 (no server load, scalable).
+           Bombuj providers (Filemoon/Streamtape/Mixdrop) removed — CDN URLs
+           are session-bound, proxy-streaming doesn't scale (#407).
+           Přehraj.to section below provides additional sources. #}
         <div class="source-tabs">
             {% match film.sktorrent_video_id %}
             {% when Some with (vid) %}
@@ -140,7 +142,7 @@
 
     {# Přehraj.to additional sources — loaded asynchronously #}
     <div class="prehrajto-section" id="prehrajto-section" style="display:none;">
-        <h3>Další zdroje (Přehraj.to)</h3>
+        <h3>Další zdroje</h3>
         <div id="prehrajto-results" class="prehrajto-results"></div>
     </div>
 </main>
@@ -218,6 +220,9 @@
 .prehrajto-item .pt-title { font-weight: 500; font-size: 0.9rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prehrajto-item .pt-meta { font-size: 0.8rem; color: #888; }
 .prehrajto-item.loading { opacity: 0.5; cursor: wait; }
+.pt-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.7rem; font-weight: 600; margin-left: 0.3rem; }
+.pt-badge.direct { background: #27ae60; color: white; }
+.pt-badge.proxy { background: #f39c12; color: white; }
 </style>
 
 <script>
@@ -255,25 +260,12 @@ function resolveAndPlay(provider, code, btn) {
     player.removeAttribute('src');
     player.load();
 
-    fetch('/api/movies/stream-resolve?provider=' + provider + '&code=' + encodeURIComponent(code))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            btn.classList.remove('loading');
-            if (data.stream_url) {
-                var url = data.stream_url;
-                // For streamtape/mixdrop: CDN URL has CORS * — play directly from client
-                // The browser (CZ IP) can follow get_video → tapecontent.net redirect
-                resolveCache[cacheKey] = { url: url, format: data.format };
-                playUrl(url, data.format === 'hls' ? 'hls' : 'mp4');
-                status.textContent = provider + ' — ' + (data.format || 'mp4').toUpperCase();
-            } else {
-                status.textContent = 'Zdroj nedostupný: ' + (data.error || 'neznámá chyba');
-            }
-        })
-        .catch(function(e) {
-            btn.classList.remove('loading');
-            status.textContent = 'Chyba: ' + e.message;
-        });
+    // Use proxy-stream — server resolves AND streams bytes (CDN URLs are IP-bound to server)
+    var proxyUrl = '/api/movies/proxy-stream?provider=' + provider + '&code=' + encodeURIComponent(code);
+    resolveCache[cacheKey] = { url: proxyUrl, format: 'mp4' };
+    playUrl(proxyUrl, 'mp4');
+    btn.classList.remove('loading');
+    status.textContent = provider;
 }
 
 function playUrl(url, format) {
@@ -304,11 +296,12 @@ function showSktorrent(btn) {
     }
 }
 
-/* --- Přehraj.to search on page load --- */
+/* --- Přehraj.to: search, validate (direct vs proxy), auto-play if no SK Torrent --- */
 (function() {
     var filmTitle = "{{ film.title }}";
     var section = document.getElementById('prehrajto-section');
     var container = document.getElementById('prehrajto-results');
+    var hasSktorrent = typeof sktorrentVideoId !== 'undefined' && sktorrentCdn;
     if (!section || !container || !filmTitle) return;
 
     fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
@@ -317,25 +310,72 @@ function showSktorrent(btn) {
             if (!data.success || !data.movies || !data.movies.length) return;
 
             section.style.display = '';
-            data.movies.forEach(function(movie) {
-                var item = document.createElement('div');
-                item.className = 'prehrajto-item';
-                item.onclick = function() { playPrehrajto(movie, item); };
+            var movies = data.movies;
+            var directMovies = [];
+            var proxyMovies = [];
+            var checked = 0;
+            var autoPlayed = false;
 
-                var thumb = movie.thumbnail
-                    ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
-                    : '';
-                var year = movie.year ? ' (' + movie.year + ')' : '';
+            // Validate each result (direct vs proxy) in batches of 3
+            function validateBatch(startIdx) {
+                var batch = movies.slice(startIdx, startIdx + 3);
+                if (!batch.length) return;
 
-                item.innerHTML = thumb
-                    + '<div class="pt-info">'
-                    + '<span class="pt-title">' + movie.title + year + '</span>'
-                    + '<span class="pt-meta">Přehraj.to</span>'
-                    + '</div>';
-                container.appendChild(item);
-            });
+                batch.forEach(function(movie) {
+                    fetch('/api/movies/validate?url=' + encodeURIComponent(movie.url))
+                        .then(function(r) { return r.json(); })
+                        .then(function(vdata) {
+                            checked++;
+                            if (vdata.valid) {
+                                var item = createItem(movie, true);
+                                directMovies.push(item);
+                                // Insert before proxy items
+                                var firstProxy = container.querySelector('.proxy-item');
+                                if (firstProxy) container.insertBefore(item, firstProxy);
+                                else container.appendChild(item);
+
+                                // Auto-play first direct result if no SK Torrent
+                                if (!hasSktorrent && !autoPlayed) {
+                                    autoPlayed = true;
+                                    playPrehrajto(movie, item);
+                                }
+                            } else {
+                                // Proxy needed — add at end
+                                var item = createItem(movie, false);
+                                item.classList.add('proxy-item');
+                                proxyMovies.push(item);
+                                container.appendChild(item);
+                            }
+
+                            if (checked >= movies.length || checked >= 15) return;
+                            if (checked === startIdx + batch.length) validateBatch(startIdx + 3);
+                        })
+                        .catch(function() { checked++; });
+                });
+            }
+
+            validateBatch(0);
         })
-        .catch(function() { /* silently ignore */ });
+        .catch(function() {});
+
+    function createItem(movie, isDirect) {
+        var item = document.createElement('div');
+        item.className = 'prehrajto-item';
+        item.onclick = function() { playPrehrajto(movie, item); };
+
+        var thumb = movie.thumbnail
+            ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
+            : '';
+        var year = movie.year ? ' (' + movie.year + ')' : '';
+        var badge = isDirect ? '<span class="pt-badge direct">přímý</span>' : '<span class="pt-badge proxy">proxy</span>';
+
+        item.innerHTML = thumb
+            + '<div class="pt-info">'
+            + '<span class="pt-title">' + movie.title + year + '</span>'
+            + '<span class="pt-meta">' + badge + '</span>'
+            + '</div>';
+        return item;
+    }
 })();
 
 function playPrehrajto(movie, item) {
@@ -349,7 +389,11 @@ function playPrehrajto(movie, item) {
     if (sktQ) sktQ.style.display = 'none';
 
     item.classList.add('loading');
-    status.textContent = 'Načítání z Přehraj.to...';
+    status.textContent = 'Načítání...';
+
+    // Scroll to player
+    var playerSection = document.querySelector('.player-section');
+    if (playerSection) playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
         .then(function(r) { return r.json(); })
@@ -358,7 +402,7 @@ function playPrehrajto(movie, item) {
             if (data.success && data.video_url) {
                 var url = data.video_url.replace(/&amp;/g, '&');
                 playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-                status.textContent = 'Přehraj.to — ' + movie.title;
+                status.textContent = movie.title;
             } else {
                 status.textContent = 'Zdroj nedostupný';
             }
