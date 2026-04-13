@@ -618,25 +618,40 @@ async fn resolve_streamtape(
         return Err("Video not found on Streamtape".to_string());
     }
 
-    // Pattern: getElementById('robotlink').innerHTML = 'PREFIX' + ('SUFFIX').substring(N)
+    // Fallback first: robotlink div is pre-rendered with the actual URL
+    let re_div =
+        regex::Regex::new(r#"<div[^>]*id="robotlink"[^>]*>([^<]*get_video[^<]*)</div>"#).unwrap();
+    if let Some(cap) = re_div.captures(&html) {
+        let raw = cap[1].trim();
+        let mp4_url = if raw.starts_with("//") {
+            format!("https:{raw}")
+        } else {
+            format!("https://{raw}")
+        };
+        return Ok((mp4_url, "mp4".to_string()));
+    }
+
+    // JS pattern: getElementById('robotlink').innerHTML = 'PREFIX' + ... ('INNER').substring(N).substring(M)
+    // Streamtape uses multiple fake targets (ideoolink, botlink) — only 'robotlink' is real
     let re = regex::Regex::new(
-        r#"getElementById\('robotlink'\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*\('([^']+)'\)\.substring\((\d+)\)"#,
+        r#"getElementById\('robotlink'\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*[^(]*\('([^']+)'\)((?:\.substring\(\d+\))+)"#,
     )
     .unwrap();
 
     if let Some(cap) = re.captures(&html) {
         let prefix = &cap[1];
-        let inner = &cap[2];
-        let skip: usize = cap[3].parse().unwrap_or(3);
-        let suffix = &inner[skip.min(inner.len())..];
-        let mp4_url = format!("https:{prefix}{suffix}");
-        return Ok((mp4_url, "mp4".to_string()));
-    }
+        let mut inner = cap[2].to_string();
 
-    // Fallback: robotlink already rendered
-    let re2 = regex::Regex::new(r#"id="robotlink"[^>]*>([^<]*get_video[^<]*)<"#).unwrap();
-    if let Some(cap) = re2.captures(&html) {
-        let mp4_url = format!("https:{}", cap[1].trim());
+        // Apply chained .substring(N) calls
+        let sub_re = regex::Regex::new(r"\.substring\((\d+)\)").unwrap();
+        for sub_cap in sub_re.captures_iter(&cap[3]) {
+            let skip: usize = sub_cap[1].parse().unwrap_or(0);
+            if skip <= inner.len() {
+                inner = inner[skip..].to_string();
+            }
+        }
+
+        let mp4_url = format!("https:{prefix}{inner}");
         return Ok((mp4_url, "mp4".to_string()));
     }
 
