@@ -12,12 +12,12 @@
 {% endblock %}
 
 {% block header_left %}
-<div class="logo-group">
-    <a href="/filmy-online/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+<div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
+    <a href="/filmy-online/" style="display:flex;align-items:center;text-decoration:none;">
         <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
             alt="Logo Filmy online" title="Filmy online" class="header-emblem">
-        <h1>{{ film.title }}</h1>
     </a>
+    <h1>{{ film.title }}</h1>
 </div>
 {% endblock %}
 

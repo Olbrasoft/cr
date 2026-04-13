@@ -11,19 +11,17 @@
 {% endblock %}
 
 {% block header_left %}
-<div class="logo-group">
-    <a href="/filmy-online/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
-        <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
-            alt="Logo Filmy online" title="Filmy online" class="header-emblem">
-        <h1>Filmy online</h1>
-    </a>
+<div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
+    <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+        alt="Logo Filmy online" title="Filmy online" class="header-emblem">
+    <h1>Filmy online</h1>
 </div>
 {% endblock %}
 
-{# Search in header — same style as main site search #}
+{# Search in header #}
 {% block header_search %}
 <div class="search-container" id="header-search-box">
-    <input type="text" id="film-search" class="search-input" placeholder="Hledat film..." autocomplete="off">
+    <input type="text" id="film-search" class="search-input" placeholder="Hledat film..." autocomplete="off"{% match search_query %}{% when Some with (q) %} value="{{ q }}"{% when None %}{% endmatch %}>
     <button class="search-btn" id="film-search-btn" onclick="doSearch()">Hledat</button>
     <div id="search-results" class="search-dropdown"></div>
 </div>
@@ -33,16 +31,33 @@
 
 {% block content %}
 <main class="films-page">
-    {# Toolbar: title + view toggle + sort #}
+    {# Breadcrumb #}
+    <nav class="breadcrumb">
+        <a href="/">Česká republika</a>
+        <span>›</span>
+        {% match current_genre %}
+        {% when Some with (g) %}
+        <a href="/filmy-online/">Filmy online</a> <span>›</span> <span>{{ g.name_cs }}</span>
+        {% when None %}
+        <span>Filmy online</span>
+        {% endmatch %}
+    </nav>
+
+    {# Header — different text for search results vs browse #}
     <div class="films-header">
+        {% match search_query %}
+        {% when Some with (q) %}
+        <h2>Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span></h2>
+        {% when None %}
         <h2>
             {% match current_genre %}
             {% when Some with (g) %}
                 {{ g.name_cs }} <span class="count">({{ total_count }})</span>
             {% when None %}
-                Filmy online <span class="count">({{ total_count }})</span>
+                Vyberte si z {{ total_count }} filmů, které si můžete pustit online
             {% endmatch %}
         </h2>
+        {% endmatch %}
         <div class="films-toolbar">
             <select id="sort-select" onchange="applySort(this.value)" title="Řazení">
                 <option value="rok"{% if sort_key == "rok" %} selected{% endif %}>Nejnovější</option>
@@ -105,9 +120,19 @@
 
     {# Quick genre tags #}
     <nav class="genre-nav">
-        <a href="/filmy-online/" class="genre-tag{% if current_genre.is_none() %} active{% endif %}">Vše</a>
+        {% if current_genre.is_none() %}
+        <span class="genre-tag current">Vše</span>
+        {% else %}
+        <a href="/filmy-online/" class="genre-tag">Vše</a>
+        {% endif %}
         {% for g in genres %}
-        <a href="/filmy-online/{{ g.slug }}/" class="genre-tag{% match current_genre %}{% when Some with (cg) %}{% if cg.id == g.id %} active{% endif %}{% when None %}{% endmatch %}">{{ g.name_cs }}</a>
+        {% match current_genre %}{% when Some with (cg) %}{% if cg.id == g.id %}
+        <span class="genre-tag current">{{ g.name_cs }}</span>
+        {% else %}
+        <a href="/filmy-online/{{ g.slug }}/" class="genre-tag">{{ g.name_cs }}</a>
+        {% endif %}{% when None %}
+        <a href="/filmy-online/{{ g.slug }}/" class="genre-tag">{{ g.name_cs }}</a>
+        {% endmatch %}
         {% endfor %}
     </nav>
 
@@ -225,9 +250,14 @@
 
 /* --- Genre tags --- */
 .genre-nav { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.2rem; }
-.genre-tag { display: inline-block; padding: 0.3rem 0.7rem; border-radius: 20px; background: #f0f0f0; color: #333; text-decoration: none; font-size: 0.82rem; transition: background 0.2s; }
-.genre-tag:hover { background: #e0e0e0; }
-.genre-tag.active { background: #D7141A; color: white; }
+.genre-tag { display: inline-block; padding: 0.3rem 0.7rem; border-radius: 20px; background: #f0f0f0; color: #333; text-decoration: none; font-size: 0.82rem; transition: background 0.2s, color 0.2s; cursor: pointer; }
+.genre-tag:hover { background: #11457E; color: white; }
+.genre-tag.current { background: #e8e8e8; color: #555; font-weight: 600; cursor: default; }
+
+/* Breadcrumb */
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 0.8rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
 
 /* --- Grid view --- */
 .films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; }

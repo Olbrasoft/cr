@@ -98,6 +98,7 @@ struct FilmsListTemplate {
     current_genre: Option<GenreRow>,
     sort_key: String,
     query_string: String,
+    search_query: Option<String>,
 }
 
 #[derive(Template)]
@@ -218,6 +219,18 @@ pub async fn films_list(
         format!("&{}", qs_parts.join("&"))
     };
 
+    let search_query = params
+        .q
+        .as_ref()
+        .and_then(|q| {
+            let t = q.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        });
+
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
         films,
@@ -228,6 +241,7 @@ pub async fn films_list(
         current_genre: None,
         sort_key: params.sort_key().to_string(),
         query_string,
+        search_query,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -357,6 +371,7 @@ async fn films_by_genre(
         current_genre: Some(genre),
         sort_key: params.sort_key().to_string(),
         query_string,
+        search_query: None,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
