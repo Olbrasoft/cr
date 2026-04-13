@@ -84,52 +84,46 @@ gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" --jq '.check_runs[] | sel
 - After merge: "PR mergnut, deployuji lokálně." (NOT "Issue hotová")
 - After local deploy + verify OK: "Issue #N hotová — změny ověřeny na produkci: [what was verified]" → THEN close issue
 
-## Startup — Chrome Browser (MANDATORY)
+## Startup — Edge Browser (MANDATORY)
 
-**At the start of every session**, open Google Chrome with project tabs. Follow this sequence:
+**At the start of every session**, ensure Edge is running and open project tabs using Playwright.
 
-### Step 1: Check if Chrome is already connected
+### Step 1: Ensure Edge is running on this workspace
 
-```
-mcp__claude-in-chrome__tabs_context_mcp  (createIfEmpty: false)
-```
-
-- If tabs are returned → Chrome is already running and MCP is connected → go to **Step 3**
-- If no tabs / error → Chrome is not running or MCP can't connect → go to **Step 2**
-
-### Step 2: Launch new Chrome instance (only if Step 1 found nothing)
-
-```
-mcp__claude-in-chrome__tabs_context_mcp  (createIfEmpty: true)
-sleep 2 && ~/.local/bin/playwright-window-right.sh
+```bash
+~/.local/bin/edge-claude-start.sh
 ```
 
-This creates a new MCP-managed Chrome window. Chrome initially opens on the **user's currently active workspace**, which may differ from Claude Code's workspace. The `playwright-window-right.sh` script then:
-1. Detects which workspace THIS Claude Code terminal is on (via process tree)
-2. Finds the Chrome window
-3. **Moves it to Claude Code's workspace** (using `MoveToWorkspace` via gdbus)
-4. Positions it on the **right half** of the screen, below the top panel (32px)
+This ensures Edge is running with CDP port 9222 (user's real profile, logged in) and has a window on this workspace.
 
-**Do NOT use `google-chrome` bash command** — MCP extension manages its own tab groups.
+### Step 2: Check existing tabs and open missing ones
 
-### Step 3: Ensure required tabs are open
+First list existing tabs:
+```
+mcp__playwright__browser_tabs(action: "list")
+```
 
-Check the tabs returned in Step 1 or Step 2. Two tabs must be open:
+Two URLs must be open. **Only open tabs for URLs that are NOT already present:**
 
 1. **`https://ceskarepublika.wiki/`** — production site
-2. **`https://github.com/Olbrasoft/cr/issues`** — project issues
+2. **`http://issues.localhost/?Query=&Repos=7051&State=open&PageSize=25&Lang=cs&PageNum=1`** — local issues
 
-For each URL that is NOT already open in an existing tab:
+For each **missing** URL (not already in tab list):
 ```
-mcp__claude-in-chrome__tabs_create_mcp  →  get new tabId
-mcp__claude-in-chrome__navigate  (url, tabId)
+mcp__playwright__browser_tabs(action: "new")
+mcp__playwright__browser_navigate(url: "<missing URL>")
 ```
 
-If both URLs are already open in existing tabs → do nothing, no new tabs needed.
+**If both URLs are already open → do nothing, no new tabs.**
+
+Then position the window:
+```bash
+~/.local/bin/playwright-window-right.sh
+```
 
 ### Why this matters
 
-Multiple Claude Code instances run on different workspaces. After a restart (e.g., new MCP server loaded), Chrome may already be open from the previous session — launching another instance would create a duplicate window. This check-first approach avoids that.
+Edge runs with the user's real profile (logged in). Playwright connects via CDP. Each Claude Code has its own Playwright MCP process managing its own tabs.
 
 ## What This Is
 

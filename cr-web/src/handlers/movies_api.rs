@@ -897,10 +897,7 @@ struct PlaywrightResult {
 }
 
 /// Resolve via Playwright (Python extract-stream.py script).
-async fn resolve_via_playwright(
-    provider: &str,
-    code: &str,
-) -> Result<PlaywrightResult, String> {
+async fn resolve_via_playwright(provider: &str, code: &str) -> Result<PlaywrightResult, String> {
     let script_path = std::env::current_dir()
         .map(|p| p.join("scripts/extract-stream.py"))
         .unwrap_or_else(|_| std::path::PathBuf::from("scripts/extract-stream.py"));
@@ -925,11 +922,11 @@ async fn resolve_via_playwright(
         serde_json::from_str(&stdout).map_err(|e| format!("Invalid script output: {e}"))?;
 
     if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
-        let fmt = val
-            .get("format")
+        let fmt = val.get("format").and_then(|v| v.as_str()).unwrap_or("mp4");
+        let cookies = val
+            .get("cookies")
             .and_then(|v| v.as_str())
-            .unwrap_or("mp4");
-        let cookies = val.get("cookies").and_then(|v| v.as_str()).map(String::from);
+            .map(String::from);
         Ok(PlaywrightResult {
             url: url.to_string(),
             format: fmt.to_string(),
