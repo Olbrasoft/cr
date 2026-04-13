@@ -968,6 +968,7 @@ dependencies = [
  "dotenvy",
  "filetime",
  "image",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -1,0 +1,487 @@
+{% extends "base.html" %}
+
+{% block title %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — film online{% endblock %}
+
+{% block meta_description %}{% match film.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — sledujte online na ceskarepublika.wiki{% endmatch %}{% endblock %}
+
+{% block leaflet %}{% endblock %}
+
+{% block head %}
+<link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/filmy-online/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+            alt="Logo Filmy online" title="Filmy online" class="header-emblem">
+        <h1>{{ film.title }}</h1>
+    </a>
+</div>
+{% endblock %}
+
+{# Search in header — same as listing page #}
+{% block header_search %}
+<div class="search-container" id="header-search-box">
+    <input type="text" id="film-search" class="search-input" placeholder="Hledat film..." autocomplete="off">
+    <button class="search-btn" onclick="doSearch()">Hledat</button>
+    <div id="search-results" class="search-dropdown"></div>
+</div>
+{% endblock %}
+
+{% block header_right %}<div class="context-emblem"></div>{% endblock %}
+
+{% block content %}
+<main class="film-detail-page">
+    <nav class="breadcrumb">
+        <a href="/">Česká republika</a>
+        <span>›</span> <a href="/filmy-online/">Filmy online</a>
+        <span>›</span> <span>{{ film.title }}</span>
+    </nav>
+
+    {# Video player section #}
+    {% if film.sktorrent_video_id.is_some() || !sources.is_empty() %}
+    <div class="player-section">
+        {# Source tabs — only providers we can resolve to direct stream #}
+        <div class="source-tabs">
+            {% match film.sktorrent_video_id %}
+            {% when Some with (vid) %}
+            <button class="source-tab active" onclick="showSktorrent(this)">SK Torrent</button>
+            {% when None %}
+            {% endmatch %}
+            {% for s in sources %}
+            {% match s.provider.as_str() %}
+            {% when "filemoon" %}
+            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Filemoon{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
+            {% when "streamtape" %}
+            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Streamtape{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
+            {% when "mixdrop" %}
+            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Mixdrop{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
+            {% when _ %}
+            {% endmatch %}
+            {% endfor %}
+        </div>
+
+        {# Video player — auto-select best available quality #}
+        <div class="player-panel">
+            <video id="film-player" controls preload="metadata" poster="/filmy-online/{{ film.slug }}.webp" width="100%">
+            </video>
+            <div class="player-controls">
+                {% match film.sktorrent_video_id %}
+                {% when Some with (vid) %}
+                <div class="player-quality" id="sktorrent-quality">
+                </div>
+                {% when None %}
+                {% endmatch %}
+                <div id="source-status" class="source-status"></div>
+            </div>
+        </div>
+
+        {# Pass sktorrent video_id to JS for resolve #}
+        {% match film.sktorrent_video_id %}
+        {% when Some with (vid) %}
+        <script>var sktorrentVideoId = {{ vid }};</script>
+        {% when None %}
+        {% endmatch %}
+    </div>
+    {% endif %}
+
+    <div class="film-hero">
+        <div class="film-cover">
+            {% match film.cover_filename %}
+            {% when Some with (cover) %}
+            <img src="/filmy-online/{{ film.slug }}.webp" alt="{{ film.title }}" width="200" height="300">
+            {% when None %}
+            <div class="no-cover">{{ film.title }}</div>
+            {% endmatch %}
+        </div>
+
+        <div class="film-meta">
+            <h2>{{ film.title }}{% match film.year %}{% when Some with (y) %} <span class="year">({{ y }})</span>{% when None %}{% endmatch %}</h2>
+
+            {% match film.original_title %}
+            {% when Some with (ot) %}
+            <p class="original-title">{{ ot }}</p>
+            {% when None %}
+            {% endmatch %}
+
+            <div class="meta-row">
+                {% match film.imdb_rating %}
+                {% when Some with (r) %}
+                <span class="meta-badge imdb">IMDB {{ r }}</span>
+                {% when None %}
+                {% endmatch %}
+
+                {% match film.csfd_rating %}
+                {% when Some with (r) %}
+                <span class="meta-badge csfd">ČSFD {{ r }}%</span>
+                {% when None %}
+                {% endmatch %}
+
+                {% match film.runtime_min %}
+                {% when Some with (m) %}
+                <span class="meta-badge runtime">{{ m }} min</span>
+                {% when None %}
+                {% endmatch %}
+            </div>
+
+            {% if !genres.is_empty() %}
+            <div class="genre-tags">
+                {% for g in genres %}
+                <a href="/filmy-online/{{ g.slug }}/" class="genre-tag">{{ g.name_cs }}</a>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% match film.description %}
+            {% when Some with (d) %}
+            <div class="film-description">
+                <p>{{ d }}</p>
+            </div>
+            {% when None %}
+            {% endmatch %}
+        </div>
+    </div>
+
+    {# Přehraj.to additional sources — loaded asynchronously #}
+    <div class="prehrajto-section" id="prehrajto-section" style="display:none;">
+        <h3>Další zdroje (Přehraj.to)</h3>
+        <div id="prehrajto-results" class="prehrajto-results"></div>
+    </div>
+</main>
+
+<style>
+.film-detail-page { max-width: 960px; margin: 0 auto; padding: 1rem; }
+
+/* Search dropdown — override base overflow:hidden */
+#header-search-box { position: relative; overflow: visible !important; }
+.search-dropdown { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 200; max-height: 420px; overflow-y: auto; }
+.search-dropdown.open { display: block; }
+.search-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.8rem; text-decoration: none; color: inherit; border-bottom: 1px solid #f0f0f0; transition: background 0.15s; }
+.search-item:last-child { border-bottom: none; }
+.search-item:hover { background: #f5f5f5; }
+.search-item img { width: 40px; height: 60px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.search-item .si-placeholder { width: 40px; height: 60px; background: #eee; border-radius: 4px; flex-shrink: 0; }
+.search-item .si-info { flex: 1; min-width: 0; }
+.search-item .si-title { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-item .si-meta { font-size: 0.8rem; color: #888; }
+
+/* Breadcrumb */
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+
+/* Player section */
+.player-section { margin-bottom: 1.5rem; }
+.source-tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; background: #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 10px 10px 0 0; }
+.source-tab { background: #333; color: #ccc; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; transition: background 0.15s; }
+.source-tab:hover { background: #444; }
+.source-tab.active { background: #D7141A; color: white; }
+.source-tab.loading { background: #555; cursor: wait; }
+.player-panel { background: #000; border-radius: 0 0 10px 10px; overflow: hidden; }
+.player-panel video { display: block; width: 100%; max-height: 540px; background: #000; }
+.player-controls { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; background: #111; }
+.player-quality { display: flex; gap: 0.3rem; }
+.quality-btn { background: #333; color: #ccc; border: none; padding: 0.25rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+.quality-btn:hover { background: #444; }
+.quality-btn.active { background: #D7141A; color: white; }
+.source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
+
+/* Film hero */
+.film-hero { display: flex; gap: 1.5rem; }
+@media (max-width: 600px) { .film-hero { flex-direction: column; align-items: center; } }
+
+.film-cover { flex-shrink: 0; width: 200px; }
+.film-cover img { width: 200px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.2); }
+.no-cover { width: 200px; height: 300px; background: #222; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #888; text-align: center; padding: 1rem; }
+
+.film-meta h2 { margin: 0 0 0.4rem; font-size: 1.5rem; }
+.film-meta .year { color: #888; font-weight: 400; }
+.original-title { color: #888; font-style: italic; margin: 0 0 0.6rem; font-size: 0.9rem; }
+
+.meta-row { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
+.meta-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.meta-badge.imdb { background: #f5c518; color: #000; }
+.meta-badge.csfd { background: #ba0305; color: #fff; }
+.meta-badge.runtime { background: #f0f0f0; color: #333; }
+
+.genre-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
+.genre-tag { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 16px; background: #f0f0f0; color: #333; text-decoration: none; font-size: 0.8rem; }
+.genre-tag:hover { background: #e0e0e0; }
+
+.film-description { line-height: 1.6; color: #333; }
+.film-description p { margin: 0; }
+
+/* Přehraj.to section */
+.prehrajto-section { margin-top: 2rem; }
+.prehrajto-section h3 { font-size: 1.1rem; margin: 0 0 0.8rem; color: #555; }
+.prehrajto-results { display: flex; flex-direction: column; gap: 0.5rem; }
+.prehrajto-item { display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem; background: #fafafa; border: 1px solid #eee; border-radius: 8px; cursor: pointer; text-decoration: none; color: inherit; transition: background 0.15s; }
+.prehrajto-item:hover { background: #f0f0f0; }
+.prehrajto-item img { width: 80px; height: 50px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.prehrajto-item .pt-info { flex: 1; min-width: 0; }
+.prehrajto-item .pt-title { font-weight: 500; font-size: 0.9rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prehrajto-item .pt-meta { font-size: 0.8rem; color: #888; }
+.prehrajto-item.loading { opacity: 0.5; cursor: wait; }
+</style>
+
+<script>
+/* --- Source switcher --- */
+function showSource(provider, btn) {
+    document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    // Hide sktorrent quality buttons when on other source
+    var sktQ = document.getElementById('sktorrent-quality');
+    if (sktQ) sktQ.style.display = (provider === 'sktorrent') ? 'flex' : 'none';
+    document.getElementById('source-status').textContent = '';
+}
+
+/* --- Resolve & play from bombuj.si providers --- */
+var resolveCache = {};
+
+function resolveAndPlay(provider, code, btn) {
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+
+    // Activate tab
+    showSource(provider, btn);
+
+    // Check cache
+    var cacheKey = provider + ':' + code;
+    if (resolveCache[cacheKey]) {
+        playUrl(resolveCache[cacheKey].url, resolveCache[cacheKey].format);
+        return;
+    }
+
+    // Show loading state
+    btn.classList.add('loading');
+    status.textContent = 'Načítání streamu...';
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+
+    fetch('/api/movies/stream-resolve?provider=' + provider + '&code=' + encodeURIComponent(code))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.classList.remove('loading');
+            if (data.stream_url) {
+                resolveCache[cacheKey] = { url: data.stream_url, format: data.format };
+                playUrl(data.stream_url, data.format);
+                status.textContent = provider + ' — ' + (data.format || 'mp4').toUpperCase();
+            } else {
+                // Zdroj smazán — skrýt tab
+                btn.style.display = 'none';
+                status.textContent = '';
+                // Přepnout zpět na sktorrent pokud existuje
+                var sktBtn = document.querySelector('.source-tab');
+                if (sktBtn && typeof sktorrentVideoId !== 'undefined') {
+                    showSktorrent(sktBtn);
+                }
+            }
+        })
+        .catch(function(e) {
+            btn.classList.remove('loading');
+            btn.style.display = 'none';
+            status.textContent = '';
+        });
+}
+
+function playUrl(url, format) {
+    var player = document.getElementById('film-player');
+    if (format === 'hls' && window.Hls && Hls.isSupported()) {
+        // HLS playback via hls.js
+        if (window._hls) window._hls.destroy();
+        var hls = new Hls();
+        hls.loadSource(url);
+        hls.attachMedia(player);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() { player.play(); });
+        window._hls = hls;
+    } else {
+        // Direct MP4 or native HLS (Safari)
+        player.src = url;
+        player.play().catch(function(){});
+    }
+}
+
+/* --- Sktorrent source button --- */
+function showSktorrent(btn) {
+    showSource('sktorrent', btn);
+    var player = document.getElementById('film-player');
+    // Restore sktorrent source if it was changed
+    if (player.dataset.sktorrentSrc && player.src !== player.dataset.sktorrentSrc) {
+        if (window._hls) { window._hls.destroy(); window._hls = null; }
+        player.src = player.dataset.sktorrentSrc;
+    }
+}
+
+/* --- Přehraj.to search on page load --- */
+(function() {
+    var filmTitle = "{{ film.title }}";
+    var section = document.getElementById('prehrajto-section');
+    var container = document.getElementById('prehrajto-results');
+    if (!section || !container || !filmTitle) return;
+
+    fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.movies || !data.movies.length) return;
+
+            section.style.display = '';
+            data.movies.forEach(function(movie) {
+                var item = document.createElement('div');
+                item.className = 'prehrajto-item';
+                item.onclick = function() { playPrehrajto(movie, item); };
+
+                var thumb = movie.thumbnail
+                    ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
+                    : '';
+                var year = movie.year ? ' (' + movie.year + ')' : '';
+
+                item.innerHTML = thumb
+                    + '<div class="pt-info">'
+                    + '<span class="pt-title">' + movie.title + year + '</span>'
+                    + '<span class="pt-meta">Přehraj.to</span>'
+                    + '</div>';
+                container.appendChild(item);
+            });
+        })
+        .catch(function() { /* silently ignore */ });
+})();
+
+function playPrehrajto(movie, item) {
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+    if (!player) return;
+
+    // Deactivate all source tabs
+    document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
+    var sktQ = document.getElementById('sktorrent-quality');
+    if (sktQ) sktQ.style.display = 'none';
+
+    item.classList.add('loading');
+    status.textContent = 'Načítání z Přehraj.to...';
+
+    fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            item.classList.remove('loading');
+            if (data.success && data.video_url) {
+                var url = data.video_url.replace(/&amp;/g, '&');
+                playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+                status.textContent = 'Přehraj.to — ' + movie.title;
+            } else {
+                status.textContent = 'Zdroj nedostupný';
+            }
+        })
+        .catch(function(e) {
+            item.classList.remove('loading');
+            status.textContent = 'Chyba: ' + e.message;
+        });
+}
+
+/* --- Resolve sktorrent sources on page load --- */
+var sktorrentSources = [];
+
+(function() {
+    if (typeof sktorrentVideoId === 'undefined') return;
+    var player = document.getElementById('film-player');
+    var qualDiv = document.getElementById('sktorrent-quality');
+    var status = document.getElementById('source-status');
+    if (!player || !qualDiv) return;
+
+    status.textContent = 'Načítání zdrojů...';
+
+    fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error || !data.sources || !data.sources.length) {
+                status.textContent = 'Zdroj nedostupný';
+                return;
+            }
+
+            sktorrentSources = data.sources;
+            // Sort by resolution desc — prefer 720p
+            sktorrentSources.sort(function(a, b) { return b.res - a.res; });
+
+            // Build quality buttons
+            sktorrentSources.forEach(function(s, i) {
+                var btn = document.createElement('button');
+                btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
+                btn.textContent = s.quality;
+                btn.onclick = function() { playSktorrent(i, btn); };
+                qualDiv.appendChild(btn);
+            });
+
+            // Play best quality (first = highest res, ideally 720p+)
+            playSktorrent(0, qualDiv.querySelector('.quality-btn'));
+            status.textContent = '';
+        })
+        .catch(function(e) {
+            status.textContent = 'Chyba: ' + e.message;
+        });
+})();
+
+function playSktorrent(index, btn) {
+    var player = document.getElementById('film-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    var source = sktorrentSources[index];
+    player.src = source.url;
+    player.dataset.sktorrentSrc = source.url;
+    document.querySelectorAll('#sktorrent-quality .quality-btn').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    document.getElementById('source-status').textContent = '';
+}
+
+/* --- Search --- */
+function doSearch() {
+    var q = document.getElementById('film-search').value.trim();
+    if (q.length >= 2) window.location = '/filmy-online/?q=' + encodeURIComponent(q);
+}
+
+(function() {
+    var input = document.getElementById('film-search');
+    var dd = document.getElementById('search-results');
+    var timer = null;
+
+    input.addEventListener('input', function() {
+        clearTimeout(timer);
+        var q = this.value.trim();
+        if (q.length < 2) { dd.classList.remove('open'); return; }
+        timer = setTimeout(function() {
+            fetch('/api/films/search?q=' + encodeURIComponent(q))
+                .then(function(r){ return r.json(); })
+                .then(function(results) {
+                    if (!results.length) {
+                        dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>';
+                    } else {
+                        dd.innerHTML = results.map(function(r) {
+                            var cover = r.cover
+                                ? '<img src="/filmy-online/' + r.slug + '.webp" alt="">'
+                                : '<div class="si-placeholder"></div>';
+                            var yr = r.year ? ' (' + r.year + ')' : '';
+                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+                            return '<a href="/filmy-online/' + r.slug + '/" class="search-item">'
+                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
+                                + '<span class="si-meta">' + rat + '</span></div></a>';
+                        }).join('');
+                    }
+                    dd.classList.add('open');
+                })
+                .catch(function(){ dd.classList.remove('open'); });
+        }, 200);
+    });
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#header-search-box')) dd.classList.remove('open');
+    });
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            doSearch();
+        }
+    });
+})();
+</script>
+{% endblock %}

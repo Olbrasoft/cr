@@ -195,6 +195,19 @@ async fn main() -> Result<()> {
             "/movies/thumb",
             axum::routing::get(handlers::movies_api::movies_thumb),
         )
+        .route(
+            "/movies/filemoon-resolve",
+            axum::routing::get(handlers::movies_api::filemoon_resolve),
+        )
+        .route(
+            "/movies/stream-resolve",
+            axum::routing::get(handlers::movies_api::stream_resolve),
+        )
+        .route("/films/search", axum::routing::get(handlers::films_search))
+        .route(
+            "/films/sktorrent-resolve",
+            axum::routing::get(handlers::sktorrent_resolve),
+        )
         .layer(cors);
 
     let app = Router::new()
@@ -212,6 +225,16 @@ async fn main() -> Result<()> {
         .route(
             "/stahnout-video/",
             axum::routing::get(handlers::download_video),
+        )
+        .route("/filmy-online", axum::routing::get(handlers::films_list))
+        .route("/filmy-online/", axum::routing::get(handlers::films_list))
+        .route(
+            "/filmy-online/{slug}",
+            axum::routing::get(handlers::films_detail),
+        )
+        .route(
+            "/filmy-online/{slug}/",
+            axum::routing::get(handlers::films_detail),
         )
         .route(
             "/filmy-a-serialy",

@@ -1,10 +1,19 @@
+use std::time::{Duration, Instant};
+
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use crate::state::AppState;
+
+/// In-memory cache for resolved filemoon m3u8 URLs.
+/// Key: filemoon_code, Value: (url, resolved_at).
+static FILEMOON_CACHE: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, (String, Instant)>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 #[derive(Deserialize)]
 pub struct SearchQuery {
@@ -453,4 +462,173 @@ pub async fn movies_thumb(
         }
         _ => (StatusCode::NOT_FOUND, "Thumbnail not available").into_response(),
     }
+}
+
+// --- Filemoon stream resolver ---
+
+#[derive(Deserialize)]
+pub struct StreamResolveQuery {
+    /// Provider: filemoon, streamtape, mixdrop, vidlink
+    provider: String,
+    /// Stable code/ID for the provider
+    code: String,
+}
+
+#[derive(Serialize)]
+pub struct StreamResolveResponse {
+    provider: String,
+    code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_url: Option<String>,
+    /// "hls" or "mp4"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    cached: bool,
+}
+
+const ALLOWED_PROVIDERS: &[&str] = &["filemoon", "streamtape", "mixdrop", "vidlink"];
+
+/// `GET /api/movies/stream-resolve?provider={provider}&code={code}`
+///
+/// Resolves a stable code into a fresh stream URL via headless browser.
+/// Supported providers: filemoon (HLS), streamtape (MP4), mixdrop (MP4), vidlink (HLS).
+/// Results are cached per provider+code with TTL based on token expiry.
+pub async fn stream_resolve(
+    Query(params): Query<StreamResolveQuery>,
+) -> Json<StreamResolveResponse> {
+    let provider = params.provider.trim().to_lowercase();
+    let code = params.code.trim().to_string();
+
+    if !ALLOWED_PROVIDERS.contains(&provider.as_str()) {
+        return Json(StreamResolveResponse {
+            provider,
+            code,
+            stream_url: None,
+            format: None,
+            error: Some(format!(
+                "Unknown provider. Use: {}",
+                ALLOWED_PROVIDERS.join(", ")
+            )),
+            cached: false,
+        });
+    }
+
+    if code.len() < 4 || code.len() > 20 {
+        return Json(StreamResolveResponse {
+            provider,
+            code,
+            stream_url: None,
+            format: None,
+            error: Some("Invalid code format".to_string()),
+            cached: false,
+        });
+    }
+
+    let cache_key = format!("{provider}:{code}");
+
+    // Check cache (2h TTL — conservative, tokens last 3-4h)
+    let cache_ttl = Duration::from_secs(2 * 3600);
+    {
+        let cache = FILEMOON_CACHE.lock().await;
+        if let Some((url, resolved_at)) = cache.get(&cache_key)
+            && resolved_at.elapsed() < cache_ttl
+        {
+            let fmt = if url.contains(".m3u8") { "hls" } else { "mp4" };
+            return Json(StreamResolveResponse {
+                provider,
+                code,
+                stream_url: Some(url.clone()),
+                format: Some(fmt.to_string()),
+                error: None,
+                cached: true,
+            });
+        }
+    }
+
+    // Resolve via universal Python script
+    let script_path = std::env::current_dir()
+        .map(|p| p.join("scripts/extract-stream.py"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("scripts/extract-stream.py"));
+
+    let output = match tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg(&provider)
+        .arg(&code)
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!("stream_resolve: failed to spawn script: {e}");
+            return Json(StreamResolveResponse {
+                provider,
+                code,
+                stream_url: None,
+                format: None,
+                error: Some(format!("Script execution failed: {e}")),
+                cached: false,
+            });
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(val) => {
+            if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
+                let url = url.to_string();
+                let fmt = val
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("mp4")
+                    .to_string();
+                {
+                    let mut cache = FILEMOON_CACHE.lock().await;
+                    cache.insert(cache_key, (url.clone(), Instant::now()));
+                }
+                Json(StreamResolveResponse {
+                    provider,
+                    code,
+                    stream_url: Some(url),
+                    format: Some(fmt),
+                    error: None,
+                    cached: false,
+                })
+            } else {
+                let error = val
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                Json(StreamResolveResponse {
+                    provider,
+                    code,
+                    stream_url: None,
+                    format: None,
+                    error: Some(error),
+                    cached: false,
+                })
+            }
+        }
+        Err(e) => {
+            tracing::error!("stream_resolve: invalid script output: {e} — stdout: {stdout}");
+            Json(StreamResolveResponse {
+                provider,
+                code,
+                stream_url: None,
+                format: None,
+                error: Some("Invalid script output".to_string()),
+                cached: false,
+            })
+        }
+    }
+}
+
+/// Backwards-compatible wrapper — calls stream_resolve with provider=filemoon.
+pub async fn filemoon_resolve(
+    Query(params): Query<StreamResolveQuery>,
+) -> Json<StreamResolveResponse> {
+    stream_resolve(Query(params)).await
 }
