@@ -106,6 +106,7 @@ struct FilmDetailTemplate {
     img: String,
     film: FilmRow,
     genres: Vec<FilmGenreNameRow>,
+    #[allow(dead_code)]
     sources: Vec<FilmSourceRow>,
 }
 

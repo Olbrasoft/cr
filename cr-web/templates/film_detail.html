@@ -40,8 +40,7 @@
         <span>›</span> <span>{{ film.title }}</span>
     </nav>
 
-    {# Video player section #}
-    {% if film.sktorrent_video_id.is_some() || !sources.is_empty() %}
+    {# Video player section — always shown (Přehraj.to auto-play needs it even without SK Torrent) #}
     <div class="player-section">
         {# SK Torrent — direct CDN MP4 (no server load, scalable).
            Bombuj providers (Filemoon/Streamtape/Mixdrop) removed — CDN URLs
@@ -81,7 +80,6 @@
         {% when None %}
         {% endmatch %}
     </div>
-    {% endif %}
 
     <div class="film-hero">
         <div class="film-cover">
