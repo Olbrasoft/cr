@@ -547,82 +547,44 @@ pub async fn stream_resolve(
         }
     }
 
-    // Resolve via universal Python script
-    let script_path = std::env::current_dir()
-        .map(|p| p.join("scripts/extract-stream.py"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("scripts/extract-stream.py"));
+    // Resolve stream URL — pure HTTP + regex (no Playwright needed for streamtape/mixdrop)
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
 
-    let output = match tokio::process::Command::new("python3")
-        .arg(&script_path)
-        .arg(&provider)
-        .arg(&code)
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::error!("stream_resolve: failed to spawn script: {e}");
-            return Json(StreamResolveResponse {
-                provider,
-                code,
-                stream_url: None,
-                format: None,
-                error: Some(format!("Script execution failed: {e}")),
-                cached: false,
-            });
-        }
+    let result = match provider.as_str() {
+        "streamtape" => resolve_streamtape(&client, &code).await,
+        "mixdrop" => resolve_mixdrop(&client, &code).await,
+        "filemoon" => resolve_via_cz_proxy(&client, &provider, &code).await,
+        "vidlink" => resolve_via_cz_proxy(&client, &provider, &code).await,
+        _ => Err("Unsupported provider".to_string()),
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    match serde_json::from_str::<serde_json::Value>(&stdout) {
-        Ok(val) => {
-            if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
-                let url = url.to_string();
-                let fmt = val
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("mp4")
-                    .to_string();
-                {
-                    let mut cache = FILEMOON_CACHE.lock().await;
-                    cache.insert(cache_key, (url.clone(), Instant::now()));
-                }
-                Json(StreamResolveResponse {
-                    provider,
-                    code,
-                    stream_url: Some(url),
-                    format: Some(fmt),
-                    error: None,
-                    cached: false,
-                })
-            } else {
-                let error = val
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown error")
-                    .to_string();
-                Json(StreamResolveResponse {
-                    provider,
-                    code,
-                    stream_url: None,
-                    format: None,
-                    error: Some(error),
-                    cached: false,
-                })
+    match result {
+        Ok((url, fmt)) => {
+            {
+                let mut cache = FILEMOON_CACHE.lock().await;
+                cache.insert(cache_key, (url.clone(), Instant::now()));
             }
-        }
-        Err(e) => {
-            tracing::error!("stream_resolve: invalid script output: {e} — stdout: {stdout}");
             Json(StreamResolveResponse {
                 provider,
                 code,
-                stream_url: None,
-                format: None,
-                error: Some("Invalid script output".to_string()),
+                stream_url: Some(url),
+                format: Some(fmt),
+                error: None,
                 cached: false,
             })
         }
+        Err(error) => Json(StreamResolveResponse {
+            provider,
+            code,
+            stream_url: None,
+            format: None,
+            error: Some(error),
+            cached: false,
+        }),
     }
 }
 
@@ -631,4 +593,185 @@ pub async fn filemoon_resolve(
     Query(params): Query<StreamResolveQuery>,
 ) -> Json<StreamResolveResponse> {
     stream_resolve(Query(params)).await
+}
+
+// ── Pure-HTTP stream resolvers (no Playwright) ───────────────────
+
+/// Resolve streamtape embed → direct MP4 URL via regex on inline JS.
+async fn resolve_streamtape(
+    client: &reqwest::Client,
+    code: &str,
+) -> Result<(String, String), String> {
+    let url = format!("https://streamtape.com/e/{code}");
+    let html = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145")
+        .send()
+        .await
+        .map_err(|e| format!("Fetch failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Read failed: {e}"))?;
+
+    // Check for "not found"
+    if html.contains("Video not found") {
+        return Err("Video not found on Streamtape".to_string());
+    }
+
+    // Pattern: getElementById('robotlink').innerHTML = 'PREFIX' + ('SUFFIX').substring(N)
+    let re = regex::Regex::new(
+        r#"getElementById\('robotlink'\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*\('([^']+)'\)\.substring\((\d+)\)"#,
+    )
+    .unwrap();
+
+    if let Some(cap) = re.captures(&html) {
+        let prefix = &cap[1];
+        let inner = &cap[2];
+        let skip: usize = cap[3].parse().unwrap_or(3);
+        let suffix = &inner[skip.min(inner.len())..];
+        let mp4_url = format!("https:{prefix}{suffix}");
+        return Ok((mp4_url, "mp4".to_string()));
+    }
+
+    // Fallback: robotlink already rendered
+    let re2 = regex::Regex::new(r#"id="robotlink"[^>]*>([^<]*get_video[^<]*)<"#).unwrap();
+    if let Some(cap) = re2.captures(&html) {
+        let mp4_url = format!("https:{}", cap[1].trim());
+        return Ok((mp4_url, "mp4".to_string()));
+    }
+
+    Err("robotlink pattern not found in Streamtape page".to_string())
+}
+
+/// Resolve mixdrop embed → direct MP4 URL by unpacking p,a,c,k,e,d JS.
+async fn resolve_mixdrop(
+    client: &reqwest::Client,
+    code: &str,
+) -> Result<(String, String), String> {
+    let url = format!("https://mixdrop.ag/e/{code}");
+    let html = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145")
+        .send()
+        .await
+        .map_err(|e| format!("Fetch failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Read failed: {e}"))?;
+
+    if html.contains("can't find") || html.is_empty() {
+        return Err("Video not found on Mixdrop".to_string());
+    }
+
+    // Extract p,a,c,k,e,d packed JS
+    let re = regex::Regex::new(
+        r#"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('([^']+)',(\d+),(\d+),'([^']+)'"#,
+    )
+    .unwrap();
+
+    let cap = re
+        .captures(&html)
+        .ok_or("p,a,c,k,e,d packed JS not found")?;
+
+    let p = &cap[1];
+    let a: u32 = cap[2].parse().unwrap_or(36);
+    let c: usize = cap[3].parse().unwrap_or(0);
+    let k_str = &cap[4];
+    let keywords: Vec<&str> = k_str.split('|').collect();
+
+    // Unpack: replace base-N tokens in p with keywords
+    let unpacked = unpack_js(p, a, c, &keywords);
+
+    // Extract MDCore.wurl
+    let wurl_re = regex::Regex::new(r#"MDCore\.wurl="([^"]+)""#).unwrap();
+    if let Some(m) = wurl_re.captures(&unpacked) {
+        let video_url = if m[1].starts_with("//") {
+            format!("https:{}", &m[1])
+        } else {
+            m[1].to_string()
+        };
+        return Ok((video_url, "mp4".to_string()));
+    }
+
+    Err("MDCore.wurl not found in unpacked JS".to_string())
+}
+
+/// Simple p,a,c,k,e,d JS unpacker.
+fn unpack_js(packed: &str, base: u32, count: usize, keywords: &[&str]) -> String {
+    let word_re = regex::Regex::new(r"\b\w+\b").unwrap();
+    word_re
+        .replace_all(packed, |caps: &regex::Captures| {
+            let word = &caps[0];
+            if let Some(n) = decode_base_n(word, base)
+                && (n as usize) < count
+                && (n as usize) < keywords.len()
+            {
+                let kw = keywords[n as usize];
+                if !kw.is_empty() {
+                    return kw.to_string();
+                }
+            }
+            word.to_string()
+        })
+        .to_string()
+}
+
+/// Decode a base-N string (supports up to base 62: 0-9, a-z, A-Z).
+fn decode_base_n(s: &str, base: u32) -> Option<u32> {
+    let mut result: u32 = 0;
+    for ch in s.chars() {
+        let digit = match ch {
+            '0'..='9' => ch as u32 - '0' as u32,
+            'a'..='z' => ch as u32 - 'a' as u32 + 10,
+            'A'..='Z' => ch as u32 - 'A' as u32 + 36,
+            _ => return None,
+        };
+        if digit >= base {
+            return None;
+        }
+        result = result.checked_mul(base)?.checked_add(digit)?;
+    }
+    Some(result)
+}
+
+/// Resolve via CZ proxy (chobotnice.aspfree.cz) — for providers that need CZ IP or browser.
+async fn resolve_via_cz_proxy(
+    _client: &reqwest::Client,
+    provider: &str,
+    code: &str,
+) -> Result<(String, String), String> {
+    let (_proxy_url, _proxy_key) = cz_proxy_config()
+        .ok_or("CZ proxy not configured (CZ_PROXY_URL/CZ_PROXY_KEY)")?;
+
+    // Try the Python script as fallback (if available locally)
+    let script_path = std::env::current_dir()
+        .map(|p| p.join("scripts/extract-stream.py"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("scripts/extract-stream.py"));
+
+    if script_path.exists()
+        && let Ok(output) = tokio::process::Command::new("python3")
+            .arg(&script_path)
+            .arg(provider)
+            .arg(code)
+            .output()
+            .await
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(url) = val.get("stream_url").and_then(|v| v.as_str()) {
+                let fmt = val
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("mp4");
+                return Ok((url.to_string(), fmt.to_string()));
+            }
+            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+    }
+
+    Err(format!(
+        "{provider} resolution not available on this server"
+    ))
 }
