@@ -625,6 +625,8 @@ async fn resolve_streamtape(
         let raw = cap[1].trim();
         let mp4_url = if raw.starts_with("//") {
             format!("https:{raw}")
+        } else if raw.starts_with('/') {
+            format!("https:/{raw}")
         } else {
             format!("https://{raw}")
         };
