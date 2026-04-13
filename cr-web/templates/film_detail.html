@@ -43,24 +43,14 @@
     {# Video player section #}
     {% if film.sktorrent_video_id.is_some() || !sources.is_empty() %}
     <div class="player-section">
-        {# Source tabs — only providers we can resolve to direct stream #}
+        {# Source tab — SK Torrent is the only direct-play source for now.
+           Filemoon/Streamtape/Mixdrop require Playwright (issue #407). #}
         <div class="source-tabs">
             {% match film.sktorrent_video_id %}
             {% when Some with (vid) %}
-            <button class="source-tab active" onclick="showSktorrent(this)">SK Torrent</button>
+            <button class="source-tab active">SK Torrent</button>
             {% when None %}
             {% endmatch %}
-            {% for s in sources %}
-            {% match s.provider.as_str() %}
-            {% when "filemoon" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Filemoon{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when "streamtape" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Streamtape{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when "mixdrop" %}
-            <button class="source-tab" onclick="resolveAndPlay('{{ s.provider }}', '{{ s.code }}', this)">Mixdrop{% match s.language %}{% when Some with (l) %} {{ l|upper }}{% when None %}{% endmatch %}</button>
-            {% when _ %}
-            {% endmatch %}
-            {% endfor %}
         </div>
 
         {# Video player — auto-select best available quality #}
@@ -270,8 +260,11 @@ function resolveAndPlay(provider, code, btn) {
         .then(function(data) {
             btn.classList.remove('loading');
             if (data.stream_url) {
-                resolveCache[cacheKey] = { url: data.stream_url, format: data.format };
-                playUrl(data.stream_url, data.format === 'hls' ? 'hls' : 'mp4');
+                var url = data.stream_url;
+                // For streamtape/mixdrop: CDN URL has CORS * — play directly from client
+                // The browser (CZ IP) can follow get_video → tapecontent.net redirect
+                resolveCache[cacheKey] = { url: url, format: data.format };
+                playUrl(url, data.format === 'hls' ? 'hls' : 'mp4');
                 status.textContent = provider + ' — ' + (data.format || 'mp4').toUpperCase();
             } else {
                 status.textContent = 'Zdroj nedostupný: ' + (data.error || 'neznámá chyba');
