@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block title %}Auto-import — souhrn{% endblock %}
+{% block meta_description %}Souhrnný přehled auto-importu SK Torrent.{% endblock %}
+
+{% block og_title %}Auto-import — souhrn{% endblock %}
+{% block og_description %}Souhrnný přehled auto-importu.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Auto-import — souhrn</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-summary">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <a href="/admin/import/" title="Seznam běhů">Admin / Auto-import</a>
+        <span>›</span> <span>Souhrn</span>
+    </nav>
+
+    <div class="stats-row">
+        <span class="stat">Celkem běhů: <strong>{{ total_runs }}</strong></span>
+        <span class="stat stat-added">Nových filmů: <strong>{{ new_films.len() }}</strong></span>
+        <span class="stat stat-added">Nových seriálů: <strong>{{ new_series.len() }}</strong></span>
+        <span class="stat stat-updated">Epizod k existujícím: <strong>{{ episodes_for_existing.len() }}</strong></span>
+        <span class="stat stat-skipped">Přeskočeno: <strong>{{ skipped.len() }}</strong></span>
+        <span class="stat stat-failed">Selhalo: <strong>{{ failed.len() }}</strong></span>
+    </div>
+
+    <div class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="new-films">Nové filmy ({{ new_films.len() }})</button>
+        <button class="tab-btn" data-tab="updated-films">Doplněné filmy ({{ updated_films.len() }})</button>
+        <button class="tab-btn" data-tab="new-series">Nové seriály ({{ new_series.len() }})</button>
+        <button class="tab-btn" data-tab="episodes">Epizody k existujícím ({{ episodes_for_existing.len() }})</button>
+        <button class="tab-btn" data-tab="skipped">Přeskočeno ({{ skipped.len() }})</button>
+        <button class="tab-btn" data-tab="failed">Selhalo ({{ failed.len() }})</button>
+    </div>
+
+    {# ---- Nové filmy ---- #}
+    <section class="tab-panel active" id="tab-new-films">
+        {% if new_films.is_empty() %}
+        <p class="empty">Zatím žádné nově přidané filmy.</p>
+        {% else %}
+        <div class="cards">
+            {% for f in new_films %}
+            <a class="card" href="/filmy-online/{{ f.slug }}/" title="Detail filmu">
+                {% match f.cover_filename %}
+                {% when Some with (_cf) %}
+                <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy">
+                {% when None %}
+                <div class="no-cover">{{ f.title }}</div>
+                {% endmatch %}
+                <div class="card-info">
+                    <div class="card-title">{{ f.title }}{{ f.year_str() }}</div>
+                    <div class="card-meta">{{ f.runtime_str() }} · {{ f.when_str() }}</div>
+                    {% match f.imdb_id %}
+                    {% when Some with (imdb) %}
+                    <div class="card-ext">IMDB: <code>{{ imdb }}</code></div>
+                    {% when None %}
+                    {% endmatch %}
+                    <div class="card-src" title="Zdrojový titul z SK Torrent">{{ f.sktorrent_title }}</div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+
+    {# ---- Doplněné filmy ---- #}
+    <section class="tab-panel" id="tab-updated-films">
+        {% if updated_films.is_empty() %}
+        <p class="empty">Žádné stávající filmy zatím nezískaly nový SK Torrent zdroj.</p>
+        {% else %}
+        <div class="cards">
+            {% for f in updated_films %}
+            <a class="card" href="/filmy-online/{{ f.slug }}/" title="Detail filmu">
+                {% match f.cover_filename %}
+                {% when Some with (_cf) %}
+                <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy">
+                {% when None %}
+                <div class="no-cover">{{ f.title }}</div>
+                {% endmatch %}
+                <div class="card-info">
+                    <div class="card-title">{{ f.title }}{{ f.year_str() }}</div>
+                    <div class="card-meta">Doplněn SK Torrent · {{ f.when_str() }}</div>
+                    <div class="card-src">{{ f.sktorrent_title }}</div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+
+    {# ---- Nové seriály ---- #}
+    <section class="tab-panel" id="tab-new-series">
+        {% if new_series.is_empty() %}
+        <p class="empty">Zatím žádné nově vytvořené seriály.</p>
+        {% else %}
+        <div class="cards">
+            {% for s in new_series %}
+            <a class="card" href="/serialy-online/{{ s.series_slug }}/" title="Detail seriálu">
+                {% match s.cover_filename %}
+                {% when Some with (_cf) %}
+                <img src="/serialy-online/{{ s.series_slug }}.webp" alt="{{ s.series_title }}" loading="lazy">
+                {% when None %}
+                <div class="no-cover">{{ s.series_title }}</div>
+                {% endmatch %}
+                <div class="card-info">
+                    <div class="card-title">{{ s.series_title }}{{ s.year_str() }}</div>
+                    <div class="card-meta">+ {{ s.episode_count }} epizod · {{ s.when_str() }}</div>
+                    {% match s.imdb_id %}
+                    {% when Some with (imdb) %}
+                    <div class="card-ext">IMDB: <code>{{ imdb }}</code></div>
+                    {% when None %}
+                    {% endmatch %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+
+    {# ---- Epizody pro existující seriály ---- #}
+    <section class="tab-panel" id="tab-episodes">
+        {% if episodes_for_existing.is_empty() %}
+        <p class="empty">Žádné epizody pro dříve existující seriály.</p>
+        {% else %}
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th>Seriál</th>
+                    <th>Epizoda</th>
+                    <th>Akce</th>
+                    <th>Zdrojový titul</th>
+                    <th>Kdy</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in episodes_for_existing %}
+                <tr>
+                    <td>
+                        <a href="/serialy-online/{{ e.series_slug }}/" title="Seriál {{ e.series_title }}">{{ e.series_title }}</a>
+                    </td>
+                    <td><code>{{ e.ep_code() }}</code>{% match e.episode_name %}{% when Some with (name) %} · {{ name }}{% when None %}{% endmatch %}</td>
+                    <td>
+                        {% if e.is_added() %}
+                        <span class="badge badge-add">přidáno</span>
+                        {% else %}
+                        <span class="badge badge-upd">doplněno</span>
+                        {% endif %}
+                    </td>
+                    <td class="src">{{ e.sktorrent_title }}</td>
+                    <td>{{ e.when_str() }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+
+    {# ---- Přeskočeno ---- #}
+    <section class="tab-panel" id="tab-skipped">
+        {% if skipped.is_empty() %}
+        <p class="empty">Nic nepřeskočeno.</p>
+        {% else %}
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th>Zdrojový titul</th>
+                    <th>Typ</th>
+                    <th>Důvod</th>
+                    <th>Kdy</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in skipped %}
+                <tr>
+                    <td>
+                        <a href="{{ s.sktorrent_url }}" target="_blank" rel="noopener" title="Otevřít SK Torrent">
+                            {{ s.sktorrent_title }}
+                        </a>
+                    </td>
+                    <td>{% match s.detected_type %}{% when Some with (t) %}{{ t }}{% when None %}—{% endmatch %}</td>
+                    <td class="reason">{{ s.reason() }}</td>
+                    <td>{{ s.when_str() }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+
+    {# ---- Selhalo ---- #}
+    <section class="tab-panel" id="tab-failed">
+        {% if failed.is_empty() %}
+        <p class="empty">Žádné selhání. 🎉</p>
+        {% else %}
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th>Zdrojový titul</th>
+                    <th>Krok</th>
+                    <th>Chyba</th>
+                    <th>Běh</th>
+                    <th>Kdy</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for f in failed %}
+                <tr>
+                    <td>
+                        <a href="{{ f.sktorrent_url }}" target="_blank" rel="noopener" title="Otevřít SK Torrent">
+                            {{ f.sktorrent_title }}
+                        </a>
+                    </td>
+                    <td><code>{% match f.failure_step %}{% when Some with (s) %}{{ s }}{% when None %}—{% endmatch %}</code></td>
+                    <td class="reason">{% match f.failure_message %}{% when Some with (m) %}{{ m }}{% when None %}—{% endmatch %}</td>
+                    <td><a href="/admin/import/{{ f.run_id }}" title="Detail běhu">#{{ f.run_id }}</a></td>
+                    <td>{{ f.created_at_str() }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+</main>
+
+<style>
+.admin-summary { max-width: 1400px; margin: 0 auto; padding: 1rem; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+
+.stats-row { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0 1.5rem; padding: 0.8rem 1rem; background: #f1f5f9; border-radius: 8px; }
+.stat { font-size: 0.9rem; color: #555; }
+.stat strong { font-size: 1.1rem; margin-left: 0.25rem; }
+.stat-added strong { color: #15803d; }
+.stat-updated strong { color: #1d4ed8; }
+.stat-skipped strong { color: #a16207; }
+.stat-failed strong { color: #b91c1c; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; border-bottom: 2px solid #e2e8f0; margin-bottom: 1rem; }
+.tab-btn { background: transparent; border: none; border-bottom: 3px solid transparent; padding: 0.6rem 1rem; font-size: 0.9rem; font-weight: 600; color: #64748b; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
+.tab-btn:hover { color: #11457E; }
+.tab-btn.active { color: #11457E; border-bottom-color: #D7141A; }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.empty { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.card { display: flex; gap: 0.8rem; background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.6rem; text-decoration: none; color: inherit; transition: box-shadow 0.15s; }
+.card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+.card img { width: 70px; height: 105px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.card .no-cover { width: 70px; height: 105px; background: #1e293b; color: white; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; border-radius: 4px; font-size: 0.75rem; flex-shrink: 0; }
+.card-info { flex: 1; min-width: 0; overflow: hidden; }
+.card-title { font-weight: 600; color: #11457E; font-size: 0.95rem; margin-bottom: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta { font-size: 0.8rem; color: #64748b; margin-bottom: 0.3rem; }
+.card-ext { font-size: 0.75rem; color: #475569; margin-bottom: 0.3rem; }
+.card-ext code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 0.7rem; }
+.card-src { font-size: 0.7rem; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
+
+.items-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.items-table th, .items-table td { padding: 0.55rem 0.7rem; border-bottom: 1px solid #eef2f6; text-align: left; vertical-align: top; }
+.items-table th { background: #f8fafc; font-weight: 600; color: #555; }
+.items-table tbody tr:hover { background: #f9fafb; }
+.items-table a { color: #11457E; text-decoration: none; }
+.items-table a:hover { text-decoration: underline; }
+.items-table code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.8rem; }
+.items-table .src { color: #64748b; font-style: italic; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.items-table .reason { color: #7c2d12; font-size: 0.8rem; max-width: 480px; word-break: break-word; }
+
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; }
+.badge-add { background: #d1fae5; color: #065f46; }
+.badge-upd { background: #dbeafe; color: #1e40af; }
+</style>
+
+<script>
+(function() {
+    var btns = document.querySelectorAll('.tab-btn');
+    btns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var key = btn.dataset.tab;
+            document.querySelectorAll('.tab-btn').forEach(function(b) {
+                b.classList.toggle('active', b === btn);
+            });
+            document.querySelectorAll('.tab-panel').forEach(function(p) {
+                p.classList.toggle('active', p.id === 'tab-' + key);
+            });
+        });
+    });
+})();
+</script>
+{% endblock %}

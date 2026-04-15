@@ -24,6 +24,63 @@ DEFAULT_TIMEOUT = 30
 log = logging.getLogger(__name__)
 
 
+def download_sktorrent_thumb(
+    sktorrent_video_id: int,
+    slug: str,
+    out_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> tuple[Path, Path] | None:
+    """Fallback cover source — SK Torrent's listing thumbnail.
+
+    Used when TMDB has no poster (obscure CZ titles frequently lack one).
+    The thumbnail lives at a predictable URL: `/media/videos/tmb1/{id}/1.jpg`.
+    It's small (≈200×300) so we skip the `-large` variant — the detail
+    page would just upscale it.
+    """
+    if Image is None:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # The Rust handler at GET /filmy-online/{slug}-large.webp looks in
+    # `{covers_dir}/large/{slug}.webp`, not `{slug}-large.webp` in the base
+    # dir. See films.rs films_cover_large().
+    large_dir = out_dir / "large"
+    large_dir.mkdir(parents=True, exist_ok=True)
+    small_path = out_dir / f"{slug}.webp"
+    large_path = large_dir / f"{slug}.webp"
+    if not overwrite and small_path.exists() and large_path.exists():
+        return small_path, large_path
+
+    url = f"https://online.sktorrent.eu/media/videos/tmb1/{sktorrent_video_id}/1.jpg"
+    try:
+        r = requests.get(url, timeout=DEFAULT_TIMEOUT, stream=True)
+    except requests.RequestException as e:
+        log.warning("sktorrent thumb fetch failed for %s: %s", slug, e)
+        return None
+    if r.status_code != 200 or int(r.headers.get("Content-Length", "0") or 0) < 500:
+        log.warning("sktorrent thumb missing/empty for %s (HTTP %d)", slug, r.status_code)
+        return None
+
+    try:
+        img = Image.open(r.raw).convert("RGB")
+    except Exception as e:
+        log.warning("sktorrent thumb decode failed for %s: %s", slug, e)
+        return None
+
+    # SKT thumbnail is already small (≈200×300 native), so for `-large` we
+    # just save the native bitmap without forcing it through `.thumbnail()`
+    # (which would have no effect). Detail page will upscale in CSS, but at
+    # least the file exists — better than a white/404 placeholder.
+    img.save(large_path, "WEBP", quality=85, method=6)
+
+    small = img.copy()
+    small.thumbnail((200, 300), Image.LANCZOS)
+    small.save(small_path, "WEBP", quality=85, method=6)
+
+    log.info("cover saved %s from SK Torrent thumbnail (TMDB had none)", slug)
+    return small_path, large_path
+
+
 def download_cover(
     poster_path: str,
     slug: str,

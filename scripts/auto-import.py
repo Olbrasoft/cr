@@ -212,6 +212,19 @@ def _is_skipped(conn, sktorrent_video_id: int) -> bool:
     return cur.fetchone() is not None
 
 
+def _langs_to_flags(langs: list[str]) -> tuple[bool, bool]:
+    """Map ParsedTitle.langs to (has_dub, has_subtitles) booleans.
+
+    DUB_CZ/DUB_SK → dabing, SUBS_CZ/SUBS_SK → titulky. Bare "CZ" / "SK" tags
+    on SK Torrent titles mean "Czech/Slovak dub present" (that's how they
+    label dubbed releases), so they count as dub too. Pure "EN" does not
+    toggle either flag.
+    """
+    has_dub = any(l in ("DUB_CZ", "DUB_SK", "CZ", "SK") for l in langs)
+    has_subs = any(l in ("SUBS_CZ", "SUBS_SK") for l in langs)
+    return has_dub, has_subs
+
+
 def _process_film(conn, *, run_id: int, video: ScannedVideo,
                   parsed: ParsedTitle, detail, movies_covers: Path,
                   counters: dict, tmdb_session: requests.Session) -> None:
@@ -227,6 +240,7 @@ def _process_film(conn, *, run_id: int, video: ScannedVideo,
         counters["skipped_count"] += 1
         return
 
+    film_has_dub, film_has_subs = _langs_to_flags(parsed.langs)
     try:
         action, film_id = upsert_film(
             conn,
@@ -235,6 +249,8 @@ def _process_film(conn, *, run_id: int, video: ScannedVideo,
             sktorrent_qualities=detail.qualities if detail else [],
             movie=movie,
             cover_dir=movies_covers,
+            has_dub=film_has_dub,
+            has_subtitles=film_has_subs,
         )
     except Exception as e:
         conn.rollback()
@@ -277,12 +293,15 @@ def _process_episode(conn, *, run_id: int, video: ScannedVideo,
         counters["skipped_count"] += 1
         return
 
+    ep_has_dub, ep_has_subs = _langs_to_flags(parsed.langs)
     episodes = [(
         parsed.season,
         parsed.episode,
         video.video_id,
         detail.cdn if detail else None,
         detail.qualities if detail else [],
+        ep_has_dub,
+        ep_has_subs,
     )]
     try:
         results = process_series_batch(

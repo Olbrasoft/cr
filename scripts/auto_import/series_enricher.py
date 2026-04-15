@@ -180,6 +180,8 @@ def upsert_episode(
     sktorrent_cdn: int | None,
     sktorrent_qualities: list[str],
     ep_meta: EpisodeResolution | None = None,
+    has_dub: bool = False,
+    has_subtitles: bool = False,
 ) -> tuple[str, int | None]:
     """Decide updated_episode / added_episode / skipped for a single episode."""
     cur = conn.cursor()
@@ -196,10 +198,17 @@ def upsert_episode(
         ep_id, existing_skt = row
         if existing_skt is not None:
             return "skipped", ep_id
+        # OR-in the language flags so we never downgrade an existing episode
+        # that already had dub/subs from another source (Bombuj, Prehraj.to).
         cur.execute(
             "UPDATE episodes SET sktorrent_video_id = %s, sktorrent_cdn = %s, "
-            "sktorrent_qualities = %s WHERE id = %s",
-            (sktorrent_video_id, sktorrent_cdn, qualities_str, ep_id),
+            "sktorrent_qualities = %s, "
+            "has_dub = has_dub OR %s, "
+            "has_subtitles = has_subtitles OR %s, "
+            "sktorrent_added_at = now() "
+            "WHERE id = %s",
+            (sktorrent_video_id, sktorrent_cdn, qualities_str,
+             has_dub, has_subtitles, ep_id),
         )
         log.info("updated episode %d S%dE%d (added SKT %d)",
                  ep_id, season, episode_num, sktorrent_video_id)
@@ -214,13 +223,15 @@ def upsert_episode(
     cur.execute(
         """INSERT INTO episodes
            (series_id, season, episode, sktorrent_video_id, sktorrent_cdn,
-            sktorrent_qualities, episode_name, overview, air_date, runtime)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            sktorrent_qualities, episode_name, overview, air_date, runtime,
+            has_dub, has_subtitles, sktorrent_added_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
            RETURNING id""",
         (
             series_id, season, episode_num,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             name, overview, air_date, runtime,
+            has_dub, has_subtitles,
         ),
     )
     ep_id = cur.fetchone()[0]
@@ -232,14 +243,18 @@ def process_series_batch(
     conn: psycopg2.extensions.connection,
     *,
     tv: TvResolution,
-    episodes_to_add: list[tuple[int, int, int, int | None, list[str]]],
+    episodes_to_add: list[tuple[int, int, int, int | None, list[str], bool, bool]],
     cover_dir: Path,
 ) -> list[tuple[str, int | None, int, int]]:
     """Single series + multiple new episodes — exactly ONE series creation.
 
     Args:
         episodes_to_add: list of (season, episode_num, sktorrent_video_id,
-                                  sktorrent_cdn, sktorrent_qualities)
+                                  sktorrent_cdn, sktorrent_qualities,
+                                  has_dub, has_subtitles). The last two
+                                  flags are OR-ed onto the episode row so
+                                  we don't downgrade existing language
+                                  signals from other sources.
 
     Returns:
         list of (action, episode_id, season, episode_num) per processed episode.
@@ -248,10 +263,10 @@ def process_series_batch(
     """
     was_created, series_id = ensure_series(conn, tv, cover_dir)
     if series_id is None:
-        return [("failed", None, s, e) for s, e, _, _, _ in episodes_to_add]
+        return [("failed", None, s, e) for s, e, _, _, _, _, _ in episodes_to_add]
 
     out: list[tuple[str, int | None, int, int]] = []
-    for season, ep_num, skt_id, skt_cdn, skt_q in episodes_to_add:
+    for season, ep_num, skt_id, skt_cdn, skt_q, ep_has_dub, ep_has_subs in episodes_to_add:
         ep_meta = resolve_episode(tv.tmdb_id, season, ep_num)
         action, ep_id = upsert_episode(
             conn,
@@ -262,6 +277,8 @@ def process_series_batch(
             sktorrent_cdn=skt_cdn,
             sktorrent_qualities=skt_q,
             ep_meta=ep_meta,
+            has_dub=ep_has_dub,
+            has_subtitles=ep_has_subs,
         )
         # Tag the FIRST episode of a newly-created series so the dashboard can
         # show "added series + N episodes" cleanly.

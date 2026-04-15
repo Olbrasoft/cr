@@ -465,13 +465,17 @@ var cachedPrehrajtoPlayed = false;
                         .then(function(vdata) {
                             checked++;
                             // Runtime mismatch guard — if we know the film's
-                            // runtime and the candidate's duration differs by
-                            // more than ~40 %, it's almost certainly a different
-                            // film (e.g. 14-minute 1902 short vs 80-minute remake).
+                            // runtime, drop anything farther than max(5 min, 10 %).
+                            // Example: 53-min film tolerates 48–58 min; a 78-min
+                            // "Žabák Ribit" from 2014 is clearly a different film.
+                            // Small absolute floor handles short films where 10 %
+                            // is unrealistically tight.
+                            var diffSec = 0;
                             if (filmRuntime && vdata.duration_sec) {
                                 var expected = filmRuntime * 60;
-                                var ratio = vdata.duration_sec / expected;
-                                if (ratio < 0.6 || ratio > 1.6) {
+                                diffSec = Math.abs(vdata.duration_sec - expected);
+                                var toleranceSec = Math.max(5 * 60, expected * 0.10);
+                                if (diffSec > toleranceSec) {
                                     if (checked >= movies.length || checked >= 15) return;
                                     if (checked === startIdx + batch.length) validateBatch(startIdx + 3);
                                     return; // skip — wrong film
@@ -480,9 +484,12 @@ var cachedPrehrajtoPlayed = false;
 
                             if (vdata.valid) {
                                 var item = createItem(movie, true, vdata.duration_sec, vdata.height);
-                                // Sort direct items by height DESC — 1080p appears
-                                // above 720p, above 480p, above 304p, etc.
-                                insertSortedByHeight(container, item, vdata.height || 0);
+                                // Sort: runtime-closeness first, then height. A
+                                // 1-minute-off 720p beats a 12-minute-off 1080p
+                                // because the second candidate is almost certainly
+                                // the wrong cut / wrong film.
+                                item.dataset.runtimeDiff = diffSec;
+                                insertSortedByRuntimeThenHeight(container, item, diffSec, vdata.height || 0);
                                 // Store movie reference on the DOM node so the
                                 // autoplay simulated-click can find it back.
                                 item._movie = movie;
@@ -550,6 +557,31 @@ var cachedPrehrajtoPlayed = false;
             }
         }
         // All existing direct items have higher/equal height — insert before first proxy
+        var firstProxy = container.querySelector('.proxy-item');
+        if (firstProxy) container.insertBefore(item, firstProxy);
+        else container.appendChild(item);
+    }
+
+    // Primary key: smaller runtime diff wins (the 53-minute Žabák should
+    // float above the 78/85-minute Žabák Ribit). Tiebreaker: higher
+    // resolution. Candidates without a known runtime (dataset.runtimeDiff
+    // missing) get Infinity so they always lose to a measured match.
+    function insertSortedByRuntimeThenHeight(container, item, diffSec, height) {
+        var siblings = container.querySelectorAll('.prehrajto-item:not(.proxy-item)');
+        for (var i = 0; i < siblings.length; i++) {
+            var sd = parseInt(siblings[i].dataset.runtimeDiff || '999999', 10);
+            if (diffSec < sd) {
+                container.insertBefore(item, siblings[i]);
+                return;
+            }
+            if (diffSec === sd) {
+                var sh = parseInt(siblings[i].dataset.height || '0', 10);
+                if (height > sh) {
+                    container.insertBefore(item, siblings[i]);
+                    return;
+                }
+            }
+        }
         var firstProxy = container.querySelector('.proxy-item');
         if (firstProxy) container.insertBefore(item, firstProxy);
         else container.appendChild(item);
