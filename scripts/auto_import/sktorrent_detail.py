@@ -110,49 +110,51 @@ def fetch_detail(
     detail_url: str | None = None,
     session: requests.Session | None = None,
     timeout: int = 20,
-) -> VideoDetail:
+) -> VideoDetail | None:
     """Fetch a single video detail page and parse it.
 
     Args:
         video_id: SK Torrent video id (must match the URL we fetch)
         detail_url: full URL; if None, builds canonical "/video/{id}/x"
-        session: optional reusable requests.Session
+        session: optional reusable requests.Session. Required headers
+            (User-Agent, Accept-Encoding: identity) are set if missing.
         timeout: HTTP timeout seconds
 
     Returns:
-        VideoDetail with cdn, qualities, description.
+        VideoDetail on success, None if the video was deleted (HTTP 404).
 
     Raises:
-        DetailFetchError on network or non-200 response.
+        DetailFetchError on network or non-200/404 response.
     """
     own_session = session is None
     if session is None:
         session = requests.Session()
-        session.headers.update({
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Accept-Encoding": "identity",
-        })
+    # Apply required headers to caller-provided sessions too — Accept-Encoding
+    # MUST be identity to avoid SK Torrent's malformed-gzip bug.
+    session.headers["Accept-Encoding"] = "identity"
+    session.headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
     if detail_url is None:
         detail_url = f"https://online.sktorrent.eu/video/{video_id}/x"
 
     try:
-        r = session.get(detail_url, timeout=timeout)
-    except requests.RequestException as e:
-        raise DetailFetchError(f"detail {video_id} request failed: {e}") from e
+        try:
+            r = session.get(detail_url, timeout=timeout)
+        except requests.RequestException as e:
+            raise DetailFetchError(f"detail {video_id} request failed: {e}") from e
+
+        if r.status_code == 404:
+            log.warning("detail %d returned HTTP 404 — video deleted", video_id)
+            return None
+        if r.status_code != 200:
+            raise DetailFetchError(f"detail {video_id} returned HTTP {r.status_code}")
+
+        detail = parse_detail_html(video_id, r.text)
+        if not detail.qualities:
+            log.warning("detail %d returned no playable sources", video_id)
+        return detail
     finally:
         if own_session:
-            # Don't actually close — fetch_detail is typically called in a loop
-            pass
-
-    if r.status_code == 404:
-        raise DetailFetchError(f"detail {video_id} returned HTTP 404 (deleted)")
-    if r.status_code != 200:
-        raise DetailFetchError(f"detail {video_id} returned HTTP {r.status_code}")
-
-    detail = parse_detail_html(video_id, r.text)
-    if not detail.qualities:
-        log.warning("detail %d returned no playable sources", video_id)
-    return detail
+            session.close()
 
 
 def _cli() -> None:
