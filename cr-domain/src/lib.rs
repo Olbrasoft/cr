@@ -9,12 +9,14 @@
 //!
 //! - `entities` - Region, District, Orp, Municipality structs
 //! - `coordinates` - Coordinates value object with validation
+//! - `dto` - Plain row-shaped records returned by repositories
 //! - `error` - Domain-specific error types
 //! - `id` - Strongly-typed ID wrappers
 //! - `repository` - Repository trait definitions (ports)
 //! - `slug` - URL slug generation from Czech names
 
 pub mod coordinates;
+pub mod dto;
 pub mod entities;
 pub mod error;
 pub mod id;
