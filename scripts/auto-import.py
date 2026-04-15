@@ -19,7 +19,7 @@ Pipeline per run:
 
 Env vars:
   DATABASE_URL           — Postgres DSN (required)
-  TMDB_API_KEY           — TMDB v3 bearer key (required)
+  TMDB_API_KEY           — TMDB v3 API key (query-string `api_key=`, not a bearer token)
   GEMINI_API_KEY         — single prod key (cron); GEMINI_API_KEY_1..4 for dev
   MOVIES_COVERS_DIR      — default data/movies/covers-webp
   SERIES_COVERS_DIR      — default data/series/covers-webp
@@ -44,7 +44,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 import psycopg2
-import psycopg2.extras
 import requests
 
 from scripts.auto_import.sktorrent_scanner import (
@@ -302,10 +301,26 @@ def _process_episode(conn, *, run_id: int, video: ScannedVideo,
         conn.commit()
         return
 
+    series_row_written = False
     for action, ep_id, _season, _ep_num in results:
         if action == "added_series+added_episode":
             counters["added_series"] += 1
             counters["added_episodes"] += 1
+            # Two rows: one for the series creation (so the dashboard's
+            # "Added series" filter sees it) and one for the episode.
+            if not series_row_written:
+                series_cur = conn.cursor()
+                series_cur.execute(
+                    "SELECT id FROM series WHERE imdb_id = %s",
+                    (tv.imdb_id,),
+                )
+                series_row = series_cur.fetchone()
+                _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                             detected_type="series",
+                             imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                             action="added_series",
+                             target_series_id=series_row[0] if series_row else None)
+                series_row_written = True
             store_action = "added_episode"
         elif action == "added_episode":
             counters["added_episodes"] += 1
@@ -356,15 +371,24 @@ def run(trigger: str, max_new: int) -> int:
     tmdb_session = requests.Session()
 
     try:
-        videos = scan_new_videos(
+        scan = scan_new_videos(
             checkpoint=checkpoint, max_new=max_new, session=skt_session,
         )
+        videos = scan.videos
+        counters["scanned_pages"] = scan.pages_scanned
         counters["scanned_videos"] = len(videos)
 
         for video in videos:
             if _is_skipped(conn, video.video_id):
                 log.info("video %d is blacklisted — skipping", video.video_id)
+                _insert_item(conn, run_id=run_id, video=video, parsed=None,
+                             detected_type="unknown",
+                             imdb_id=None, tmdb_id=None,
+                             action="skipped",
+                             failure_step="blacklist",
+                             failure_message="video present in import_skipped_videos")
                 counters["skipped_count"] += 1
+                conn.commit()
                 continue
 
             try:

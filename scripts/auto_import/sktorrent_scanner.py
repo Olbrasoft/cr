@@ -112,15 +112,40 @@ def _parse_listing_html(html: str) -> list[ScannedVideo]:
 
 
 def _fetch_page(session: requests.Session, page: int, timeout: int = 20) -> str:
-    """GET listing page N. Returns raw HTML; raises ScannerError on failure."""
-    params = {"page": page} if page > 1 else None
+    """GET listing page N. Returns raw HTML; raises ScannerError on failure.
+
+    Uses the CZ proxy when `CZ_PROXY_URL` + `CZ_PROXY_KEY` are set (required
+    when running from a datacenter IP — SK Torrent blocks Hetzner et al.).
+    """
+    from scripts.auto_import.cz_proxy import proxy_get
+
+    target = LISTING_URL if page <= 1 else f"{LISTING_URL}?page={page}"
     try:
-        r = session.get(LISTING_URL, params=params, timeout=timeout)
+        r = proxy_get(target, session, timeout=timeout)
     except requests.RequestException as e:
         raise ScannerError(f"page {page} request failed: {e}") from e
     if r.status_code != 200:
         raise ScannerError(f"page {page} returned HTTP {r.status_code}")
     return r.text
+
+
+@dataclass
+class ScanResult:
+    """Outcome of a single scan — new videos + the crawl stats the caller
+    needs to persist (e.g. `import_runs.scanned_pages`).
+
+    Iterating over a ScanResult yields the videos, so existing callers that
+    treat the return as a list keep working.
+    """
+
+    videos: list["ScannedVideo"]
+    pages_scanned: int
+
+    def __iter__(self):
+        return iter(self.videos)
+
+    def __len__(self):
+        return len(self.videos)
 
 
 def scan_new_videos(
@@ -129,7 +154,7 @@ def scan_new_videos(
     max_pages: int = MAX_PAGES_HARD_CAP,
     session: requests.Session | None = None,
     sleep_s: float = PAGE_SLEEP_S,
-) -> list[ScannedVideo]:
+) -> "ScanResult":
     """Crawl pages from newest until checkpoint, return new videos ASC.
 
     Args:
@@ -219,7 +244,7 @@ def scan_new_videos(
         pages_scanned, len(deduped), checkpoint, reached_checkpoint,
         bool(max_new),
     )
-    return deduped
+    return ScanResult(videos=deduped, pages_scanned=pages_scanned)
 
 
 def _cli() -> None:
