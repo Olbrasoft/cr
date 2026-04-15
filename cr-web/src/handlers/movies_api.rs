@@ -160,16 +160,17 @@ fn cz_proxy_config() -> Option<(String, String)> {
 pub async fn movies_search(
     State(state): State<AppState>,
     Query(params): Query<SearchQuery>,
-) -> Result<Json<SearchResponse>, (StatusCode, String)> {
+) -> crate::error::WebResult<Json<SearchResponse>> {
+    use crate::error::WebError;
+
     let query = params.q.trim().to_string();
     if query.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Missing search query".to_string()));
+        return Err(WebError::bad_request("Missing search query"));
     }
 
-    let (proxy_url, proxy_key) = cz_proxy_config().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Proxy not configured".to_string(),
-    ))?;
+    let (proxy_url, proxy_key) = cz_proxy_config().ok_or_else(|| {
+        WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
+    })?;
 
     let url = format!(
         "{}?action=search&q={}&key={}",
@@ -186,20 +187,16 @@ pub async fn movies_search(
         .await
         .map_err(|e| {
             tracing::error!("CzProxy search failed: {e}");
-            (StatusCode::BAD_GATEWAY, format!("Proxy error: {e}"))
+            WebError::bad_gateway(format!("Proxy error: {e}"))
         })?;
 
     let data: ProxySearchResponse = resp.json().await.map_err(|e| {
         tracing::error!("CzProxy search parse failed: {e}");
-        (
-            StatusCode::BAD_GATEWAY,
-            "Invalid proxy response".to_string(),
-        )
+        WebError::bad_gateway("Invalid proxy response")
     })?;
 
     if data.success != Some(true) {
-        return Err((
-            StatusCode::BAD_GATEWAY,
+        return Err(WebError::bad_gateway(
             data.error.unwrap_or_else(|| "Search failed".to_string()),
         ));
     }
@@ -234,19 +231,17 @@ pub async fn movies_search(
 pub async fn movies_video_url(
     State(state): State<AppState>,
     Query(params): Query<VideoUrlQuery>,
-) -> Result<Json<VideoUrlResponse>, (StatusCode, String)> {
+) -> crate::error::WebResult<Json<VideoUrlResponse>> {
+    use crate::error::WebError;
+
     let video_url = params.url.trim().to_string();
     if !is_prehrajto_url(&video_url) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Invalid prehraj.to URL".to_string(),
-        ));
+        return Err(WebError::bad_request("Invalid prehraj.to URL"));
     }
 
-    let (proxy_url, proxy_key) = cz_proxy_config().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Proxy not configured".to_string(),
-    ))?;
+    let (proxy_url, proxy_key) = cz_proxy_config().ok_or_else(|| {
+        WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
+    })?;
 
     // Fetch video URL and page HTML concurrently via CZ proxy
     let video_api_url = format!(
@@ -277,15 +272,12 @@ pub async fn movies_video_url(
 
     let resp = video_resp.map_err(|e| {
         tracing::error!("CzProxy video failed: {e}");
-        (StatusCode::BAD_GATEWAY, format!("Proxy error: {e}"))
+        WebError::bad_gateway(format!("Proxy error: {e}"))
     })?;
 
     let data: ProxyVideoResponse = resp.json().await.map_err(|e| {
         tracing::error!("CzProxy video parse failed: {e}");
-        (
-            StatusCode::BAD_GATEWAY,
-            "Invalid proxy response".to_string(),
-        )
+        WebError::bad_gateway("Invalid proxy response")
     })?;
 
     // Extract subtitles: prefer CZ proxy response, fallback to parsing page HTML

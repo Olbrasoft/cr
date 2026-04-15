@@ -30,9 +30,15 @@ impl WebError {
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self::Status(StatusCode::BAD_GATEWAY, message.into())
     }
+    // These helpers are part of the public WebError API surface introduced
+    // in #441. Kept even if no current caller references them because the
+    // remaining handler conversions (scope carried to #440 / #439) will use
+    // them; removing them and re-adding later would just be churn.
+    #[allow(dead_code)]
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Status(StatusCode::FORBIDDEN, message.into())
     }
+    #[allow(dead_code)]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::Status(StatusCode::NOT_FOUND, message.into())
     }
