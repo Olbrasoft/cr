@@ -326,8 +326,9 @@ const PREHRAJTO_PHP_PROXY: &str = "http://tumarsrobot.unas.cz/index.php";
 
 /// Extract `'videoLength': 772` from prehraj.to page HTML (seconds).
 fn extract_video_length(html: &str) -> Option<u32> {
-    static RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"'videoLength'\s*:\s*(\d+)").unwrap());
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"'videoLength'\s*:\s*(\d+)").expect("const regex literal compiles")
+    });
     RE.captures(html)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u32>().ok())
@@ -338,10 +339,12 @@ fn extract_video_length(html: &str) -> Option<u32> {
 /// the page's `<meta itemprop="height">` reports the actual stream dimensions.
 fn extract_dimensions(html: &str) -> (Option<u32>, Option<u32>) {
     static RE_W: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"itemprop="width"\s+content="(\d+)""#).unwrap()
+        regex::Regex::new(r#"itemprop="width"\s+content="(\d+)""#)
+            .expect("const regex literal compiles")
     });
     static RE_H: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"itemprop="height"\s+content="(\d+)""#).unwrap()
+        regex::Regex::new(r#"itemprop="height"\s+content="(\d+)""#)
+            .expect("const regex literal compiles")
     });
     let w = RE_W
         .captures(html)
@@ -359,7 +362,8 @@ fn extract_dimensions(html: &str) -> (Option<u32>, Option<u32>) {
 /// would require proxying — not what we want for scale.
 fn extract_is_direct(html: &str) -> bool {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"itemprop="contentUrl"\s+content="([^"]+)""#).unwrap()
+        regex::Regex::new(r#"itemprop="contentUrl"\s+content="([^"]+)""#)
+            .expect("const regex literal compiles")
     });
     RE.captures(html)
         .and_then(|c| c.get(1))
@@ -499,11 +503,9 @@ pub async fn movies_stream(
         return (StatusCode::BAD_REQUEST, "URL not allowed").into_response();
     }
 
-    let config = cz_proxy_config();
-    if config.is_none() {
+    let Some((proxy_url, proxy_key)) = cz_proxy_config() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured").into_response();
-    }
-    let (proxy_url, proxy_key) = config.unwrap();
+    };
 
     let stream_url = format!(
         "{}?action=stream&url={}&key={}",
@@ -565,9 +567,12 @@ pub async fn movies_stream(
                 builder = builder.header("Content-Range", cr);
             }
 
+            // builder.body can only fail on invalid header pairs we set
+            // above; fall back to a plain OK(bytes) so we never panic on a
+            // broken upstream response.
             builder
-                .body(axum::body::Body::from(bytes))
-                .unwrap()
+                .body(axum::body::Body::from(bytes.clone()))
+                .unwrap_or_else(|_| axum::http::Response::new(axum::body::Body::from(bytes)))
                 .into_response()
         }
         Err(e) => {
@@ -902,20 +907,28 @@ pub async fn movies_proxy_stream(
                 .map(|s| s.to_string());
 
             let mut headers = axum::http::HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
-            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
-            headers.insert(
-                header::HeaderName::from_static("accept-ranges"),
-                "bytes".parse().unwrap(),
-            );
-            if let Some(cl) = content_length {
-                headers.insert(header::CONTENT_LENGTH, cl.parse().unwrap());
+            // All header-value parses that COULD fail on malformed upstream
+            // strings are skipped silently on error instead of panicking the
+            // process — the proxied byte stream still works without these
+            // optional cache/CORS hints.
+            if let Ok(v) = content_type.parse() {
+                headers.insert(header::CONTENT_TYPE, v);
             }
-            if let Some(cr) = content_range {
-                headers.insert(
-                    header::HeaderName::from_static("content-range"),
-                    cr.parse().unwrap(),
-                );
+            if let Ok(v) = "*".parse() {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+            }
+            if let Ok(v) = "bytes".parse() {
+                headers.insert(header::HeaderName::from_static("accept-ranges"), v);
+            }
+            if let Some(cl) = content_length
+                && let Ok(v) = cl.parse()
+            {
+                headers.insert(header::CONTENT_LENGTH, v);
+            }
+            if let Some(cr) = content_range
+                && let Ok(v) = cr.parse()
+            {
+                headers.insert(header::HeaderName::from_static("content-range"), v);
             }
 
             let body = axum::body::Body::from_stream(resp.bytes_stream());
@@ -960,8 +973,8 @@ async fn resolve_streamtape(
     }
 
     // Fallback first: robotlink div is pre-rendered with the actual URL
-    let re_div =
-        regex::Regex::new(r#"<div[^>]*id="robotlink"[^>]*>([^<]*get_video[^<]*)</div>"#).unwrap();
+    let re_div = regex::Regex::new(r#"<div[^>]*id="robotlink"[^>]*>([^<]*get_video[^<]*)</div>"#)
+        .expect("const regex literal compiles");
     if let Some(cap) = re_div.captures(&html) {
         let raw = cap[1].trim();
         let get_video_url = if raw.starts_with("//") {
@@ -997,14 +1010,15 @@ async fn resolve_streamtape(
     let re = regex::Regex::new(
         r#"getElementById\('robotlink'\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*[^(]*\('([^']+)'\)((?:\.substring\(\d+\))+)"#,
     )
-    .unwrap();
+    .expect("const regex literal compiles");
 
     if let Some(cap) = re.captures(&html) {
         let prefix = &cap[1];
         let mut inner = cap[2].to_string();
 
         // Apply chained .substring(N) calls
-        let sub_re = regex::Regex::new(r"\.substring\((\d+)\)").unwrap();
+        let sub_re =
+            regex::Regex::new(r"\.substring\((\d+)\)").expect("const regex literal compiles");
         for sub_cap in sub_re.captures_iter(&cap[3]) {
             let skip: usize = sub_cap[1].parse().unwrap_or(0);
             if skip <= inner.len() {
@@ -1044,7 +1058,7 @@ async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String
     let re = regex::Regex::new(
         r#"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('([^']+)',(\d+),(\d+),'([^']+)'"#,
     )
-    .unwrap();
+    .expect("const regex literal compiles");
 
     let cap = re
         .captures(&html)
@@ -1060,7 +1074,8 @@ async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String
     let unpacked = unpack_js(p, a, c, &keywords);
 
     // Extract MDCore.wurl
-    let wurl_re = regex::Regex::new(r#"MDCore\.wurl="([^"]+)""#).unwrap();
+    let wurl_re =
+        regex::Regex::new(r#"MDCore\.wurl="([^"]+)""#).expect("const regex literal compiles");
     if let Some(m) = wurl_re.captures(&unpacked) {
         let video_url = if m[1].starts_with("//") {
             format!("https:{}", &m[1])
@@ -1076,7 +1091,7 @@ async fn resolve_mixdrop(client: &reqwest::Client, code: &str) -> Result<(String
 /// Simple p,a,c,k,e,d JS unpacker.
 #[allow(dead_code)]
 fn unpack_js(packed: &str, base: u32, count: usize, keywords: &[&str]) -> String {
-    let word_re = regex::Regex::new(r"\b\w+\b").unwrap();
+    let word_re = regex::Regex::new(r"\b\w+\b").expect("const regex literal compiles");
     word_re
         .replace_all(packed, |caps: &regex::Captures| {
             let word = &caps[0];
@@ -1119,9 +1134,9 @@ fn extract_subtitles_from_html(html: &str) -> Vec<SubtitleTrack> {
     let re = regex::Regex::new(
         r#"\{\s*file\s*:\s*"([^"]+\.vtt[^"]*)"\s*,\s*(?:"default"\s*:\s*true\s*,\s*)?label\s*:\s*"([^"]+)"\s*,\s*kind\s*:\s*"captions"\s*\}"#,
     )
-    .unwrap();
+    .expect("const regex literal compiles");
 
-    let lang_re = regex::Regex::new(r"(\w{2,3})\s*$").unwrap();
+    let lang_re = regex::Regex::new(r"(\w{2,3})\s*$").expect("const regex literal compiles");
 
     re.captures_iter(html)
         .map(|cap| {
@@ -1136,7 +1151,7 @@ fn extract_subtitles_from_html(html: &str) -> Vec<SubtitleTrack> {
 
             // Clean label: "CZE - 8929014 - cze" → "CZE"
             let label = regex::Regex::new(r"\s*-\s*\d+\s*-\s*\w+$")
-                .unwrap()
+                .expect("const regex literal compiles")
                 .replace(label_raw, "")
                 .trim()
                 .to_string();

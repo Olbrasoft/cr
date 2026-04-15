@@ -457,19 +457,21 @@ pub async fn video_prepare(
         upstream_thumbnail_url: info.thumbnail.clone(),
     };
 
-    // Check concurrency limit before spawning
-    let permit = VIDEO_DOWNLOAD_SEMAPHORE.try_acquire();
-    if permit.is_err() {
+    // Check concurrency limit before spawning. The semaphore permit must
+    // move into the spawned task so it's released when the download
+    // finishes; extract it here (the is_err() branch above already bailed,
+    // so `ok()` is guaranteed to yield Some and gives us a panic-free path).
+    let Ok(permit) = VIDEO_DOWNLOAD_SEMAPHORE.try_acquire() else {
         if let Some(t) = state.video_downloads.lock().await.get_mut(&token) {
             t.status = DownloadStatus::Failed {
                 error: "Příliš mnoho souběžných stahování. Zkuste to za chvíli.".to_string(),
             };
         }
         return Ok(Json(VideoPrepareResponse { token }));
-    }
+    };
 
     tokio::spawn(async move {
-        let _permit = permit.unwrap();
+        let _permit = permit;
 
         let result = cr_infra::video::download_video_with_progress(
             &dl_client,

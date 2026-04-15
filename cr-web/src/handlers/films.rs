@@ -683,7 +683,7 @@ pub async fn films_cover(
         if path.exists() {
             let bytes = tokio::fs::read(&path).await.map_err(|e| {
                 tracing::error!("Failed to read cover {}: {}", path.display(), e);
-                crate::error::WebError(anyhow::anyhow!("Failed to read cover: {e}"))
+                crate::error::WebError::Internal(anyhow::anyhow!("Failed to read cover: {e}"))
             })?;
             return Ok((
                 StatusCode::OK,
@@ -915,7 +915,7 @@ pub async fn sktorrent_resolve(
     let re = regex::Regex::new(
         r#"<source\s+src="([^"]+)"\s+type='video/mp4'\s+label='(\d+p)'\s+res='(\d+)'"#,
     )
-    .unwrap();
+    .expect("const regex literal compiles");
 
     let mut sources: Vec<SktorrentSource> = re
         .captures_iter(&html)

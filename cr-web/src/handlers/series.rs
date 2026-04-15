@@ -410,10 +410,11 @@ pub async fn series_resolve(
     let mut seen_in_season: std::collections::HashSet<i16> = std::collections::HashSet::new();
 
     for ep in episodes {
-        if let Some(ref s) = current_season
-            && s.number != ep.season
-        {
-            seasons.push(current_season.take().unwrap());
+        // Close out the previous season block when we cross a boundary.
+        // Copy the number before take() to avoid borrow overlap.
+        let boundary = current_season.as_ref().map(|s| s.number) != Some(ep.season);
+        if boundary && let Some(finished) = current_season.take() {
+            seasons.push(finished);
             seen_in_season.clear();
         }
         if current_season.is_none() {
