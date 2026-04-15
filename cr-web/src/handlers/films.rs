@@ -836,11 +836,9 @@ pub struct SktorrentResolveResponse {
     cached: bool,
 }
 
-/// In-memory cache for resolved sktorrent sources. Key: video_id, Value: (sources, resolved_at).
-type SktorrentCache =
-    tokio::sync::Mutex<std::collections::HashMap<i32, (Vec<SktorrentSource>, std::time::Instant)>>;
-static SKTORRENT_CACHE: std::sync::LazyLock<SktorrentCache> =
-    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
+// SK Torrent resolution cache moved to `AppState.sktorrent_cache` (a
+// `BoundedTtlCache`) to bound memory growth. Configured in main.rs with
+// `max_entries=2000, ttl=6h`.
 
 /// GET /api/films/sktorrent-resolve?video_id=99
 /// Fetches current CDN URLs from sktorrent.eu video page.
@@ -849,28 +847,14 @@ pub async fn sktorrent_resolve(
     axum::extract::Query(params): axum::extract::Query<SktorrentResolveQuery>,
 ) -> axum::Json<SktorrentResolveResponse> {
     let video_id = params.video_id;
-    let cache_ttl = std::time::Duration::from_secs(2 * 3600); // 2h cache
 
-    // Check cache
-    {
-        let cache = SKTORRENT_CACHE.lock().await;
-        if let Some((sources, resolved_at)) = cache.get(&video_id)
-            && resolved_at.elapsed() < cache_ttl
-        {
-            return axum::Json(SktorrentResolveResponse {
-                video_id,
-                sources: sources
-                    .iter()
-                    .map(|s| SktorrentSource {
-                        url: s.url.clone(),
-                        quality: s.quality.clone(),
-                        res: s.res,
-                    })
-                    .collect(),
-                error: None,
-                cached: true,
-            });
-        }
+    if let Some(cached_sources) = state.sktorrent_cache.get(&video_id).await {
+        return axum::Json(SktorrentResolveResponse {
+            video_id,
+            sources: cached_sources,
+            error: None,
+            cached: true,
+        });
     }
 
     // Fetch sktorrent video page
@@ -940,24 +924,10 @@ pub async fn sktorrent_resolve(
         });
     }
 
-    // Cache
-    {
-        let mut cache = SKTORRENT_CACHE.lock().await;
-        cache.insert(
-            video_id,
-            (
-                sources
-                    .iter()
-                    .map(|s| SktorrentSource {
-                        url: s.url.clone(),
-                        quality: s.quality.clone(),
-                        res: s.res,
-                    })
-                    .collect(),
-                std::time::Instant::now(),
-            ),
-        );
-    }
+    state
+        .sktorrent_cache
+        .insert(video_id, sources.clone())
+        .await;
 
     axum::Json(SktorrentResolveResponse {
         video_id,

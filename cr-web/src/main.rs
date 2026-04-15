@@ -16,6 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
+mod cache;
 mod config;
 mod error;
 mod handlers;
@@ -115,6 +116,14 @@ async fn main() -> Result<()> {
         r2_config: r2_config.map(Arc::new),
         video_library,
         streamtape_url_cache: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        // Filemoon playback URLs stay valid ~4 h; cap at 500 entries.
+        filemoon_cache: cache::BoundedTtlCache::new(500, std::time::Duration::from_secs(2 * 3600)),
+        // SK Torrent CDN scans are expensive (parallel HEADs); 6 h TTL and
+        // 2000 entries leave headroom for the current catalogue.
+        sktorrent_cache: cache::BoundedTtlCache::new(
+            2000,
+            std::time::Duration::from_secs(6 * 3600),
+        ),
     };
 
     // API routes with CORS

@@ -12,7 +12,8 @@ use crate::state::AppState;
 pub mod admin_import;
 mod audiobooks;
 mod download_video;
-mod films;
+// Public so AppState can reference SktorrentSource for the bounded cache.
+pub mod films;
 mod filmy_serialy;
 mod geojson;
 mod landmarks;
