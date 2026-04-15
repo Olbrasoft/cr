@@ -410,10 +410,11 @@ pub async fn series_resolve(
     let mut seen_in_season: std::collections::HashSet<i16> = std::collections::HashSet::new();
 
     for ep in episodes {
-        if let Some(ref s) = current_season
-            && s.number != ep.season
-        {
-            seasons.push(current_season.take().unwrap());
+        // Close out the previous season block when we cross a boundary.
+        // Copy the number before take() to avoid borrow overlap.
+        let boundary = current_season.as_ref().map(|s| s.number) != Some(ep.season);
+        if boundary && let Some(finished) = current_season.take() {
+            seasons.push(finished);
             seen_in_season.clear();
         }
         if current_season.is_none() {
@@ -701,8 +702,7 @@ pub async fn series_cover(
         .await?;
 
     let cover_filename = row.and_then(|r| r.cover_filename);
-    let covers_dir = std::env::var("SERIES_COVERS_DIR")
-        .unwrap_or_else(|_| "data/series/covers-webp".to_string());
+    let covers_dir = state.config.series_covers_dir.clone();
 
     if let Some(filename) = cover_filename {
         let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
@@ -757,8 +757,7 @@ pub async fn series_cover_large(
         .await?;
 
     let tmdb_id = row.and_then(|r| r.tmdb_id);
-    let covers_dir = std::env::var("SERIES_COVERS_DIR")
-        .unwrap_or_else(|_| "data/series/covers-webp".to_string());
+    let covers_dir = state.config.series_covers_dir.clone();
 
     // Cache path: {covers_dir}/large/{slug}.webp
     let cache_dir = std::path::Path::new(&covers_dir).join("large");
@@ -836,8 +835,7 @@ pub async fn series_cover_large(
         .bind(slug)
         .fetch_optional(&state.db)
         .await?;
-    let covers_dir_small = std::env::var("SERIES_COVERS_DIR")
-        .unwrap_or_else(|_| "data/series/covers-webp".to_string());
+    let covers_dir_small = state.config.series_covers_dir.clone();
     if let Some(filename) = row.and_then(|r| r.cover_filename) {
         let path = std::path::Path::new(&covers_dir_small).join(format!("{filename}.webp"));
         if path.exists()
@@ -877,12 +875,14 @@ struct CoverRow2 {
 }
 
 /// GET /serialy-online/person/{filename} — serve person profile image from disk.
-pub async fn series_person_image(Path(filename): Path<String>) -> WebResult<Response> {
+pub async fn series_person_image(
+    State(state): State<AppState>,
+    Path(filename): Path<String>,
+) -> WebResult<Response> {
     if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
         return Ok((StatusCode::NOT_FOUND, "Not found").into_response());
     }
-    let dir =
-        std::env::var("SERIES_PEOPLE_DIR").unwrap_or_else(|_| "data/series/people".to_string());
+    let dir = state.config.series_people_dir.clone();
     let path = std::path::Path::new(&dir).join(&filename);
     if path.exists()
         && let Ok(bytes) = tokio::fs::read(&path).await
@@ -901,13 +901,15 @@ pub async fn series_person_image(Path(filename): Path<String>) -> WebResult<Resp
 }
 
 /// GET /serialy-online/still/{filename} — serve episode still from disk.
-pub async fn series_episode_still(Path(filename): Path<String>) -> WebResult<Response> {
+pub async fn series_episode_still(
+    State(state): State<AppState>,
+    Path(filename): Path<String>,
+) -> WebResult<Response> {
     // Sanity-check filename: WebP only, no path traversal
     if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
         return Ok((StatusCode::NOT_FOUND, "Not found").into_response());
     }
-    let stills_dir = std::env::var("SERIES_STILLS_DIR")
-        .unwrap_or_else(|_| "data/series/episode-stills".to_string());
+    let stills_dir = state.config.series_stills_dir.clone();
     let path = std::path::Path::new(&stills_dir).join(&filename);
     if path.exists()
         && let Ok(bytes) = tokio::fs::read(&path).await

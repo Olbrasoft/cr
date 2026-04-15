@@ -675,15 +675,14 @@ pub async fn films_cover(
 
     let cover_filename = row.and_then(|r| r.cover_filename);
 
-    let covers_dir =
-        std::env::var("COVERS_DIR").unwrap_or_else(|_| "data/movies/covers-webp".to_string());
+    let covers_dir = state.config.film_covers_dir.clone();
 
     if let Some(filename) = cover_filename {
         let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
         if path.exists() {
             let bytes = tokio::fs::read(&path).await.map_err(|e| {
                 tracing::error!("Failed to read cover {}: {}", path.display(), e);
-                crate::error::WebError(anyhow::anyhow!("Failed to read cover: {e}"))
+                crate::error::WebError::Internal(anyhow::anyhow!("Failed to read cover: {e}"))
             })?;
             return Ok((
                 StatusCode::OK,
@@ -732,8 +731,7 @@ pub async fn films_cover_large(
         .await?;
 
     let tmdb_id = row.and_then(|r| r.tmdb_id);
-    let covers_dir =
-        std::env::var("COVERS_DIR").unwrap_or_else(|_| "data/movies/covers-webp".to_string());
+    let covers_dir = state.config.film_covers_dir.clone();
 
     // Cache path: {covers_dir}/large/{slug}.webp
     let cache_dir = std::path::Path::new(&covers_dir).join("large");
@@ -915,7 +913,7 @@ pub async fn sktorrent_resolve(
     let re = regex::Regex::new(
         r#"<source\s+src="([^"]+)"\s+type='video/mp4'\s+label='(\d+p)'\s+res='(\d+)'"#,
     )
-    .unwrap();
+    .expect("const regex literal compiles");
 
     let mut sources: Vec<SktorrentSource> = re
         .captures_iter(&html)

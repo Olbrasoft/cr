@@ -414,9 +414,10 @@ const MAX_NEW_HARD_CAP: u32 = 100;
 /// stray POST on production can't kick off an unbounded subprocess. Set
 /// the flag in the production .env once the cron rollout is signed off.
 pub async fn admin_import_run(
+    State(state): State<AppState>,
     axum::extract::Form(form): axum::extract::Form<RunNowForm>,
 ) -> WebResult<Response> {
-    if std::env::var("ADMIN_IMPORT_RUN_ENABLED").as_deref() != Ok("1") {
+    if !state.config.admin_import_run_enabled {
         return Ok((
             StatusCode::FORBIDDEN,
             "Manual run is disabled. Set ADMIN_IMPORT_RUN_ENABLED=1 in the env to enable.",
@@ -428,7 +429,7 @@ pub async fn admin_import_run(
     // thousands of pages on a fat-fingered submission.
     let max_new = form.max_new.clamp(1, MAX_NEW_HARD_CAP);
 
-    let repo_root = std::env::var("CR_REPO_ROOT").unwrap_or_else(|_| "/opt/cr".to_string());
+    let repo_root = state.config.cr_repo_root.clone();
     let script = format!("{}/scripts/auto-import.py", repo_root);
 
     let spawn_result = tokio::process::Command::new("python3")
