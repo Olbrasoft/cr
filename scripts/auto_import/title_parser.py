@@ -21,8 +21,7 @@ missing fields as a softer match signal.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
-from typing import Iterable
+from dataclasses import dataclass, asdict, field
 
 
 # Episode marker like S03E01, s3e1, 03x01, 3x1
@@ -39,11 +38,14 @@ _QUALITY_RE = re.compile(r"\b(2160p|1080p|1080i|720p|480p|HD|UHD|4K)\b", re.IGNO
 # CSFD rating "= CSFD 82%" or "(CSFD 82%)"
 _CSFD_RE = re.compile(r"CSFD\s*(\d{1,3})\s*%", re.IGNORECASE)
 
-# Czech / Slovak language markers
-_DUB_RE = re.compile(
+# Czech / Slovak dub markers (used by _detect_langs)
+_DUB_CZ_RE = re.compile(
     r"\b(cz[\s\-]?dab|cz[\s\-]?dabing|cz[\s\-]?dub|"
-    r"sk[\s\-]?dab|cze?s\.?\s*dab|"
-    r"český\s*dabing?|slovenský\s*dabing?)\b",
+    r"cze?s\.?\s*dab|český\s*dabing?)\b",
+    re.IGNORECASE,
+)
+_DUB_SK_RE = re.compile(
+    r"\b(sk[\s\-]?dab|slovenský\s*dabing?)\b",
     re.IGNORECASE,
 )
 _SUBS_RE = re.compile(
@@ -51,7 +53,9 @@ _SUBS_RE = re.compile(
     r"czech\s*subs?|cz\s*subs?|cz\.?\s*tit\.?|s\s*cz\.?\s*tit\.?)\b",
     re.IGNORECASE,
 )
-# "(CZ)" or " / CZ" suffix (uppercase, surrounded by separators)
+_SUBS_SK_RE = re.compile(r"\bsk[\s\-]?tit", re.IGNORECASE)
+# "(CZ)" or " / CZ" suffix (uppercase, surrounded by separators).
+# CZE is normalized to CZ; EN is allowed as a documented value.
 _LANG_TAG_RE = re.compile(r"(?:^|[\(\[/])\s*(CZ|SK|EN|CZE)\s*(?:[\)\]/]|$)", re.IGNORECASE)
 
 # Strip noise like (1080p), [TvRip], (CZ Dabing)
@@ -66,14 +70,12 @@ class ParsedTitle:
     season: int | None = None
     episode: int | None = None
     quality: str | None = None       # "1080p", "720p", "480p"
-    langs: list[str] = None          # subset of ["DUB_CZ","DUB_SK","SUBS_CZ","SUBS_SK","CZ"]
+    # Subset of ["DUB_CZ","DUB_SK","SUBS_CZ","SUBS_SK","CZ","SK","EN"].
+    # CZE in source titles is normalized to "CZ".
+    langs: list[str] = field(default_factory=list)
     csfd_rating: int | None = None
     is_episode: bool = False         # True if SxxExx detected
     raw: str = ""                    # original input
-
-    def __post_init__(self):
-        if self.langs is None:
-            self.langs = []
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -123,26 +125,24 @@ def _detect_csfd(title: str) -> int | None:
 def _detect_langs(title: str) -> list[str]:
     """Best-effort language flags. Order: dubs first, then subs."""
     flags = []
-    if re.search(r"\b(cz[\s\-]?dab|český\s*dabing?|cze?s\.?\s*dab|cz[\s\-]?dub)\b",
-                 title, re.IGNORECASE):
+    if _DUB_CZ_RE.search(title):
         flags.append("DUB_CZ")
-    if re.search(r"\b(sk[\s\-]?dab|slovenský\s*dabing?)\b", title, re.IGNORECASE):
+    if _DUB_SK_RE.search(title):
         flags.append("DUB_SK")
     if _SUBS_RE.search(title):
-        # Determine CZ vs SK subs
-        if re.search(r"\bsk[\s\-]?tit", title, re.IGNORECASE):
-            flags.append("SUBS_SK")
-        else:
-            flags.append("SUBS_CZ")
+        flags.append("SUBS_SK" if _SUBS_SK_RE.search(title) else "SUBS_CZ")
     if not flags:
-        # Fallback to bare CZ/SK tag (e.g. "Euphoria / S03E01 / CZ" → CZ context only)
+        # Fallback to bare CZ/SK/EN tag (e.g. "Euphoria / S03E01 / CZ" — bare CZ context only)
         m = _LANG_TAG_RE.search(title)
         if m:
-            flags.append(m.group(1).upper())
+            tag = m.group(1).upper()
+            if tag == "CZE":
+                tag = "CZ"  # normalize ISO-639-2 form
+            flags.append(tag)
     return flags
 
 
-def _split_titles(title: str, season: int | None, episode: int | None) -> tuple[str | None, str | None]:
+def _split_titles(title: str) -> tuple[str | None, str | None]:
     """Split the title on `/` separators and return (cz, en).
 
     Heuristic:
@@ -162,8 +162,9 @@ def _split_titles(title: str, season: int | None, episode: int | None) -> tuple[
         # Episode-only segment
         if _EPISODE_RE.fullmatch(s_naked) or _EPISODE_X_RE.fullmatch(s_naked):
             return True
-        # Year-only
-        if _YEAR_BARE_RE.fullmatch(s_naked):
+        # Year-only — but preserve a sole segment so legitimate 4-digit
+        # titles like "1917 (2019)(CZ)" aren't discarded entirely.
+        if _YEAR_BARE_RE.fullmatch(s_naked) and len(parts) > 1:
             return True
         # Language tag only
         if re.fullmatch(r"(CZ|SK|EN|cz\s*dabing?|sk\s*dabing?|cz\s*tit(?:ulky)?|"
@@ -191,12 +192,16 @@ def _split_titles(title: str, season: int | None, episode: int | None) -> tuple[
 
 
 def parse_sktorrent_title(title: str) -> ParsedTitle:
-    """Parse a SK Torrent title string. Never raises."""
+    """Parse a SK Torrent title string. Never raises.
+
+    Returns the structured ParsedTitle dataclass; callers that prefer a plain
+    dict can use `parse_sktorrent_title(...).to_dict()`.
+    """
     if not title:
         return ParsedTitle(raw="")
     raw = title.strip()
     season, episode = _detect_episode(raw)
-    cz, en = _split_titles(raw, season, episode)
+    cz, en = _split_titles(raw)
     return ParsedTitle(
         cz_title=cz,
         en_title=en,
