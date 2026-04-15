@@ -1,19 +1,16 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use crate::state::AppState;
 
-/// In-memory cache for resolved filemoon m3u8 URLs.
-/// Key: filemoon_code, Value: (url, resolved_at).
-static FILEMOON_CACHE: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<String, (String, Instant)>>,
-> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+// Filemoon / stream-resolver cache moved to `AppState.filemoon_cache`
+// (a bounded TTL cache) — see `cr-web/src/cache.rs`. No more unbounded
+// module-level `LazyLock<Mutex<HashMap>>`.
 
 #[derive(Deserialize)]
 pub struct SearchQuery {
@@ -720,6 +717,7 @@ const ALLOWED_PROVIDERS: &[&str] = &["filemoon", "streamtape", "mixdrop", "vidli
 /// Supported providers: filemoon (HLS), streamtape (MP4), mixdrop (MP4), vidlink (HLS).
 /// Results are cached per provider+code with TTL based on token expiry.
 pub async fn stream_resolve(
+    State(state): State<AppState>,
     Query(params): Query<StreamResolveQuery>,
 ) -> Json<StreamResolveResponse> {
     let provider = params.provider.trim().to_lowercase();
@@ -752,23 +750,18 @@ pub async fn stream_resolve(
 
     let cache_key = format!("{provider}:{code}");
 
-    // Check cache (2h TTL — conservative, tokens last 3-4h)
-    let cache_ttl = Duration::from_secs(2 * 3600);
-    {
-        let cache = FILEMOON_CACHE.lock().await;
-        if let Some((url, resolved_at)) = cache.get(&cache_key)
-            && resolved_at.elapsed() < cache_ttl
-        {
-            let fmt = if url.contains(".m3u8") { "hls" } else { "mp4" };
-            return Json(StreamResolveResponse {
-                provider,
-                code,
-                stream_url: Some(url.clone()),
-                format: Some(fmt.to_string()),
-                error: None,
-                cached: true,
-            });
-        }
+    // Check cache — TTL and size cap live on the BoundedTtlCache itself
+    // (see AppState::filemoon_cache construction in main.rs).
+    if let Some(url) = state.filemoon_cache.get(&cache_key).await {
+        let fmt = if url.contains(".m3u8") { "hls" } else { "mp4" };
+        return Json(StreamResolveResponse {
+            provider,
+            code,
+            stream_url: Some(url),
+            format: Some(fmt.to_string()),
+            error: None,
+            cached: true,
+        });
     }
 
     // Use Playwright (Python script) for all providers — it handles browser
@@ -779,16 +772,13 @@ pub async fn stream_resolve(
 
     match result {
         Ok(pr) => {
-            {
-                let mut cache = FILEMOON_CACHE.lock().await;
-                // Store URL + cookies in cache (cookies separated by \n)
-                let cache_val = if let Some(ref cookies) = pr.cookies {
-                    format!("{}\n{cookies}", pr.url)
-                } else {
-                    pr.url.clone()
-                };
-                cache.insert(cache_key, (cache_val, Instant::now()));
-            }
+            // Store URL + cookies in cache (cookies separated by \n)
+            let cache_val = if let Some(ref cookies) = pr.cookies {
+                format!("{}\n{cookies}", pr.url)
+            } else {
+                pr.url.clone()
+            };
+            state.filemoon_cache.insert(cache_key, cache_val).await;
             Json(StreamResolveResponse {
                 provider,
                 code,
@@ -821,36 +811,27 @@ pub async fn movies_proxy_stream(
 
     // Resolve stream URL + cookies via Playwright
     let cache_key = format!("{provider}:{code}");
-    let cache_ttl = Duration::from_secs(2 * 3600);
 
-    // Check cache first (stores "url\ncookies" or just "url")
-    let (stream_url, cookies) = {
-        let cache = FILEMOON_CACHE.lock().await;
-        if let Some((cached_val, resolved_at)) = cache.get(&cache_key)
-            && resolved_at.elapsed() < cache_ttl
-        {
-            let parts: Vec<&str> = cached_val.splitn(2, '\n').collect();
-            let url = parts[0].to_string();
-            let cookies = parts.get(1).map(|s| s.to_string());
-            (url, cookies)
-        } else {
-            drop(cache); // Release lock before calling resolve
-            // Resolve fresh
-            let result = resolve_via_playwright(&provider, &code).await;
-            match result {
-                Ok(pr) => {
-                    let mut cache = FILEMOON_CACHE.lock().await;
-                    let cache_val = if let Some(ref c) = pr.cookies {
-                        format!("{}\n{c}", pr.url)
-                    } else {
-                        pr.url.clone()
-                    };
-                    cache.insert(cache_key, (cache_val, Instant::now()));
-                    (pr.url, pr.cookies)
-                }
-                Err(e) => {
-                    return (StatusCode::BAD_GATEWAY, e).into_response();
-                }
+    // Check cache first (stores "url\ncookies" or just "url").
+    let (stream_url, cookies) = if let Some(cached_val) = state.filemoon_cache.get(&cache_key).await
+    {
+        let parts: Vec<&str> = cached_val.splitn(2, '\n').collect();
+        let url = parts[0].to_string();
+        let cookies = parts.get(1).map(|s| s.to_string());
+        (url, cookies)
+    } else {
+        match resolve_via_playwright(&provider, &code).await {
+            Ok(pr) => {
+                let cache_val = if let Some(ref c) = pr.cookies {
+                    format!("{}\n{c}", pr.url)
+                } else {
+                    pr.url.clone()
+                };
+                state.filemoon_cache.insert(cache_key, cache_val).await;
+                (pr.url, pr.cookies)
+            }
+            Err(e) => {
+                return (StatusCode::BAD_GATEWAY, e).into_response();
             }
         }
     };
@@ -932,9 +913,10 @@ pub async fn movies_proxy_stream(
 
 /// Backwards-compatible wrapper — calls stream_resolve with provider=filemoon.
 pub async fn filemoon_resolve(
+    state: State<AppState>,
     Query(params): Query<StreamResolveQuery>,
 ) -> Json<StreamResolveResponse> {
-    stream_resolve(Query(params)).await
+    stream_resolve(state, Query(params)).await
 }
 
 // ── Pure-HTTP stream resolvers (no Playwright) ───────────────────

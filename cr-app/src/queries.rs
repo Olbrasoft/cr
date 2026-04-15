@@ -4,6 +4,7 @@
 //! No framework dependencies — pure business logic orchestration.
 
 use crate::error::AppError;
+use cr_domain::dto::*;
 use cr_domain::repository::*;
 
 /// Get all regions for the homepage.
