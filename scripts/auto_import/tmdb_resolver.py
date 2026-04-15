@@ -27,7 +27,9 @@ import requests
 from scripts.auto_import.title_parser import ParsedTitle
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "0405855b8275307d3cf3284470fd9d28")
+# Required env var — no inline fallback (GitGuardian flags hardcoded keys).
+# Set TMDB_API_KEY in `.env` (loaded by python-dotenv at script entrypoint).
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 
 # TMDB allows ~50 req/s but be polite — this is a lookup, not a bulk job.
 DEFAULT_TIMEOUT = 15
