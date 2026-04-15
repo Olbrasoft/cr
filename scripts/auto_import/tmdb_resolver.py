@@ -18,13 +18,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
+from typing import TYPE_CHECKING
 
 import requests
 
-from scripts.auto_import.title_parser import ParsedTitle
+# title_parser ships in #416 (PR #427). Use TYPE_CHECKING-only import so this
+# module is importable on its own (CI runs each PR's branch in isolation, so
+# integration only works once all sub-issues land in main). Runtime callers
+# pass any object with .cz_title / .en_title / .year / .season / .episode
+# attributes — duck-typing keeps the dependency loose.
+if TYPE_CHECKING:
+    from scripts.auto_import.title_parser import ParsedTitle  # noqa: F401
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 # Required env var — no inline fallback (GitGuardian flags hardcoded keys).
@@ -372,8 +378,10 @@ def _cli() -> None:
     """CLI for ad-hoc smoke testing.
 
     Pass a full SK Torrent title string; we parse and resolve.
+    Run via `python -m scripts.auto_import.tmdb_resolver "<title>"` from
+    the repo root so the package import path resolves correctly.
     """
-    import argparse, json
+    import argparse
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("title", help="SK Torrent title string")
     ap.add_argument("--verbose", "-v", action="store_true")
