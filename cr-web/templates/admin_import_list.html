@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Auto-import — admin{% endblock %}
+{% block meta_description %}Přehled běhů SK Torrent scanneru.{% endblock %}
+
+{% block og_title %}Auto-import — admin{% endblock %}
+{% block og_description %}Přehled běhů SK Torrent scanneru.{% endblock %}
+
+{% block head %}
+<meta name="robots" content="noindex, nofollow">
+{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Auto-import — běhy</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-import-page">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <span>Admin</span>
+        <span>›</span> <span>Auto-import</span>
+    </nav>
+
+    <h2>Posledních 30 běhů SK Torrent scanneru</h2>
+
+    {% if runs.is_empty() %}
+    <p class="empty-state">Zatím žádný běh — scanner nebyl spuštěn.</p>
+    {% else %}
+    <table class="runs-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Začátek</th>
+                <th>Trvání</th>
+                <th>Stav</th>
+                <th>Trigger</th>
+                <th>Sken</th>
+                <th>Filmy +</th>
+                <th>Seriály +</th>
+                <th>Epizody +</th>
+                <th>Doplněno</th>
+                <th>Selhalo</th>
+                <th>Přeskočeno</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr class="{{ r.status_class() }}">
+                <td><a href="/admin/import/{{ r.id }}" title="Detail běhu {{ r.id }}">#{{ r.id }}</a></td>
+                <td>{{ r.started_at_str() }}</td>
+                <td>{{ r.duration_sec() }}s</td>
+                <td><span class="badge badge-{{ r.status }}" title="{{ r.status }}">{{ r.status }}</span></td>
+                <td>{{ r.trigger }}</td>
+                <td>{{ r.scanned_videos }} videí ({{ r.scanned_pages }} stránek)</td>
+                <td>{{ r.added_films }}</td>
+                <td>{{ r.added_series }}</td>
+                <td>{{ r.added_episodes }}</td>
+                <td>{{ r.updated_films + r.updated_episodes }}</td>
+                <td class="{% if r.failed_count > 0 %}error-cell{% endif %}">{{ r.failed_count }}</td>
+                <td>{{ r.skipped_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</main>
+
+<style>
+.admin-import-page { max-width: 1280px; margin: 0 auto; padding: 1rem; }
+.admin-import-page h2 { font-size: 1.4rem; margin: 1rem 0 1.2rem; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.runs-table th, .runs-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
+.runs-table th { background: #f8fafc; font-weight: 600; color: #555; }
+.runs-table tbody tr:hover { background: #f9fafb; }
+.runs-table a { color: #11457E; text-decoration: none; font-weight: 600; }
+.runs-table a:hover { text-decoration: underline; }
+.error-cell { color: #b91c1c; font-weight: 600; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+.badge-ok { background: #d1fae5; color: #065f46; }
+.badge-error { background: #fee2e2; color: #991b1b; }
+.badge-partial { background: #fef3c7; color: #92400e; }
+.badge-running { background: #dbeafe; color: #1e40af; }
+.empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+</style>
+{% endblock %}
