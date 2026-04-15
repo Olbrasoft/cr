@@ -85,7 +85,9 @@ impl ImportItemRow {
         if let Some(_eid) = self.target_episode_id {
             // Need slug + season/episode; without a JOIN we settle for series id
             // (template shows raw fields). This stays usable for debugging.
-            return self.target_series_id.map(|sid| format!("/admin/import/series/{}", sid));
+            return self
+                .target_series_id
+                .map(|sid| format!("/admin/import/series/{}", sid));
         }
         if let Some(fid) = self.target_film_id {
             return Some(format!("/admin/import/film/{}", fid));
@@ -96,7 +98,9 @@ impl ImportItemRow {
         None
     }
     fn imdb_url(&self) -> Option<String> {
-        self.imdb_id.as_ref().map(|i| format!("https://www.imdb.com/title/{}/", i))
+        self.imdb_id
+            .as_ref()
+            .map(|i| format!("https://www.imdb.com/title/{}/", i))
     }
     fn raw_log_pretty(&self) -> String {
         self.raw_log
