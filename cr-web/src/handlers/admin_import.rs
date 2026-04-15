@@ -482,7 +482,9 @@ impl NewFilmRow {
         self.year.map(|y| format!(" ({y})")).unwrap_or_default()
     }
     fn runtime_str(&self) -> String {
-        self.runtime_min.map(|m| format!("{m} min")).unwrap_or_default()
+        self.runtime_min
+            .map(|m| format!("{m} min"))
+            .unwrap_or_default()
     }
 }
 
@@ -568,7 +570,10 @@ impl SkippedRow {
         self.created_at.format("%Y-%m-%d %H:%M").to_string()
     }
     fn reason(&self) -> String {
-        match (self.failure_step.as_deref(), self.failure_message.as_deref()) {
+        match (
+            self.failure_step.as_deref(),
+            self.failure_message.as_deref(),
+        ) {
             (Some(s), Some(m)) => format!("{s}: {m}"),
             (Some(s), None) => s.to_string(),
             (_, Some(m)) => m.to_string(),
