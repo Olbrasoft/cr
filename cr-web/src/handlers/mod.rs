@@ -12,8 +12,7 @@ use crate::state::AppState;
 pub mod admin_import;
 mod audiobooks;
 mod download_video;
-// Public so AppState can reference SktorrentSource for the bounded cache.
-pub mod films;
+mod films;
 mod filmy_serialy;
 mod geojson;
 mod landmarks;
@@ -28,7 +27,7 @@ pub mod video_api;
 // Re-export all public handlers so main.rs doesn't need changes
 pub use audiobooks::audiobooks;
 pub use download_video::download_video;
-pub use films::{films_detail, films_list, films_search, sktorrent_resolve};
+pub use films::{SktorrentSource, films_detail, films_list, films_search, sktorrent_resolve};
 pub use filmy_serialy::filmy_serialy;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};

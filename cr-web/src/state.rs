@@ -11,7 +11,7 @@ use cr_infra::video_library::VideoLibraryPipeline;
 use sqlx::PgPool;
 
 use crate::cache::BoundedTtlCache;
-use crate::handlers::films::SktorrentSource;
+use crate::handlers::SktorrentSource;
 use crate::handlers::video_api::VideoDownloads;
 
 #[derive(Clone)]
@@ -58,7 +58,7 @@ pub struct AppState {
         Arc<tokio::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
     /// Bounded TTL cache for resolved filemoon / stream m3u8 URLs. Key is
     /// `"{provider}:{code}"`, value is the resolved playback URL (optionally
-    /// with `\ncookies=...` appended, matching the pre-refactor convention).
+    /// followed by `\n{cookies}`, matching the pre-refactor convention).
     /// Before #443 this was an unbounded module-level LazyLock.
     pub filemoon_cache: BoundedTtlCache<String, String>,
     /// Bounded TTL cache for SK Torrent per-video source lists. Key is

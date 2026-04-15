@@ -39,7 +39,13 @@ where
     K: std::hash::Hash + Eq + Clone,
     V: Clone,
 {
+    /// Build a new cache. `max_entries == 0` would be a subtle footgun
+    /// (the eviction branch wouldn't trigger because `0 >= 0` is true
+    /// but the key-presence guard always falls through on an empty map),
+    /// so we clamp up to `1`. Callers that want the cache disabled
+    /// should wrap this in an `Option` rather than passing zero.
     pub fn new(max_entries: usize, ttl: Duration) -> Self {
+        let max_entries = max_entries.max(1);
         Self {
             inner: Arc::new(Mutex::new(HashMap::with_capacity(max_entries.min(512)))),
             ttl,
@@ -70,5 +76,56 @@ where
             guard.remove(&oldest_key);
         }
         guard.insert(key, (value, Instant::now()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BoundedTtlCache;
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn expired_entries_return_none() {
+        let cache = BoundedTtlCache::new(2, Duration::from_millis(5));
+        cache.insert("key", "value").await;
+        sleep(Duration::from_millis(12)).await;
+        assert_eq!(cache.get(&"key").await, None);
+    }
+
+    #[tokio::test]
+    async fn inserting_past_max_entries_evicts_oldest() {
+        let cache = BoundedTtlCache::new(2, Duration::from_secs(60));
+        cache.insert("a", 1).await;
+        sleep(Duration::from_millis(2)).await;
+        cache.insert("b", 2).await;
+        sleep(Duration::from_millis(2)).await;
+        cache.insert("c", 3).await;
+        assert_eq!(cache.get(&"a").await, None);
+        assert_eq!(cache.get(&"b").await, Some(2));
+        assert_eq!(cache.get(&"c").await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn overwriting_existing_key_does_not_grow_map() {
+        let cache = BoundedTtlCache::new(2, Duration::from_secs(60));
+        cache.insert("k", 1).await;
+        cache.insert("k", 2).await;
+        assert_eq!(cache.get(&"k").await, Some(2));
+        assert_eq!(cache.inner.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn zero_max_entries_is_clamped_to_one() {
+        // The constructor must not leave us with an unbounded cache when
+        // a caller passes 0 — we clamp to 1 so at least the eviction
+        // branch runs.
+        let cache = BoundedTtlCache::new(0, Duration::from_secs(60));
+        cache.insert("a", 1).await;
+        cache.insert("b", 2).await;
+        // Only the most-recent entry survives because the cap is 1.
+        assert_eq!(cache.inner.lock().await.len(), 1);
+        assert_eq!(cache.get(&"a").await, None);
+        assert_eq!(cache.get(&"b").await, Some(2));
     }
 }
