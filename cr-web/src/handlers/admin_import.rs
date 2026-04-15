@@ -186,6 +186,7 @@ struct AdminImportFailuresTemplate {
 #[derive(sqlx::FromRow)]
 struct FailureItemRow {
     run_id: i32,
+    #[allow(dead_code)]
     sktorrent_video_id: i32,
     sktorrent_url: String,
     sktorrent_title: String,
