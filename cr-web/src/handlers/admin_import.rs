@@ -81,20 +81,18 @@ struct ImportItemRow {
 
 impl ImportItemRow {
     /// URL on our own site (link to the imported/updated entity).
+    ///
+    /// Currently None — building a real `/filmy-online/{slug}/` link would
+    /// require joining `films`/`series`/`episodes` to fetch the slug, which
+    /// the listing query doesn't do yet. Better to omit the link than to
+    /// emit a fabricated /admin/import/film/{id} path that would 404.
+    /// (Follow-up: extend the SELECT to JOIN slug, then build proper URLs.)
     fn target_url(&self) -> Option<String> {
-        if let Some(_eid) = self.target_episode_id {
-            // Need slug + season/episode; without a JOIN we settle for series id
-            // (template shows raw fields). This stays usable for debugging.
-            return self
-                .target_series_id
-                .map(|sid| format!("/admin/import/series/{}", sid));
-        }
-        if let Some(fid) = self.target_film_id {
-            return Some(format!("/admin/import/film/{}", fid));
-        }
-        if let Some(sid) = self.target_series_id {
-            return Some(format!("/admin/import/series/{}", sid));
-        }
+        let _ = (
+            self.target_film_id,
+            self.target_series_id,
+            self.target_episode_id,
+        );
         None
     }
     fn imdb_url(&self) -> Option<String> {
@@ -102,11 +100,25 @@ impl ImportItemRow {
             .as_ref()
             .map(|i| format!("https://www.imdb.com/title/{}/", i))
     }
+    /// Pretty-printed JSON, truncated to 4 KB so failure-tab pages don't bloat
+    /// even when raw_log carries large TMDB/Gemma payloads. Full payload is
+    /// always available via the .json export endpoint.
     fn raw_log_pretty(&self) -> String {
-        self.raw_log
+        const MAX_LEN: usize = 4096;
+        let full = self
+            .raw_log
             .as_ref()
             .and_then(|v| serde_json::to_string_pretty(v).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if full.len() <= MAX_LEN {
+            full
+        } else {
+            format!(
+                "{}\n... [truncated; {} bytes total — see /admin/import/{{run_id}}.json for full payload]",
+                &full[..MAX_LEN],
+                full.len()
+            )
+        }
     }
     fn season_episode(&self) -> Option<String> {
         match (self.season, self.episode) {
@@ -134,6 +146,17 @@ struct AdminImportDetailTemplate {
     skipped: Vec<ImportItemRow>,
 }
 
+/// Apply X-Robots-Tag noindex header on every admin response so admin pages
+/// stay out of search indexes regardless of inherited HTML meta tags.
+fn noindex(html: String) -> Response {
+    let mut resp = Html(html).into_response();
+    resp.headers_mut().insert(
+        "X-Robots-Tag",
+        axum::http::HeaderValue::from_static("noindex, nofollow"),
+    );
+    resp
+}
+
 /// GET /admin/import/  — list last 30 runs.
 pub async fn admin_import_list(State(state): State<AppState>) -> WebResult<Response> {
     let runs = sqlx::query_as::<_, ImportRunRow>(
@@ -150,7 +173,49 @@ pub async fn admin_import_list(State(state): State<AppState>) -> WebResult<Respo
         img: state.image_base_url.clone(),
         runs,
     };
-    Ok(Html(tmpl.render()?).into_response())
+    Ok(noindex(tmpl.render()?))
+}
+
+#[derive(Template)]
+#[template(path = "admin_import_failures.html")]
+struct AdminImportFailuresTemplate {
+    img: String,
+    failures: Vec<FailureItemRow>,
+}
+
+#[derive(sqlx::FromRow)]
+struct FailureItemRow {
+    run_id: i32,
+    sktorrent_video_id: i32,
+    sktorrent_url: String,
+    sktorrent_title: String,
+    failure_step: Option<String>,
+    failure_message: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl FailureItemRow {
+    fn created_at_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+/// GET /admin/import/failures — aggregated failures across all runs.
+pub async fn admin_import_failures(State(state): State<AppState>) -> WebResult<Response> {
+    let failures = sqlx::query_as::<_, FailureItemRow>(
+        "SELECT run_id, sktorrent_video_id, sktorrent_url, sktorrent_title, \
+         failure_step, failure_message, created_at \
+         FROM import_items WHERE action = 'failed' \
+         ORDER BY created_at DESC LIMIT 100",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let tmpl = AdminImportFailuresTemplate {
+        img: state.image_base_url.clone(),
+        failures,
+    };
+    Ok(noindex(tmpl.render()?))
 }
 
 /// GET /admin/import/{run_id}  — detail with 4 tabs.
@@ -223,7 +288,7 @@ pub async fn admin_import_detail(
         failed,
         skipped,
     };
-    Ok(Html(tmpl.render()?).into_response())
+    Ok(noindex(tmpl.render()?))
 }
 
 #[derive(Serialize)]

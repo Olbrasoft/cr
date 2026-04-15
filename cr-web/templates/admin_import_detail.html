@@ -6,9 +6,7 @@
 {% block og_title %}Auto-import běh #{{ run.id }}{% endblock %}
 {% block og_description %}Detail SK Torrent scanner běhu {{ run.id }}.{% endblock %}
 
-{% block head %}
-<meta name="robots" content="noindex, nofollow">
-{% endblock %}
+{# noindex is enforced via X-Robots-Tag response header from the handler. #}
 
 {% block header_left %}
 <div class="logo-group">
@@ -59,10 +57,10 @@
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="showTab('added')" title="Přidané položky">Přidané ({{ added.len() }})</button>
-        <button class="tab" onclick="showTab('updated')" title="Doplněné zdroje">Doplněné ({{ updated.len() }})</button>
-        <button class="tab" onclick="showTab('failed')" title="Selhalo">Selhalo ({{ failed.len() }})</button>
-        <button class="tab" onclick="showTab('skipped')" title="Přeskočeno">Přeskočeno ({{ skipped.len() }})</button>
+        <button class="tab active" data-tab="added" title="Přidané položky">Přidané ({{ added.len() }})</button>
+        <button class="tab" data-tab="updated" title="Doplněné zdroje">Doplněné ({{ updated.len() }})</button>
+        <button class="tab" data-tab="failed" title="Selhalo">Selhalo ({{ failed.len() }})</button>
+        <button class="tab" data-tab="skipped" title="Přeskočeno">Přeskočeno ({{ skipped.len() }})</button>
     </div>
 
     <div id="tab-added" class="tab-content active">
@@ -185,14 +183,21 @@
 </style>
 
 <script>
+// Tab switching keyed on `data-tab` attribute (set on each .tab button)
+// — robust against template reformatting and easier to refactor than
+// matching inline onclick strings.
 function showTab(name) {
     document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
     document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
-    var btn = Array.from(document.querySelectorAll('.tab'))
-        .find(function(t) { return t.getAttribute('onclick') === "showTab('" + name + "')"; });
+    var btn = document.querySelector('.tab[data-tab="' + name + '"]');
     if (btn) btn.classList.add('active');
     var pane = document.getElementById('tab-' + name);
     if (pane) pane.classList.add('active');
 }
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.tab[data-tab]').forEach(function(t) {
+        t.addEventListener('click', function() { showTab(t.dataset.tab); });
+    });
+});
 </script>
 {% endblock %}

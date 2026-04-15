@@ -6,9 +6,8 @@
 {% block og_title %}Auto-import — admin{% endblock %}
 {% block og_description %}Přehled běhů SK Torrent scanneru.{% endblock %}
 
-{% block head %}
-<meta name="robots" content="noindex, nofollow">
-{% endblock %}
+{# noindex is enforced via X-Robots-Tag response header from the handler;
+   the meta tag duplicates with base.html's `index, follow` and is ambiguous. #}
 
 {% block header_left %}
 <div class="logo-group">
