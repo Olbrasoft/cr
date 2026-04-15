@@ -1,0 +1,86 @@
+"""Download a TMDB poster, convert to WebP at our two display sizes.
+
+Output: `data/movies/covers-webp/{slug}.webp` (200×300) and
+`{slug}-large.webp` (780×1170 portrait, used by film_detail page).
+
+Pure HTTP + Pillow. No DB. Idempotent — skips if both files already exist.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import requests
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover
+    Image = None
+
+TMDB_IMG_BASE = "https://image.tmdb.org/t/p"
+DEFAULT_TIMEOUT = 30
+
+log = logging.getLogger(__name__)
+
+
+def download_cover(
+    poster_path: str,
+    slug: str,
+    out_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> tuple[Path, Path] | None:
+    """Download TMDB poster, save as `{slug}.webp` (200×300) and `{slug}-large.webp` (780×1170).
+
+    Args:
+        poster_path: TMDB path like "/abc.jpg"
+        slug: target filename stem (without extension)
+        out_dir: directory to write into (created if missing)
+        overwrite: re-download even if files already exist
+
+    Returns:
+        (small_path, large_path) on success, None on failure.
+    """
+    if Image is None:
+        log.error("Pillow not installed — cannot convert covers")
+        return None
+    if not poster_path:
+        return None
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    small_path = out_dir / f"{slug}.webp"
+    large_path = out_dir / f"{slug}-large.webp"
+    if not overwrite and small_path.exists() and large_path.exists():
+        log.debug("cover %s already exists — skip", slug)
+        return small_path, large_path
+
+    # Fetch w780 from TMDB (best quality available without going to original)
+    url = f"{TMDB_IMG_BASE}/w780{poster_path}"
+    try:
+        r = requests.get(url, timeout=DEFAULT_TIMEOUT, stream=True)
+    except requests.RequestException as e:
+        log.warning("cover fetch failed for %s: %s", slug, e)
+        return None
+    if r.status_code != 200:
+        log.warning("cover fetch HTTP %d for %s", r.status_code, slug)
+        return None
+
+    try:
+        img = Image.open(r.raw).convert("RGB")
+    except Exception as e:
+        log.warning("cover decode failed for %s: %s", slug, e)
+        return None
+
+    # Large: 780×1170 (preserve aspect — TMDB poster is 2:3)
+    large = img.copy()
+    large.thumbnail((780, 1170), Image.LANCZOS)
+    large.save(large_path, "WEBP", quality=85, method=6)
+
+    # Small: 200×300
+    small = img.copy()
+    small.thumbnail((200, 300), Image.LANCZOS)
+    small.save(small_path, "WEBP", quality=85, method=6)
+
+    log.info("cover saved %s + -large", slug)
+    return small_path, large_path
