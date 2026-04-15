@@ -6,7 +6,7 @@
 --   import_skipped_videos — blacklist of IMDB-unresolvable videos (idempotency)
 --   import_checkpoint     — singleton row with highest processed sktorrent_video_id
 
-CREATE TABLE IF NOT EXISTS import_runs (
+CREATE TABLE import_runs (
     id                  SERIAL PRIMARY KEY,
     started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at         TIMESTAMPTZ,
@@ -14,31 +14,36 @@ CREATE TABLE IF NOT EXISTS import_runs (
         CHECK (status IN ('running', 'ok', 'error', 'partial')),
     trigger             TEXT NOT NULL DEFAULT 'cron'
         CHECK (trigger IN ('cron', 'manual')),
-    scanned_pages       SMALLINT NOT NULL DEFAULT 0,
-    scanned_videos      SMALLINT NOT NULL DEFAULT 0,
+    -- INT (not SMALLINT) — initial backfill could process tens of thousands
+    -- of videos at once, well past SMALLINT's 32 767 ceiling.
+    scanned_pages       INT NOT NULL DEFAULT 0,
+    scanned_videos      INT NOT NULL DEFAULT 0,
     checkpoint_before   INT,
     checkpoint_after    INT,
-    added_films         SMALLINT NOT NULL DEFAULT 0,
-    added_series        SMALLINT NOT NULL DEFAULT 0,
-    added_episodes      SMALLINT NOT NULL DEFAULT 0,
-    updated_films       SMALLINT NOT NULL DEFAULT 0,
-    updated_episodes    SMALLINT NOT NULL DEFAULT 0,
-    failed_count        SMALLINT NOT NULL DEFAULT 0,
-    skipped_count       SMALLINT NOT NULL DEFAULT 0,
+    added_films         INT NOT NULL DEFAULT 0,
+    added_series        INT NOT NULL DEFAULT 0,
+    added_episodes      INT NOT NULL DEFAULT 0,
+    updated_films       INT NOT NULL DEFAULT 0,
+    updated_episodes    INT NOT NULL DEFAULT 0,
+    failed_count        INT NOT NULL DEFAULT 0,
+    skipped_count       INT NOT NULL DEFAULT 0,
     error_message       TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_import_runs_started_at
+CREATE INDEX idx_import_runs_started_at
     ON import_runs (started_at DESC);
 
-CREATE TABLE IF NOT EXISTS import_items (
+CREATE TABLE import_items (
     id                  SERIAL PRIMARY KEY,
     run_id              INT NOT NULL REFERENCES import_runs(id) ON DELETE CASCADE,
     sktorrent_video_id  INT NOT NULL,
     sktorrent_url       TEXT NOT NULL,
     sktorrent_title     TEXT NOT NULL,
+    -- 'film' for movies, 'episode' for individual TV episodes (most common
+    -- TV upload), 'series' reserved for whole-season packs that don't map
+    -- to a single S##E##, 'unknown' when title heuristic fails.
     detected_type       TEXT
-        CHECK (detected_type IS NULL OR detected_type IN ('film', 'series', 'unknown')),
+        CHECK (detected_type IS NULL OR detected_type IN ('film', 'episode', 'series', 'unknown')),
     imdb_id             VARCHAR(20),
     tmdb_id             INT,
     season              SMALLINT,
@@ -58,14 +63,14 @@ CREATE TABLE IF NOT EXISTS import_items (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_import_items_run
+CREATE INDEX idx_import_items_run
     ON import_items (run_id);
-CREATE INDEX IF NOT EXISTS idx_import_items_sktid
+CREATE INDEX idx_import_items_sktid
     ON import_items (sktorrent_video_id);
-CREATE INDEX IF NOT EXISTS idx_import_items_action
+CREATE INDEX idx_import_items_action
     ON import_items (action);
 
-CREATE TABLE IF NOT EXISTS import_skipped_videos (
+CREATE TABLE import_skipped_videos (
     sktorrent_video_id  INT PRIMARY KEY,
     reason              TEXT NOT NULL,
     last_tried_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -77,7 +82,7 @@ CREATE TABLE IF NOT EXISTS import_skipped_videos (
 -- films+episodes max via a separate one-off query on first run (those
 -- columns may not exist yet depending on which earlier migrations have
 -- been applied — keep this migration self-contained).
-CREATE TABLE IF NOT EXISTS import_checkpoint (
+CREATE TABLE import_checkpoint (
     id                      SMALLINT PRIMARY KEY DEFAULT 1
         CHECK (id = 1),
     last_sktorrent_video_id INT NOT NULL,
