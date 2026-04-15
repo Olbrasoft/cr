@@ -1,0 +1,29 @@
+[Unit]
+Description=CR — Auto-import SK Torrent → TMDB → films/series
+Documentation=https://github.com/Olbrasoft/cr/issues/413
+# Wait for docker so cr-db-1 is actually listening on 127.0.0.1:5432.
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+# Don't fail the unit if the script exits non-zero — we always want the
+# on-failure path to record the error in the dashboard via import_runs.
+# The dashboard is the source of truth for "last run went wrong", not
+# systemctl status.
+ExecStart=/usr/bin/python3 -u /opt/cr/scripts/auto-import.py --trigger cron --max-new 50
+StandardOutput=append:/var/log/cr-auto-import.log
+StandardError=append:/var/log/cr-auto-import.log
+# systemd tries 1 restart for transient failures (e.g. SK Torrent 502).
+# Subsequent attempts would run the full pipeline again — better to skip
+# and let the dashboard surface the failure for tomorrow's run.
+Restart=on-failure
+RestartSec=60
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=multi-user.target
