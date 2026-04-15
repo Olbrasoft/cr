@@ -83,6 +83,11 @@ CREATE TRIGGER trg_series_slug_not_film_or_genre
     BEFORE INSERT OR UPDATE ON series
     FOR EACH ROW EXECUTE FUNCTION check_series_slug_not_film_or_genre();
 
+-- Historical: `genres.tmdb_genre_id` was added ad-hoc on dev before this
+-- migration landed. Re-add it here idempotently so fresh CI databases
+-- can run the INSERT below without the column missing.
+ALTER TABLE genres ADD COLUMN IF NOT EXISTS tmdb_genre_id INTEGER;
+
 -- Add TV-specific genres
 INSERT INTO genres (slug, name_en, name_cs, tmdb_genre_id) VALUES
     ('zpravodajstvi', 'News', 'Zpravodajství', 10763),
