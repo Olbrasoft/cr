@@ -14,10 +14,14 @@ use crate::handlers::video_api::VideoDownloads;
 
 #[derive(Clone)]
 pub struct AppState {
+    /// Process-wide configuration. Read once at startup. Handlers consult
+    /// this instead of reaching into `std::env` so paths and toggles live
+    /// in one place.
+    pub config: Arc<crate::config::AppConfig>,
     pub db: PgPool,
     pub geojson_index: Arc<GeoJsonIndex>,
-    /// Base URL prefix for images. Empty string in production (served via Cloudflare Worker),
-    /// "https://ceskarepublika.wiki" in dev (images fetched from production).
+    /// Mirrors `config.image_base_url` for the many templates that already
+    /// take `&img: String`. New code should prefer `state.config` directly.
     pub image_base_url: String,
     /// Shared HTTP client for image proxy (reuse connections).
     pub http_client: reqwest::Client,

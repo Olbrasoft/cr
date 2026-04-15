@@ -146,14 +146,14 @@ fn is_allowed_stream_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Get CzProxy base URL and key from env vars.
-fn cz_proxy_config() -> Option<(String, String)> {
-    let url = std::env::var("CZ_PROXY_URL").ok()?;
-    let key = std::env::var("CZ_PROXY_KEY").ok()?;
-    if url.is_empty() || key.is_empty() {
-        return None;
-    }
-    Some((url, key))
+/// Extract CzProxy (url, key) from AppConfig if both are configured.
+/// Reads from the central `AppConfig` instead of `std::env` so tests can
+/// instantiate an empty config and per-env overrides live in one place.
+fn cz_proxy_config(config: &crate::config::AppConfig) -> Option<(String, String)> {
+    config
+        .cz_proxy
+        .as_ref()
+        .map(|p| (p.url.clone(), p.key.clone()))
 }
 
 /// Search movies via CzProxy → prehraj.to
@@ -168,7 +168,7 @@ pub async fn movies_search(
         return Err(WebError::bad_request("Missing search query"));
     }
 
-    let (proxy_url, proxy_key) = cz_proxy_config().ok_or_else(|| {
+    let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or_else(|| {
         WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
     })?;
 
@@ -239,7 +239,7 @@ pub async fn movies_video_url(
         return Err(WebError::bad_request("Invalid prehraj.to URL"));
     }
 
-    let (proxy_url, proxy_key) = cz_proxy_config().ok_or_else(|| {
+    let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or_else(|| {
         WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
     })?;
 
@@ -388,7 +388,7 @@ pub async fn movies_validate(
     // Prefer CZ proxy (action=proxy) for HTML fetch — same infra used by
     // movies_video_url. Fall back to PHP proxy HEAD-check if CZ proxy is
     // unavailable (loses duration info but preserves legacy valid flag).
-    if let Some((proxy_url, proxy_key)) = cz_proxy_config() {
+    if let Some((proxy_url, proxy_key)) = cz_proxy_config(&state.config) {
         let req_url = format!(
             "{}?action=proxy&url={}&key={}",
             proxy_url,
@@ -495,7 +495,7 @@ pub async fn movies_stream(
         return (StatusCode::BAD_REQUEST, "URL not allowed").into_response();
     }
 
-    let Some((proxy_url, proxy_key)) = cz_proxy_config() else {
+    let Some((proxy_url, proxy_key)) = cz_proxy_config(&state.config) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured").into_response();
     };
 
@@ -1212,12 +1212,13 @@ async fn resolve_via_playwright(provider: &str, code: &str) -> Result<Playwright
 /// Resolve via CZ proxy (chobotnice.aspfree.cz) — for providers that need CZ IP or browser.
 #[allow(dead_code)]
 async fn resolve_via_cz_proxy(
+    config: &crate::config::AppConfig,
     _client: &reqwest::Client,
     provider: &str,
     code: &str,
 ) -> Result<(String, String), String> {
     let (_proxy_url, _proxy_key) =
-        cz_proxy_config().ok_or("CZ proxy not configured (CZ_PROXY_URL/CZ_PROXY_KEY)")?;
+        cz_proxy_config(config).ok_or("CZ proxy not configured (CZ_PROXY_URL/CZ_PROXY_KEY)")?;
 
     // Try the Python script as fallback (if available locally)
     let script_path = std::env::current_dir()

@@ -16,6 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
+mod config;
 mod error;
 mod handlers;
 mod img_proxy;
@@ -28,11 +29,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     dotenvy::dotenv().ok();
-    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set in .env")?;
+    let config = config::AppConfig::from_env().context("Failed to load AppConfig")?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&database_url)
+        .connect(&config.database_url)
         .await
         .context("Failed to connect to database")?;
 
@@ -43,15 +44,11 @@ async fn main() -> Result<()> {
         .context("Failed to run database migrations")?;
     tracing::info!("Database migrations applied");
 
-    // Load GeoJSON index into memory for API endpoints
-    let geojson_dir =
-        std::env::var("GEOJSON_DATA_DIR").unwrap_or_else(|_| "data/geojson".to_string());
-    let geojson_index = GeoJsonIndex::load(&geojson_dir).context("Failed to load GeoJSON index")?;
+    let geojson_index =
+        GeoJsonIndex::load(&config.geojson_dir).context("Failed to load GeoJSON index")?;
 
-    // IMAGE_BASE_URL: empty in production, "https://ceskarepublika.wiki" in dev
-    let image_base_url = std::env::var("IMAGE_BASE_URL").unwrap_or_default();
-    if !image_base_url.is_empty() {
-        tracing::info!("Dev mode: images proxied from {image_base_url}");
+    if !config.image_base_url.is_empty() {
+        tracing::info!("Dev mode: images proxied from {}", config.image_base_url);
     }
 
     // Streamtape + R2 credentials for the video library. Optional during
@@ -101,6 +98,8 @@ async fn main() -> Result<()> {
     let _cleanup_task = handlers::video_api::spawn_temp_video_cleanup_loop(video_downloads.clone());
 
     let state = AppState {
+        image_base_url: config.image_base_url.clone(),
+        config,
         region_repo: Arc::new(PgRegionRepository::new(pool.clone())),
         orp_repo: Arc::new(PgOrpRepository::new(pool.clone())),
         municipality_repo: Arc::new(PgMunicipalityRepository::new(pool.clone())),
@@ -110,7 +109,6 @@ async fn main() -> Result<()> {
         video_repo,
         db: pool,
         geojson_index: Arc::new(geojson_index),
-        image_base_url,
         http_client: reqwest::Client::new(),
         video_downloads,
         streamtape_config: streamtape_config.map(Arc::new),
@@ -342,21 +340,14 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::pools_by_category),
         )
         .route("/img/{*path}", axum::routing::get(img_proxy::img_proxy))
-        .nest_service(
-            "/static",
-            ServeDir::new(
-                std::env::var("STATIC_DIR").unwrap_or_else(|_| "cr-web/static".to_string()),
-            ),
-        )
-        .fallback(axum::routing::get(handlers::resolve_path))
+        .nest_service("/static", ServeDir::new(&state.config.static_dir))
+        .fallback(axum::routing::get(handlers::resolve_path));
+    let port = state.config.port;
+    let app = app
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let port: u16 = match std::env::var("PORT") {
-        Ok(p) => p.parse().context("PORT must be a valid port number")?,
-        Err(_) => 3000,
-    };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {addr}");
 

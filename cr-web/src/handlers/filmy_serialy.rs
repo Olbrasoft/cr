@@ -46,11 +46,9 @@ pub async fn filmy_serialy(
 /// Returns None on any error (network, parse, no results) — the page still
 /// renders with the default static og:image.
 async fn fetch_first_thumbnail(state: &AppState, query: &str) -> Option<String> {
-    let proxy_url = std::env::var("CZ_PROXY_URL").ok()?;
-    let proxy_key = std::env::var("CZ_PROXY_KEY").ok()?;
-    if proxy_url.is_empty() || proxy_key.is_empty() {
-        return None;
-    }
+    let cz = state.config.cz_proxy.as_ref()?;
+    let proxy_url = cz.url.clone();
+    let proxy_key = cz.key.clone();
 
     let url = format!(
         "{}?action=search&q={}&key={}",

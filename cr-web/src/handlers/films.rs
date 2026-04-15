@@ -675,8 +675,7 @@ pub async fn films_cover(
 
     let cover_filename = row.and_then(|r| r.cover_filename);
 
-    let covers_dir =
-        std::env::var("COVERS_DIR").unwrap_or_else(|_| "data/movies/covers-webp".to_string());
+    let covers_dir = state.config.film_covers_dir.clone();
 
     if let Some(filename) = cover_filename {
         let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
@@ -732,8 +731,7 @@ pub async fn films_cover_large(
         .await?;
 
     let tmdb_id = row.and_then(|r| r.tmdb_id);
-    let covers_dir =
-        std::env::var("COVERS_DIR").unwrap_or_else(|_| "data/movies/covers-webp".to_string());
+    let covers_dir = state.config.film_covers_dir.clone();
 
     // Cache path: {covers_dir}/large/{slug}.webp
     let cache_dir = std::path::Path::new(&covers_dir).join("large");
