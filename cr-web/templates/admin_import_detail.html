@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Auto-import běh #{{ run.id }} — admin{% endblock %}
+{% block meta_description %}Detail SK Torrent scanner běhu {{ run.id }}.{% endblock %}
+
+{% block og_title %}Auto-import běh #{{ run.id }}{% endblock %}
+{% block og_description %}Detail SK Torrent scanner běhu {{ run.id }}.{% endblock %}
+
+{# noindex is enforced via X-Robots-Tag response header from the handler. #}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Auto-import běh #{{ run.id }}</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-import-detail-page">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <a href="/admin/import/" title="Seznam běhů">Auto-import</a>
+        <span>›</span> <span>Běh #{{ run.id }}</span>
+    </nav>
+
+    <div class="run-summary">
+        <div>
+            <strong>Začátek:</strong> {{ run.started_at_str() }}
+            ({{ run.duration_sec() }}s, trigger: {{ run.trigger }})
+        </div>
+        <div>
+            <strong>Stav:</strong> <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+            {% match run.error_message %}
+            {% when Some with (msg) %}
+            <span class="error-msg" title="{{ msg }}">— {{ msg }}</span>
+            {% when None %}
+            {% endmatch %}
+        </div>
+        <div>
+            <strong>Sken:</strong> {{ run.scanned_pages }} stránek, {{ run.scanned_videos }} videí
+            {% match run.checkpoint_before %}
+            {% when Some with (cb) %}
+            (checkpoint {{ cb }} → {% match run.checkpoint_after %}{% when Some with (ca) %}{{ ca }}{% when None %}—{% endmatch %})
+            {% when None %}
+            {% endmatch %}
+        </div>
+        <div class="counts">
+            <span class="count count-added">+{{ run.added_films }} filmy</span>
+            <span class="count count-added">+{{ run.added_series }} seriály</span>
+            <span class="count count-added">+{{ run.added_episodes }} epizody</span>
+            <span class="count count-updated">~{{ run.updated_films + run.updated_episodes }} doplněno</span>
+            <span class="count count-failed">!{{ run.failed_count }} selhalo</span>
+            <span class="count count-skipped">⊘{{ run.skipped_count }} přeskočeno</span>
+        </div>
+        <div>
+            <a href="/admin/import/{{ run.id }}.json" title="Strojitelný JSON export">📋 JSON export</a>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="added" title="Přidané položky">Přidané ({{ added.len() }})</button>
+        <button class="tab" data-tab="updated" title="Doplněné zdroje">Doplněné ({{ updated.len() }})</button>
+        <button class="tab" data-tab="failed" title="Selhalo">Selhalo ({{ failed.len() }})</button>
+        <button class="tab" data-tab="skipped" title="Přeskočeno">Přeskočeno ({{ skipped.len() }})</button>
+    </div>
+
+    <div id="tab-added" class="tab-content active">
+        {% if added.is_empty() %}
+        <p class="empty-state">Žádné přidané položky.</p>
+        {% else %}
+        <table class="items-table">
+            <thead>
+                <tr><th>Akce</th><th>SK Torrent</th><th>Detekce</th><th>IMDB</th><th>Náš detail</th></tr>
+            </thead>
+            <tbody>
+                {% for it in added %}
+                <tr>
+                    <td><span class="action-{{ it.action }}">{{ it.action }}</span></td>
+                    <td><a href="{{ it.sktorrent_url }}" target="_blank" rel="noopener" title="{{ it.sktorrent_title }}">{{ it.sktorrent_title }}</a></td>
+                    <td>{{ it.detected_type.as_deref().unwrap_or("?") }}{% match it.season_episode() %}{% when Some with (se) %} {{ se }}{% when None %}{% endmatch %}</td>
+                    <td>{% match it.imdb_url() %}{% when Some with (u) %}<a href="{{ u }}" target="_blank" rel="noopener" title="IMDB">{{ it.imdb_id.as_deref().unwrap_or("") }}</a>{% when None %}—{% endmatch %}</td>
+                    <td>{% match it.target_url() %}{% when Some with (u) %}<a href="{{ u }}" title="Detail">→</a>{% when None %}—{% endmatch %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <div id="tab-updated" class="tab-content">
+        {% if updated.is_empty() %}
+        <p class="empty-state">Žádné doplněné zdroje.</p>
+        {% else %}
+        <table class="items-table">
+            <thead><tr><th>Akce</th><th>SK Torrent</th><th>IMDB</th><th>Náš detail</th></tr></thead>
+            <tbody>
+                {% for it in updated %}
+                <tr>
+                    <td><span class="action-{{ it.action }}">{{ it.action }}</span></td>
+                    <td><a href="{{ it.sktorrent_url }}" target="_blank" rel="noopener" title="{{ it.sktorrent_title }}">{{ it.sktorrent_title }}</a></td>
+                    <td>{% match it.imdb_url() %}{% when Some with (u) %}<a href="{{ u }}" target="_blank" rel="noopener" title="IMDB">{{ it.imdb_id.as_deref().unwrap_or("") }}</a>{% when None %}—{% endmatch %}</td>
+                    <td>{% match it.target_url() %}{% when Some with (u) %}<a href="{{ u }}" title="Detail">→</a>{% when None %}—{% endmatch %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <div id="tab-failed" class="tab-content">
+        {% if failed.is_empty() %}
+        <p class="empty-state">Žádné selhání. 🎉</p>
+        {% else %}
+        {% for it in failed %}
+        <details class="failure-item">
+            <summary>
+                <a href="{{ it.sktorrent_url }}" target="_blank" rel="noopener" title="{{ it.sktorrent_title }}">{{ it.sktorrent_title }}</a>
+                <span class="failure-step">{{ it.failure_step.as_deref().unwrap_or("?") }}</span>
+                <span class="failure-msg" title="{{ it.failure_message.as_deref().unwrap_or("") }}">{{ it.failure_message.as_deref().unwrap_or("?") }}</span>
+            </summary>
+            <pre class="raw-log">{{ it.raw_log_pretty() }}</pre>
+        </details>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    <div id="tab-skipped" class="tab-content">
+        {% if skipped.is_empty() %}
+        <p class="empty-state">Žádné přeskočené položky.</p>
+        {% else %}
+        <table class="items-table">
+            <thead><tr><th>SK Torrent</th><th>IMDB</th></tr></thead>
+            <tbody>
+                {% for it in skipped %}
+                <tr>
+                    <td><a href="{{ it.sktorrent_url }}" target="_blank" rel="noopener" title="{{ it.sktorrent_title }}">{{ it.sktorrent_title }}</a></td>
+                    <td>{% match it.imdb_url() %}{% when Some with (u) %}<a href="{{ u }}" target="_blank" rel="noopener" title="IMDB">{{ it.imdb_id.as_deref().unwrap_or("") }}</a>{% when None %}—{% endmatch %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+</main>
+
+<style>
+.admin-import-detail-page { max-width: 1280px; margin: 0 auto; padding: 1rem; }
+.run-summary { background: #f8fafc; padding: 1rem 1.2rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.run-summary > div { font-size: 0.92rem; color: #333; }
+.run-summary .counts { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.count { padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+.count-added { background: #d1fae5; color: #065f46; }
+.count-updated { background: #dbeafe; color: #1e40af; }
+.count-failed { background: #fee2e2; color: #991b1b; }
+.count-skipped { background: #f3f4f6; color: #6b7280; }
+.error-msg { color: #991b1b; font-size: 0.85rem; }
+.tabs { display: flex; gap: 0.3rem; border-bottom: 2px solid #e5e7eb; margin-bottom: 1rem; }
+.tab { background: none; border: none; padding: 0.6rem 1rem; cursor: pointer; font-size: 0.92rem; color: #555; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab:hover { color: #11457E; }
+.tab.active { color: #11457E; border-bottom-color: #11457E; font-weight: 600; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.items-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.items-table th, .items-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
+.items-table th { background: #f8fafc; font-weight: 600; color: #555; }
+.items-table a { color: #11457E; text-decoration: none; }
+.items-table a:hover { text-decoration: underline; }
+.action-added_film, .action-added_series, .action-added_episode { background: #d1fae5; color: #065f46; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.action-updated_film, .action-updated_episode { background: #dbeafe; color: #1e40af; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.failure-item { margin: 0.5rem 0; padding: 0.6rem 0.8rem; border: 1px solid #fee2e2; background: #fef2f2; border-radius: 6px; }
+.failure-item summary { cursor: pointer; display: flex; gap: 0.6rem; align-items: center; font-size: 0.9rem; }
+.failure-item summary a { color: #11457E; text-decoration: none; flex: 1; }
+.failure-step { background: #fee2e2; color: #991b1b; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+.failure-msg { color: #b91c1c; font-size: 0.82rem; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.raw-log { background: #1f2937; color: #d1d5db; padding: 0.8rem; border-radius: 4px; overflow: auto; font-size: 0.75rem; max-height: 400px; margin-top: 0.6rem; }
+.empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+.badge-ok { background: #d1fae5; color: #065f46; }
+.badge-error { background: #fee2e2; color: #991b1b; }
+.badge-partial { background: #fef3c7; color: #92400e; }
+.badge-running { background: #dbeafe; color: #1e40af; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+</style>
+
+<script>
+// Tab switching keyed on `data-tab` attribute (set on each .tab button)
+// — robust against template reformatting and easier to refactor than
+// matching inline onclick strings.
+function showTab(name) {
+    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+    var btn = document.querySelector('.tab[data-tab="' + name + '"]');
+    if (btn) btn.classList.add('active');
+    var pane = document.getElementById('tab-' + name);
+    if (pane) pane.classList.add('active');
+}
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.tab[data-tab]').forEach(function(t) {
+        t.addEventListener('click', function() { showTab(t.dataset.tab); });
+    });
+});
+</script>
+{% endblock %}

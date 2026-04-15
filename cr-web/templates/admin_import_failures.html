@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Auto-import — selhání{% endblock %}
+{% block meta_description %}Posledních 100 selhání napříč běhy.{% endblock %}
+
+{% block og_title %}Auto-import — selhání{% endblock %}
+{% block og_description %}Posledních 100 selhání napříč běhy.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Auto-import — selhání</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-import-failures-page">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <a href="/admin/import/" title="Seznam běhů">Auto-import</a>
+        <span>›</span> <span>Selhání</span>
+    </nav>
+
+    <h2>Posledních 100 selhání napříč všemi běhy</h2>
+
+    {% if failures.is_empty() %}
+    <p class="empty-state">Žádné selhání. 🎉</p>
+    {% else %}
+    <table class="failures-table">
+        <thead>
+            <tr>
+                <th>Čas</th>
+                <th>Běh</th>
+                <th>SK Torrent</th>
+                <th>Krok</th>
+                <th>Zpráva</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for f in failures %}
+            <tr>
+                <td>{{ f.created_at_str() }}</td>
+                <td><a href="/admin/import/{{ f.run_id }}" title="Detail běhu {{ f.run_id }}">#{{ f.run_id }}</a></td>
+                <td><a href="{{ f.sktorrent_url }}" target="_blank" rel="noopener" title="{{ f.sktorrent_title }}">{{ f.sktorrent_title }}</a></td>
+                <td><span class="failure-step">{{ f.failure_step.as_deref().unwrap_or("?") }}</span></td>
+                <td class="failure-msg" title="{{ f.failure_message.as_deref().unwrap_or("") }}">{{ f.failure_message.as_deref().unwrap_or("?") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</main>
+
+<style>
+.admin-import-failures-page { max-width: 1280px; margin: 0 auto; padding: 1rem; }
+.admin-import-failures-page h2 { font-size: 1.4rem; margin: 1rem 0 1.2rem; }
+.failures-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.failures-table th, .failures-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
+.failures-table th { background: #f8fafc; font-weight: 600; color: #555; }
+.failures-table a { color: #11457E; text-decoration: none; }
+.failure-step { background: #fee2e2; color: #991b1b; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+.failure-msg { color: #b91c1c; font-size: 0.82rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+</style>
+{% endblock %}
