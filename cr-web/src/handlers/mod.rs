@@ -21,6 +21,7 @@ mod municipalities;
 mod orp;
 mod pools;
 mod regions;
+mod series;
 pub mod video_api;
 
 // Re-export all public handlers so main.rs doesn't need changes
@@ -31,6 +32,10 @@ pub use filmy_serialy::filmy_serialy;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
+pub use series::{
+    episode_detail, series_episode_still, series_list, series_person_image, series_resolve,
+    series_search,
+};
 pub use video_api::{
     library_delete, library_file, library_list, library_play, library_stream, video_cleanup,
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,

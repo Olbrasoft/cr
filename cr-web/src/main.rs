@@ -196,6 +196,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::movies_api::movies_thumb),
         )
         .route(
+            "/movies/subtitle",
+            axum::routing::get(handlers::movies_api::movies_subtitle),
+        )
+        .route(
             "/movies/filemoon-resolve",
             axum::routing::get(handlers::movies_api::filemoon_resolve),
         )
@@ -208,6 +212,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::movies_api::movies_proxy_stream),
         )
         .route("/films/search", axum::routing::get(handlers::films_search))
+        .route(
+            "/series/search",
+            axum::routing::get(handlers::series_search),
+        )
         .route(
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
@@ -255,6 +263,35 @@ async fn main() -> Result<()> {
         .route(
             "/filmy-online/{slug}/",
             axum::routing::get(handlers::films_detail),
+        )
+        .route("/serialy-online", axum::routing::get(handlers::series_list))
+        .route(
+            "/serialy-online/",
+            axum::routing::get(handlers::series_list),
+        )
+        .route(
+            "/serialy-online/still/{filename}",
+            axum::routing::get(handlers::series_episode_still),
+        )
+        .route(
+            "/serialy-online/person/{filename}",
+            axum::routing::get(handlers::series_person_image),
+        )
+        .route(
+            "/serialy-online/{slug}/{ep}",
+            axum::routing::get(handlers::episode_detail),
+        )
+        .route(
+            "/serialy-online/{slug}/{ep}/",
+            axum::routing::get(handlers::episode_detail),
+        )
+        .route(
+            "/serialy-online/{slug}",
+            axum::routing::get(handlers::series_resolve),
+        )
+        .route(
+            "/serialy-online/{slug}/",
+            axum::routing::get(handlers::series_resolve),
         )
         .route(
             "/filmy-a-serialy",

@@ -22,6 +22,13 @@ struct FilmRow {
     sktorrent_cdn: Option<i16>,
     #[allow(dead_code)]
     sktorrent_qualities: Option<String>,
+    #[allow(dead_code)]
+    added_at: Option<chrono::DateTime<chrono::Utc>>,
+    prehrajto_url: Option<String>,
+    #[allow(dead_code)]
+    prehrajto_has_dub: bool,
+    #[allow(dead_code)]
+    prehrajto_has_subs: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -58,11 +65,43 @@ struct CountRow {
 pub struct FilmsQuery {
     strana: Option<i64>,
     razeni: Option<String>, // "rok", "imdb", "csfd", "nazev"
-    #[allow(dead_code)]
-    zanry: Option<String>, // comma-separated genre slugs to include (future)
-    #[allow(dead_code)]
-    bez: Option<String>, // comma-separated genre slugs to exclude (future)
+    zanry: Option<String>,  // comma-separated genre slugs to include
+    bez: Option<String>,    // comma-separated genre slugs to exclude
     q: Option<String>,      // search query
+    rok: Option<String>,    // year filter
+    rezim: Option<String>,  // "and" (all genres) or "or" (any genre)
+    smer: Option<String>,   // "asc" or "desc" (default)
+    jazyk: Option<String>,  // comma-separated: dub, sub
+}
+
+impl FilmsQuery {
+    fn genre_mode_and(&self) -> bool {
+        self.rezim.as_deref() == Some("and")
+    }
+
+    fn sort_desc(&self) -> bool {
+        self.smer.as_deref() != Some("asc")
+    }
+
+    fn audio_filter(&self) -> Option<&'static str> {
+        // Default: no jazyk param → filter to dubbed only
+        let val = self.jazyk.as_deref().map(|s| s.trim()).unwrap_or("dub");
+        if val == "vse" {
+            return None;
+        }
+        if val.is_empty() {
+            return Some("f.has_dub = true");
+        }
+        let parts: Vec<&str> = val.split(',').map(|s| s.trim()).collect();
+        let has_dub = parts.contains(&"dub") || parts.contains(&"cz") || parts.contains(&"sk");
+        let has_sub = parts.contains(&"sub") || parts.contains(&"titulky");
+        match (has_dub, has_sub) {
+            (true, false) => Some("f.has_dub = true"),
+            (false, true) => Some("f.has_subtitles = true"),
+            (true, true) => Some("(f.has_dub = true OR f.has_subtitles = true)"),
+            _ => None,
+        }
+    }
 }
 
 impl FilmsQuery {
@@ -70,17 +109,53 @@ impl FilmsQuery {
         self.strana.unwrap_or(1).max(1)
     }
 
-    fn order_clause(&self) -> &str {
-        match self.razeni.as_deref() {
-            Some("imdb") => "f.imdb_rating DESC NULLS LAST, f.title",
-            Some("csfd") => "f.csfd_rating DESC NULLS LAST, f.title",
-            Some("nazev") => "f.title, f.year DESC NULLS LAST",
-            _ => "f.year DESC NULLS LAST, f.title",
+    fn order_clause(&self) -> &'static str {
+        let desc = self.sort_desc();
+        match (self.razeni.as_deref(), desc) {
+            (Some("rok"), true) => "f.year DESC NULLS LAST, f.title",
+            (Some("rok"), false) => "f.year ASC NULLS LAST, f.title",
+            (Some("imdb"), true) => "f.imdb_rating DESC NULLS LAST, f.title",
+            (Some("imdb"), false) => "f.imdb_rating ASC NULLS LAST, f.title",
+            (Some("csfd"), true) => "f.csfd_rating DESC NULLS LAST, f.title",
+            (Some("csfd"), false) => "f.csfd_rating ASC NULLS LAST, f.title",
+            (Some("nazev"), true) => "f.title DESC, f.year DESC NULLS LAST",
+            (Some("nazev"), false) => "f.title ASC, f.year DESC NULLS LAST",
+            // Default: "pridano" (added_at) — most recently added first
+            (_, true) => "f.added_at DESC NULLS LAST, f.title",
+            (_, false) => "f.added_at ASC NULLS LAST, f.title",
         }
     }
 
     fn sort_key(&self) -> &str {
-        self.razeni.as_deref().unwrap_or("rok")
+        self.razeni.as_deref().unwrap_or("pridano")
+    }
+
+    fn include_genres(&self) -> Vec<String> {
+        self.zanry
+            .as_ref()
+            .map(|s| {
+                s.split(',')
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn exclude_genres(&self) -> Vec<String> {
+        self.bez
+            .as_ref()
+            .map(|s| {
+                s.split(',')
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn year_filter(&self) -> Option<i16> {
+        self.rok.as_ref().and_then(|s| s.trim().parse().ok())
     }
 }
 
@@ -96,8 +171,10 @@ struct FilmsListTemplate {
     total_pages: i64,
     total_count: i64,
     current_genre: Option<GenreRow>,
+    #[allow(dead_code)]
     sort_key: String,
     query_string: String,
+    search_query: Option<String>,
 }
 
 #[derive(Template)]
@@ -151,57 +228,117 @@ pub async fn films_list(
         }
     });
 
-    let (total_count, films) = if let Some(ref pattern) = search_q {
-        let count_row = sqlx::query_as::<_, CountRow>(
-            "SELECT count(*) as count FROM films WHERE title ILIKE $1 OR original_title ILIKE $1",
-        )
-        .bind(pattern)
-        .fetch_one(&state.db)
+    let include = params.include_genres();
+    let exclude = params.exclude_genres();
+    let year_f = params.year_filter();
+
+    // Build dynamic WHERE parts
+    let mut where_parts: Vec<String> = vec![];
+    let mut bind_idx = 1;
+
+    let has_search = search_q.is_some();
+    if has_search {
+        where_parts.push(format!(
+            "(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})"
+        ));
+        bind_idx += 1;
+    }
+    if !include.is_empty() {
+        if params.genre_mode_and() {
+            // AND: film must have ALL selected genres
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include.len()
+            ));
+        } else {
+            // OR (default): film must have ANY selected genre
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude.is_empty() {
+        where_parts.push(format!(
+            "f.id NOT IN (SELECT fg.film_id FROM film_genres fg \
+             JOIN genres g ON g.id = fg.genre_id \
+             WHERE g.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("f.year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if let Some(af) = params.audio_filter() {
+        where_parts.push(af.to_string());
+    }
+
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
+
+    // Count query
+    let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
+    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
+    if let Some(ref p) = search_q {
+        cq = cq.bind(p.clone());
+    }
+    if !include.is_empty() {
+        cq = cq.bind(include.clone());
+    }
+    if !exclude.is_empty() {
+        cq = cq.bind(exclude.clone());
+    }
+    if let Some(yr) = year_f {
+        cq = cq.bind(yr);
+    }
+    let count_row = cq.fetch_one(&state.db).await?;
+
+    // Films query
+    let films_query = format!(
+        "SELECT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
+         f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
+         f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
+         f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs \
+         FROM films f {where_clause} \
+         ORDER BY {order} \
+         LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        limit_idx = bind_idx,
+        offset_idx = bind_idx + 1
+    );
+    let mut fq = sqlx::query_as::<_, FilmRow>(&films_query);
+    if let Some(ref p) = search_q {
+        fq = fq.bind(p.clone());
+    }
+    if !include.is_empty() {
+        fq = fq.bind(include.clone());
+    }
+    if !exclude.is_empty() {
+        fq = fq.bind(exclude.clone());
+    }
+    if let Some(yr) = year_f {
+        fq = fq.bind(yr);
+    }
+    let films = fq
+        .bind(FILMS_PER_PAGE)
+        .bind(offset)
+        .fetch_all(&state.db)
         .await?;
 
-        let query = format!(
-            "SELECT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-             f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
-             f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities \
-             FROM films f \
-             WHERE f.title ILIKE $1 OR f.original_title ILIKE $1 \
-             ORDER BY {order} \
-             LIMIT $2 OFFSET $3"
-        );
-        let films = sqlx::query_as::<_, FilmRow>(&query)
-            .bind(pattern)
-            .bind(FILMS_PER_PAGE)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await?;
-
-        (count_row.count.unwrap_or(0), films)
-    } else {
-        let count_row = sqlx::query_as::<_, CountRow>("SELECT count(*) as count FROM films")
-            .fetch_one(&state.db)
-            .await?;
-
-        let query = format!(
-            "SELECT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-             f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
-             f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities \
-             FROM films f \
-             ORDER BY {order} \
-             LIMIT $1 OFFSET $2"
-        );
-        let films = sqlx::query_as::<_, FilmRow>(&query)
-            .bind(FILMS_PER_PAGE)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await?;
-
-        (count_row.count.unwrap_or(0), films)
-    };
+    let (total_count, films) = (count_row.count.unwrap_or(0), films);
     let total_pages = (total_count as f64 / FILMS_PER_PAGE as f64).ceil() as i64;
 
     let genres = load_genres(&state.db).await?;
 
-    // Build query string for pagination links (preserve sort + search)
+    // Build query string for pagination links (preserve sort + filters)
     let mut qs_parts = Vec::new();
     if params.razeni.is_some() {
         qs_parts.push(format!("razeni={}", params.sort_key()));
@@ -212,11 +349,51 @@ pub async fn films_list(
             qs_parts.push(format!("q={}", urlencoding::encode(t)));
         }
     }
+    if let Some(ref z) = params.zanry
+        && !z.is_empty()
+    {
+        qs_parts.push(format!("zanry={}", urlencoding::encode(z)));
+    }
+    if let Some(ref m) = params.rezim
+        && m == "and"
+    {
+        qs_parts.push("rezim=and".to_string());
+    }
+    if let Some(ref s) = params.smer
+        && s == "asc"
+    {
+        qs_parts.push("smer=asc".to_string());
+    }
+    if let Some(ref j) = params.jazyk
+        && !j.is_empty()
+    {
+        // Preserve all explicit values including "vse" (default without param = "dub")
+        qs_parts.push(format!("jazyk={}", urlencoding::encode(j)));
+    }
+    if let Some(ref b) = params.bez
+        && !b.is_empty()
+    {
+        qs_parts.push(format!("bez={}", urlencoding::encode(b)));
+    }
+    if let Some(ref r) = params.rok
+        && !r.is_empty()
+    {
+        qs_parts.push(format!("rok={}", urlencoding::encode(r)));
+    }
     let query_string = if qs_parts.is_empty() {
         String::new()
     } else {
         format!("&{}", qs_parts.join("&"))
     };
+
+    let search_query = params.q.as_ref().and_then(|q| {
+        let t = q.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
 
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
@@ -228,6 +405,7 @@ pub async fn films_list(
         current_genre: None,
         sort_key: params.sort_key().to_string(),
         query_string,
+        search_query,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -238,7 +416,10 @@ pub async fn films_detail(
     Path(slug): Path<String>,
     axum::extract::Query(params): axum::extract::Query<FilmsQuery>,
 ) -> WebResult<Response> {
-    // WebP cover request: /filmy-online/some-film.webp
+    // WebP cover request: /filmy-online/some-film.webp (small) or -large.webp
+    if slug.ends_with("-large.webp") {
+        return films_cover_large(State(state), Path(slug)).await;
+    }
     if slug.ends_with(".webp") {
         return films_cover(State(state), Path(slug)).await;
     }
@@ -258,7 +439,8 @@ pub async fn films_detail(
     let film = sqlx::query_as::<_, FilmRow>(
         "SELECT id, title, slug, year, description, original_title, \
          imdb_rating, csfd_rating, runtime_min, cover_filename, \
-         sktorrent_video_id, sktorrent_cdn, sktorrent_qualities \
+         sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, added_at, \
+         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs \
          FROM films WHERE slug = $1",
     )
     .bind(&slug)
@@ -306,30 +488,68 @@ async fn films_by_genre(
     let page = params.page();
     let offset = (page - 1) * FILMS_PER_PAGE;
     let order = params.order_clause();
+    let exclude = params.exclude_genres();
+    let year_f = params.year_filter();
 
-    let count_row = sqlx::query_as::<_, CountRow>(
-        "SELECT count(*) as count FROM films f \
+    // Build WHERE clauses for exclude genres and year
+    let mut where_parts: Vec<String> = vec!["fg.genre_id = $1".to_string()];
+    let mut bind_idx = 2;
+    if !exclude.is_empty() {
+        where_parts.push(format!(
+            "f.id NOT IN (SELECT fg2.film_id FROM film_genres fg2 \
+             JOIN genres g2 ON g2.id = fg2.genre_id \
+             WHERE g2.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("f.year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if let Some(af) = params.audio_filter() {
+        where_parts.push(af.to_string());
+    }
+    let where_clause = where_parts.join(" AND ");
+
+    // Count
+    let count_query = format!(
+        "SELECT count(DISTINCT f.id) as count FROM films f \
          JOIN film_genres fg ON f.id = fg.film_id \
-         WHERE fg.genre_id = $1",
-    )
-    .bind(genre.id)
-    .fetch_one(&state.db)
-    .await?;
+         WHERE {where_clause}"
+    );
+    let mut count_q = sqlx::query_as::<_, CountRow>(&count_query).bind(genre.id);
+    if !exclude.is_empty() {
+        count_q = count_q.bind(exclude.clone());
+    }
+    if let Some(yr) = year_f {
+        count_q = count_q.bind(yr);
+    }
+    let count_row = count_q.fetch_one(&state.db).await?;
     let total_count = count_row.count.unwrap_or(0);
     let total_pages = (total_count as f64 / FILMS_PER_PAGE as f64).ceil() as i64;
 
-    let query = format!(
-        "SELECT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
+    // Films
+    let films_query = format!(
+        "SELECT DISTINCT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
          f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
-         f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities \
+         f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
+         f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs \
          FROM films f \
          JOIN film_genres fg ON f.id = fg.film_id \
-         WHERE fg.genre_id = $1 \
+         WHERE {where_clause} \
          ORDER BY {order} \
-         LIMIT $2 OFFSET $3"
+         LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        limit_idx = bind_idx,
+        offset_idx = bind_idx + 1
     );
-    let films = sqlx::query_as::<_, FilmRow>(&query)
-        .bind(genre.id)
+    let mut q = sqlx::query_as::<_, FilmRow>(&films_query).bind(genre.id);
+    if !exclude.is_empty() {
+        q = q.bind(exclude.clone());
+    }
+    if let Some(yr) = year_f {
+        q = q.bind(yr);
+    }
+    let films = q
         .bind(FILMS_PER_PAGE)
         .bind(offset)
         .fetch_all(&state.db)
@@ -340,6 +560,37 @@ async fn films_by_genre(
     let mut qs_parts = Vec::new();
     if params.razeni.is_some() {
         qs_parts.push(format!("razeni={}", params.sort_key()));
+    }
+    if let Some(ref s) = params.smer
+        && s == "asc"
+    {
+        qs_parts.push("smer=asc".to_string());
+    }
+    if let Some(ref j) = params.jazyk
+        && !j.is_empty()
+    {
+        // Preserve all explicit values including "vse" (default without param = "dub")
+        qs_parts.push(format!("jazyk={}", urlencoding::encode(j)));
+    }
+    if let Some(ref z) = params.zanry
+        && !z.is_empty()
+    {
+        qs_parts.push(format!("zanry={}", urlencoding::encode(z)));
+    }
+    if let Some(ref m) = params.rezim
+        && m == "and"
+    {
+        qs_parts.push("rezim=and".to_string());
+    }
+    if let Some(ref b) = params.bez
+        && !b.is_empty()
+    {
+        qs_parts.push(format!("bez={}", urlencoding::encode(b)));
+    }
+    if let Some(ref r) = params.rok
+        && !r.is_empty()
+    {
+        qs_parts.push(format!("rok={}", urlencoding::encode(r)));
     }
     let query_string = if qs_parts.is_empty() {
         String::new()
@@ -357,6 +608,7 @@ async fn films_by_genre(
         current_genre: Some(genre),
         sort_key: params.sort_key().to_string(),
         query_string,
+        search_query: None,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -462,6 +714,107 @@ pub async fn films_cover(
         .into_response())
 }
 
+/// GET /filmy-online/{slug}-large.webp — serve large WebP cover (w780 from TMDB, cached)
+pub async fn films_cover_large(
+    State(state): State<AppState>,
+    Path(slug_webp): Path<String>,
+) -> WebResult<Response> {
+    let slug = slug_webp.strip_suffix("-large.webp").unwrap_or(&slug_webp);
+
+    #[derive(sqlx::FromRow)]
+    struct CoverRow {
+        tmdb_id: Option<i32>,
+    }
+
+    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_id FROM films WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let tmdb_id = row.and_then(|r| r.tmdb_id);
+    let covers_dir =
+        std::env::var("COVERS_DIR").unwrap_or_else(|_| "data/movies/covers-webp".to_string());
+
+    // Cache path: {covers_dir}/large/{slug}.webp
+    let cache_dir = std::path::Path::new(&covers_dir).join("large");
+    let cache_path = cache_dir.join(format!("{slug}.webp"));
+
+    // Serve from cache if exists
+    if cache_path.exists()
+        && let Ok(bytes) = tokio::fs::read(&cache_path).await
+    {
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/webp"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
+
+    // Fetch from TMDB
+    if let Some(tid) = tmdb_id {
+        // First get poster_path
+        let tmdb_key = "0405855b8275307d3cf3284470fd9d28";
+        let detail_url =
+            format!("https://api.themoviedb.org/3/movie/{tid}?api_key={tmdb_key}&language=cs-CZ");
+
+        if let Ok(resp) = state
+            .http_client
+            .get(&detail_url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            && let Ok(data) = resp.json::<serde_json::Value>().await
+            && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
+        {
+            // Download w780 poster
+            let poster_url = format!("https://image.tmdb.org/t/p/w780{poster_path}");
+            if let Ok(img_resp) = state
+                .http_client
+                .get(&poster_url)
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                && img_resp.status().is_success()
+                && let Ok(bytes) = img_resp.bytes().await
+            {
+                // Try to convert to WebP for smaller size
+                let output_bytes = if let Ok(img) = image::load_from_memory(&bytes) {
+                    let mut buf = Vec::new();
+                    let mut cursor = std::io::Cursor::new(&mut buf);
+                    if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
+                        buf
+                    } else {
+                        bytes.to_vec()
+                    }
+                } else {
+                    bytes.to_vec()
+                };
+
+                // Save to cache
+                let _ = tokio::fs::create_dir_all(&cache_dir).await;
+                let _ = tokio::fs::write(&cache_path, &output_bytes).await;
+
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, "image/webp"),
+                        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                    ],
+                    output_bytes,
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    // Fallback to small cover
+    films_cover(State(state), Path(format!("{slug}.webp"))).await
+}
+
 // --- Sktorrent resolve API ---
 
 #[derive(Deserialize)]
@@ -564,7 +917,7 @@ pub async fn sktorrent_resolve(
     )
     .unwrap();
 
-    let sources: Vec<SktorrentSource> = re
+    let mut sources: Vec<SktorrentSource> = re
         .captures_iter(&html)
         .filter_map(|cap| {
             Some(SktorrentSource {
@@ -575,11 +928,16 @@ pub async fn sktorrent_resolve(
         })
         .collect();
 
+    // If page didn't return sources (geo-blocked), scan CDN servers with HEAD requests
+    if sources.is_empty() {
+        sources = scan_sktorrent_cdns(&state.http_client, video_id).await;
+    }
+
     if sources.is_empty() {
         return axum::Json(SktorrentResolveResponse {
             video_id,
             sources: vec![],
-            error: Some("No video sources found on sktorrent page".to_string()),
+            error: Some("No video sources found on sktorrent".to_string()),
             cached: false,
         });
     }
@@ -609,6 +967,68 @@ pub async fn sktorrent_resolve(
         error: None,
         cached: false,
     })
+}
+
+/// Scan sktorrent CDN servers (1..=30) with HEAD request to find working URL.
+/// Used as fallback when page is geo-blocked but CDN URLs work globally.
+async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<SktorrentSource> {
+    let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
+    let mut found: Vec<SktorrentSource> = vec![];
+
+    // Scan CDNs in parallel batches of 10
+    let cdns: Vec<i32> = (1..=30).collect();
+    for batch in cdns.chunks(10) {
+        let mut tasks = Vec::new();
+        for &cdn in batch {
+            for (q_label, q_res) in qualities.iter() {
+                let url = format!(
+                    "https://online{cdn}.sktorrent.eu/media/videos//h264/{video_id}_{q_label}.mp4"
+                );
+                let client = client.clone();
+                let q_label = q_label.to_string();
+                let q_res = *q_res;
+                let url_clone = url.clone();
+                tasks.push(tokio::spawn(async move {
+                    let ok = client
+                        .head(&url_clone)
+                        .timeout(std::time::Duration::from_secs(3))
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success() || r.status().as_u16() == 206)
+                        .unwrap_or(false);
+                    (ok, url, q_label, q_res)
+                }));
+            }
+        }
+
+        let mut batch_results = Vec::new();
+        for t in tasks {
+            if let Ok((ok, url, q, res)) = t.await
+                && ok
+            {
+                batch_results.push(SktorrentSource {
+                    url,
+                    quality: q,
+                    res,
+                });
+            }
+        }
+
+        if !batch_results.is_empty() {
+            // Dedupe by quality
+            for src in batch_results {
+                if !found.iter().any(|s| s.quality == src.quality) {
+                    found.push(src);
+                }
+            }
+            // If we found both qualities, we're done
+            if found.len() >= 2 {
+                break;
+            }
+        }
+    }
+
+    found
 }
 
 // --- Helpers ---
