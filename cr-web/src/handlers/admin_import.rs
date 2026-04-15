@@ -384,3 +384,77 @@ fn serialize_run_detail<'a>(
             .collect(),
     }
 }
+
+// --- Manual trigger (#422) ---
+
+#[derive(serde::Deserialize)]
+pub struct RunNowForm {
+    /// Hard cap on processed videos. Default 5 keeps ad-hoc runs safe;
+    /// the daily cron passes a higher value. Server clamps to 1..=100 so a
+    /// stray submission can't trigger a marathon scan.
+    #[serde(default = "default_max_new")]
+    pub max_new: u32,
+}
+
+fn default_max_new() -> u32 {
+    5
+}
+
+const MAX_NEW_HARD_CAP: u32 = 100;
+
+/// POST /admin/import/run — fire-and-redirect manual scanner trigger.
+///
+/// Spawns `python3 scripts/auto-import.py --trigger manual --max-new N` as
+/// a detached subprocess and 303-redirects to the dashboard. The script
+/// INSERTs an `import_runs` row immediately so the new run appears in the
+/// list within a second or two.
+///
+/// Guarded by env `ADMIN_IMPORT_RUN_ENABLED=1` — without it we 403, so a
+/// stray POST on production can't kick off an unbounded subprocess. Set
+/// the flag in the production .env once the cron rollout is signed off.
+pub async fn admin_import_run(
+    axum::extract::Form(form): axum::extract::Form<RunNowForm>,
+) -> WebResult<Response> {
+    if std::env::var("ADMIN_IMPORT_RUN_ENABLED").as_deref() != Ok("1") {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            "Manual run is disabled. Set ADMIN_IMPORT_RUN_ENABLED=1 in the env to enable.",
+        )
+            .into_response());
+    }
+
+    // Clamp user input to a sane range so we don't accidentally scan
+    // thousands of pages on a fat-fingered submission.
+    let max_new = form.max_new.clamp(1, MAX_NEW_HARD_CAP);
+
+    let repo_root = std::env::var("CR_REPO_ROOT").unwrap_or_else(|_| "/opt/cr".to_string());
+    let script = format!("{}/scripts/auto-import.py", repo_root);
+
+    let spawn_result = tokio::process::Command::new("python3")
+        .arg("-u")
+        .arg(&script)
+        .arg("--trigger")
+        .arg("manual")
+        .arg("--max-new")
+        .arg(max_new.to_string())
+        .current_dir(&repo_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    if let Err(e) = spawn_result {
+        tracing::error!("admin_import_run: spawn failed: {e}");
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Cannot spawn scanner: {e}"),
+        )
+            .into_response());
+    }
+
+    Ok((
+        StatusCode::SEE_OTHER,
+        [(axum::http::header::LOCATION, "/admin/import/")],
+    )
+        .into_response())
+}
