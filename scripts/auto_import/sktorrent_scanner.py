@@ -22,8 +22,7 @@ import argparse
 import logging
 import re
 import time
-from dataclasses import dataclass, field, asdict
-from typing import Iterable
+from dataclasses import dataclass, asdict
 
 import requests
 
@@ -126,7 +125,7 @@ def _fetch_page(session: requests.Session, page: int, timeout: int = 20) -> str:
 
 def scan_new_videos(
     checkpoint: int,
-    max_new: int = 0,
+    max_new: int = 5,
     max_pages: int = MAX_PAGES_HARD_CAP,
     session: requests.Session | None = None,
     sleep_s: float = PAGE_SLEEP_S,
@@ -136,13 +135,14 @@ def scan_new_videos(
     Args:
         checkpoint: highest already-known sktorrent_video_id; videos ≤ this
             are considered "already imported" and end the scan.
-        max_new: hard cap on returned new videos (0 = no cap). Useful for safe
-            iterative testing — set to 2-5 in early runs so we can manually
-            verify each batch before opening the floodgates.
-        max_pages: defensive crawl ceiling (default 50). Stops scan even if
-            we haven't reached checkpoint, to avoid infinite loops on
-            unexpected listing changes.
-        session: optional reusable requests.Session.
+        max_new: hard cap on returned new videos. Defaults to 5 so ad-hoc
+            invocations don't accidentally crawl a huge batch. Pass 0 for
+            unlimited (used by the daily cron job once stable).
+        max_pages: defensive crawl ceiling. Clamped to MAX_PAGES_HARD_CAP
+            (50) so a buggy caller can't accidentally hammer SK Torrent.
+        session: optional reusable requests.Session. Required headers
+            (User-Agent, Accept-Encoding: identity) are set if missing,
+            so even caller-provided sessions get the malformed-gzip fix.
         sleep_s: throttle between page fetches.
 
     Returns:
@@ -151,15 +151,20 @@ def scan_new_videos(
     Raises:
         ScannerError: SK Torrent unreachable or returns non-200.
     """
+    if max_pages > MAX_PAGES_HARD_CAP:
+        log.warning("max_pages=%d clamped to hard cap %d", max_pages, MAX_PAGES_HARD_CAP)
+        max_pages = MAX_PAGES_HARD_CAP
+
     own_session = session is None
     if session is None:
         session = requests.Session()
-        # SK Torrent occasionally returns malformed gzip when proxied through
-        # certain CDN routes — request identity encoding to skip decompression.
-        session.headers.update({
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Accept-Encoding": "identity",
-        })
+    # `Accept-Encoding: identity` is mandatory for SK Torrent — the server
+    # occasionally returns malformed gzip otherwise. Force-set even on
+    # caller-provided sessions because `requests.Session()` defaults to
+    # `gzip, deflate` which triggers the bug. User-Agent only when missing
+    # so callers can override.
+    session.headers["Accept-Encoding"] = "identity"
+    session.headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
 
     new_videos: list[ScannedVideo] = []
     pages_scanned = 0
@@ -221,8 +226,8 @@ def _cli() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", type=int, required=True,
                     help="Highest already-known sktorrent_video_id")
-    ap.add_argument("--max-new", type=int, default=0,
-                    help="Hard cap on returned new videos (0 = unlimited)")
+    ap.add_argument("--max-new", type=int, default=5,
+                    help="Hard cap on returned new videos (default 5; 0 = unlimited)")
     ap.add_argument("--max-pages", type=int, default=MAX_PAGES_HARD_CAP,
                     help=f"Defensive crawl ceiling (default {MAX_PAGES_HARD_CAP})")
     ap.add_argument("--verbose", "-v", action="store_true")
