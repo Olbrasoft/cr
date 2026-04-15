@@ -303,14 +303,13 @@ pub async fn movies_video_url(
     });
 
     // If CZ proxy didn't return subtitles, extract from page HTML
-    if subtitles.as_ref().is_none_or(|s| s.is_empty()) {
-        if let Ok(page_r) = page_resp {
-            if let Ok(html) = page_r.text().await {
-                let extracted = extract_subtitles_from_html(&html);
-                if !extracted.is_empty() {
-                    subtitles = Some(extracted);
-                }
-            }
+    if subtitles.as_ref().is_none_or(|s| s.is_empty())
+        && let Ok(page_r) = page_resp
+        && let Ok(html) = page_r.text().await
+    {
+        let extracted = extract_subtitles_from_html(&html);
+        if !extracted.is_empty() {
+            subtitles = Some(extracted);
         }
     }
 
@@ -327,9 +326,8 @@ const PREHRAJTO_PHP_PROXY: &str = "http://tumarsrobot.unas.cz/index.php";
 
 /// Extract `'videoLength': 772` from prehraj.to page HTML (seconds).
 fn extract_video_length(html: &str) -> Option<u32> {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"'videoLength'\s*:\s*(\d+)").unwrap()
-    });
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"'videoLength'\s*:\s*(\d+)").unwrap());
     RE.captures(html)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u32>().ok())
@@ -345,10 +343,12 @@ fn extract_dimensions(html: &str) -> (Option<u32>, Option<u32>) {
     static RE_H: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"itemprop="height"\s+content="(\d+)""#).unwrap()
     });
-    let w = RE_W.captures(html)
+    let w = RE_W
+        .captures(html)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u32>().ok());
-    let h = RE_H.captures(html)
+    let h = RE_H
+        .captures(html)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u32>().ok());
     (w, h)
@@ -413,8 +413,8 @@ pub async fn movies_validate(
                         valid: false,
                         status: Some(status),
                         duration_sec: None,
-            width: None,
-            height: None,
+                        width: None,
+                        height: None,
                         error: None,
                     });
                 }
@@ -461,16 +461,16 @@ pub async fn movies_validate(
                 valid: data.valid.unwrap_or(false),
                 status: data.status,
                 duration_sec: None,
-            width: None,
-            height: None,
+                width: None,
+                height: None,
                 error: None,
             }),
             Err(_) => Json(ValidateResponse {
                 valid: false,
                 status: None,
                 duration_sec: None,
-            width: None,
-            height: None,
+                width: None,
+                height: None,
                 error: Some("Invalid response".to_string()),
             }),
         },
@@ -615,21 +615,13 @@ pub async fn movies_subtitle(
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, "text/vtt; charset=utf-8".to_string()),
-                    (
-                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                        "*".to_string(),
-                    ),
-                    (
-                        header::CACHE_CONTROL,
-                        "public, max-age=3600".to_string(),
-                    ),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
+                    (header::CACHE_CONTROL, "public, max-age=3600".to_string()),
                 ],
                 bytes,
             )
                 .into_response(),
-            Err(_) => {
-                (StatusCode::BAD_GATEWAY, "Failed to read subtitle").into_response()
-            }
+            Err(_) => (StatusCode::BAD_GATEWAY, "Failed to read subtitle").into_response(),
         },
         _ => (StatusCode::NOT_FOUND, "Subtitle not available").into_response(),
     }

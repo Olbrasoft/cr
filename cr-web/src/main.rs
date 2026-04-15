@@ -212,7 +212,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::movies_api::movies_proxy_stream),
         )
         .route("/films/search", axum::routing::get(handlers::films_search))
-        .route("/series/search", axum::routing::get(handlers::series_search))
+        .route(
+            "/series/search",
+            axum::routing::get(handlers::series_search),
+        )
         .route(
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
@@ -246,7 +249,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::films_detail),
         )
         .route("/serialy-online", axum::routing::get(handlers::series_list))
-        .route("/serialy-online/", axum::routing::get(handlers::series_list))
+        .route(
+            "/serialy-online/",
+            axum::routing::get(handlers::series_list),
+        )
         .route(
             "/serialy-online/still/{filename}",
             axum::routing::get(handlers::series_episode_still),

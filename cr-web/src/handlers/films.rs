@@ -171,6 +171,7 @@ struct FilmsListTemplate {
     total_pages: i64,
     total_count: i64,
     current_genre: Option<GenreRow>,
+    #[allow(dead_code)]
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
@@ -385,17 +386,14 @@ pub async fn films_list(
         format!("&{}", qs_parts.join("&"))
     };
 
-    let search_query = params
-        .q
-        .as_ref()
-        .and_then(|q| {
-            let t = q.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            }
-        });
+    let search_query = params.q.as_ref().and_then(|q| {
+        let t = q.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
 
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
@@ -721,9 +719,7 @@ pub async fn films_cover_large(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    let slug = slug_webp
-        .strip_suffix("-large.webp")
-        .unwrap_or(&slug_webp);
+    let slug = slug_webp.strip_suffix("-large.webp").unwrap_or(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
@@ -762,9 +758,8 @@ pub async fn films_cover_large(
     if let Some(tid) = tmdb_id {
         // First get poster_path
         let tmdb_key = "0405855b8275307d3cf3284470fd9d28";
-        let detail_url = format!(
-            "https://api.themoviedb.org/3/movie/{tid}?api_key={tmdb_key}&language=cs-CZ"
-        );
+        let detail_url =
+            format!("https://api.themoviedb.org/3/movie/{tid}?api_key={tmdb_key}&language=cs-CZ");
 
         if let Ok(resp) = state
             .http_client
@@ -790,10 +785,7 @@ pub async fn films_cover_large(
                 let output_bytes = if let Ok(img) = image::load_from_memory(&bytes) {
                     let mut buf = Vec::new();
                     let mut cursor = std::io::Cursor::new(&mut buf);
-                    if img
-                        .write_to(&mut cursor, image::ImageFormat::WebP)
-                        .is_ok()
-                    {
+                    if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
                         buf
                     } else {
                         bytes.to_vec()
@@ -979,10 +971,7 @@ pub async fn sktorrent_resolve(
 
 /// Scan sktorrent CDN servers (1..=30) with HEAD request to find working URL.
 /// Used as fallback when page is geo-blocked but CDN URLs work globally.
-async fn scan_sktorrent_cdns(
-    client: &reqwest::Client,
-    video_id: i32,
-) -> Vec<SktorrentSource> {
+async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<SktorrentSource> {
     let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
     let mut found: Vec<SktorrentSource> = vec![];
 

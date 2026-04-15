@@ -127,6 +127,7 @@ struct SeriesListTemplate {
     total_pages: i64,
     total_count: i64,
     current_genre: Option<GenreRow>,
+    #[allow(dead_code)]
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
@@ -256,7 +257,11 @@ pub async fn series_list(
 
     let search_query = params.q.clone().and_then(|q| {
         let t = q.trim();
-        if t.is_empty() { None } else { Some(t.to_string()) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
     });
 
     let tmpl = SeriesListTemplate {
@@ -349,12 +354,11 @@ pub async fn series_resolve(
     }
 
     // Genre page?
-    let genre = sqlx::query_as::<_, GenreRow>(
-        "SELECT id, slug, name_cs FROM genres WHERE slug = $1"
-    )
-    .bind(&slug_raw)
-    .fetch_optional(&state.db)
-    .await?;
+    let genre =
+        sqlx::query_as::<_, GenreRow>("SELECT id, slug, name_cs FROM genres WHERE slug = $1")
+            .bind(&slug_raw)
+            .fetch_optional(&state.db)
+            .await?;
 
     if let Some(genre) = genre {
         return series_by_genre(state, genre, params).await;
@@ -406,11 +410,11 @@ pub async fn series_resolve(
     let mut seen_in_season: std::collections::HashSet<i16> = std::collections::HashSet::new();
 
     for ep in episodes {
-        if let Some(ref s) = current_season {
-            if s.number != ep.season {
-                seasons.push(current_season.take().unwrap());
-                seen_in_season.clear();
-            }
+        if let Some(ref s) = current_season
+            && s.number != ep.season
+        {
+            seasons.push(current_season.take().unwrap());
+            seen_in_season.clear();
         }
         if current_season.is_none() {
             current_season = Some(Season {
@@ -697,8 +701,8 @@ pub async fn series_cover(
         .await?;
 
     let cover_filename = row.and_then(|r| r.cover_filename);
-    let covers_dir =
-        std::env::var("SERIES_COVERS_DIR").unwrap_or_else(|_| "data/series/covers-webp".to_string());
+    let covers_dir = std::env::var("SERIES_COVERS_DIR")
+        .unwrap_or_else(|_| "data/series/covers-webp".to_string());
 
     if let Some(filename) = cover_filename {
         let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
@@ -740,9 +744,7 @@ pub async fn series_cover_large(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    let slug = slug_webp
-        .strip_suffix("-large.webp")
-        .unwrap_or(&slug_webp);
+    let slug = slug_webp.strip_suffix("-large.webp").unwrap_or(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
@@ -804,10 +806,7 @@ pub async fn series_cover_large(
                 let output_bytes = if let Ok(img) = image::load_from_memory(&bytes) {
                     let mut buf = Vec::new();
                     let mut cursor = std::io::Cursor::new(&mut buf);
-                    if img
-                        .write_to(&mut cursor, image::ImageFormat::WebP)
-                        .is_ok()
-                    {
+                    if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
                         buf
                     } else {
                         bytes.to_vec()
@@ -882,8 +881,8 @@ pub async fn series_person_image(Path(filename): Path<String>) -> WebResult<Resp
     if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
         return Ok((StatusCode::NOT_FOUND, "Not found").into_response());
     }
-    let dir = std::env::var("SERIES_PEOPLE_DIR")
-        .unwrap_or_else(|_| "data/series/people".to_string());
+    let dir =
+        std::env::var("SERIES_PEOPLE_DIR").unwrap_or_else(|_| "data/series/people".to_string());
     let path = std::path::Path::new(&dir).join(&filename);
     if path.exists()
         && let Ok(bytes) = tokio::fs::read(&path).await

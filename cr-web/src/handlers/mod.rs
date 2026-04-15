@@ -28,13 +28,13 @@ pub use audiobooks::audiobooks;
 pub use download_video::download_video;
 pub use films::{films_detail, films_list, films_search, sktorrent_resolve};
 pub use filmy_serialy::filmy_serialy;
+pub use geojson::{geojson_municipality, geojson_orp};
+pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
+pub use pools::{pools_by_category, pools_hub};
 pub use series::{
     episode_detail, series_episode_still, series_list, series_person_image, series_resolve,
     series_search,
 };
-pub use geojson::{geojson_municipality, geojson_orp};
-pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
-pub use pools::{pools_by_category, pools_hub};
 pub use video_api::{
     library_delete, library_file, library_list, library_play, library_stream, video_cleanup,
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,
