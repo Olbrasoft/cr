@@ -25,6 +25,14 @@
 
     <h2>Posledních 30 běhů SK Torrent scanneru</h2>
 
+    <form method="post" action="/admin/import/run" class="run-now-form">
+        <label for="max_new" title="Bezpečný strop pro testování">Max nových:</label>
+        <input type="number" id="max_new" name="max_new" value="5" min="1" max="100"
+               title="Maximum nových videí ke zpracování (default 5, server clampuje 1–100)">
+        <button type="submit" title="Spustit scanner ručně teď" class="btn-run">▶ Spustit teď</button>
+        <span class="hint" title="Vyžaduje ADMIN_IMPORT_RUN_ENABLED=1 v env. Scanner běží asynchronně, výsledek se objeví v seznamu během několika sekund.">Vyžaduje ADMIN_IMPORT_RUN_ENABLED=1; běží asynchronně.</span>
+    </form>
+
     {% if runs.is_empty() %}
     <p class="empty-state">Zatím žádný běh — scanner nebyl spuštěn.</p>
     {% else %}
@@ -85,5 +93,11 @@
 .empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
 .breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
 .breadcrumb a { color: #11457E; text-decoration: none; }
+.run-now-form { background: #f0f9ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 1.2rem; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.run-now-form label { font-weight: 600; color: #1e40af; }
+.run-now-form input[type="number"] { width: 60px; padding: 0.3rem 0.5rem; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.9rem; }
+.run-now-form .btn-run { background: #11457E; color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+.run-now-form .btn-run:hover { background: #0d3a6e; }
+.run-now-form .hint { color: #64748b; font-size: 0.82rem; }
 </style>
 {% endblock %}

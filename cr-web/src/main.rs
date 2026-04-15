@@ -239,6 +239,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::admin_import::admin_import_failures),
         )
         .route(
+            "/admin/import/run",
+            axum::routing::post(handlers::admin_import::admin_import_run),
+        )
+        .route(
             "/admin/import/{run_id}",
             axum::routing::get(handlers::admin_import::admin_import_detail),
         )
