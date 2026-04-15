@@ -1,0 +1,15 @@
+[Unit]
+Description=CR — Auto-import daily at 05:00 UTC
+Documentation=https://github.com/Olbrasoft/cr/issues/423
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+# Run once at boot if we missed the scheduled time (e.g. VPS was rebooted
+# during the 05:00 window). Capped at 10 min random delay to avoid a
+# thundering herd on SK Torrent should many servers boot together.
+Persistent=true
+RandomizedDelaySec=10min
+Unit=cr-auto-import.service
+
+[Install]
+WantedBy=timers.target

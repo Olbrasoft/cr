@@ -5,6 +5,7 @@
 //!
 //! Routes:
 //!   GET /admin/import/             — last 30 runs (table)
+//!   GET /admin/import/summary      — all-time aggregated view (films/series/failures)
 //!   GET /admin/import/{run_id}     — detail with 4 tabs (added/updated/failed/skipped)
 //!   GET /admin/import/{run_id}.json — JSON dump for Claude Code debugging
 
@@ -457,4 +458,254 @@ pub async fn admin_import_run(
         [(axum::http::header::LOCATION, "/admin/import/")],
     )
         .into_response())
+}
+
+// ---- GET /admin/import/summary — aggregated view across ALL runs ----
+
+#[derive(sqlx::FromRow)]
+struct NewFilmRow {
+    title: String,
+    slug: String,
+    year: Option<i16>,
+    runtime_min: Option<i16>,
+    cover_filename: Option<String>,
+    imdb_id: Option<String>,
+    sktorrent_title: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl NewFilmRow {
+    fn when_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+    fn year_str(&self) -> String {
+        self.year.map(|y| format!(" ({y})")).unwrap_or_default()
+    }
+    fn runtime_str(&self) -> String {
+        self.runtime_min
+            .map(|m| format!("{m} min"))
+            .unwrap_or_default()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct UpdatedFilmRow {
+    title: String,
+    slug: String,
+    year: Option<i16>,
+    cover_filename: Option<String>,
+    sktorrent_title: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl UpdatedFilmRow {
+    fn when_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+    fn year_str(&self) -> String {
+        self.year.map(|y| format!(" ({y})")).unwrap_or_default()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct NewSeriesRow {
+    series_title: String,
+    series_slug: String,
+    first_air_year: Option<i16>,
+    cover_filename: Option<String>,
+    imdb_id: Option<String>,
+    episode_count: i64,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl NewSeriesRow {
+    fn when_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+    fn year_str(&self) -> String {
+        self.first_air_year
+            .map(|y| format!(" ({y})"))
+            .unwrap_or_default()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct EpisodeForExistingRow {
+    series_title: String,
+    series_slug: String,
+    #[allow(dead_code)] // retained in SELECT for future "series cover" rendering
+    cover_filename: Option<String>,
+    season: i16,
+    episode: i16,
+    episode_name: Option<String>,
+    sktorrent_title: String,
+    action: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl EpisodeForExistingRow {
+    fn when_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+    fn ep_code(&self) -> String {
+        format!("S{:02}E{:02}", self.season, self.episode)
+    }
+    fn is_added(&self) -> bool {
+        self.action == "added_episode"
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SkippedRow {
+    sktorrent_title: String,
+    sktorrent_url: String,
+    detected_type: Option<String>,
+    failure_step: Option<String>,
+    failure_message: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl SkippedRow {
+    fn when_str(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M").to_string()
+    }
+    fn reason(&self) -> String {
+        match (
+            self.failure_step.as_deref(),
+            self.failure_message.as_deref(),
+        ) {
+            (Some(s), Some(m)) => format!("{s}: {m}"),
+            (Some(s), None) => s.to_string(),
+            (_, Some(m)) => m.to_string(),
+            _ => "-".to_string(),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "admin_import_summary.html")]
+struct AdminImportSummaryTemplate {
+    img: String,
+    new_films: Vec<NewFilmRow>,
+    updated_films: Vec<UpdatedFilmRow>,
+    new_series: Vec<NewSeriesRow>,
+    episodes_for_existing: Vec<EpisodeForExistingRow>,
+    skipped: Vec<SkippedRow>,
+    failed: Vec<FailureItemRow>,
+    total_runs: i64,
+}
+
+/// GET /admin/import/summary — single page aggregating every decision
+/// the auto-import has ever made, broken down by outcome category.
+pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Response> {
+    // Films created by auto-import (joined via target_film_id).
+    let new_films = sqlx::query_as::<_, NewFilmRow>(
+        "SELECT f.title, f.slug, f.year, f.runtime_min, f.cover_filename, \
+         f.imdb_id, i.sktorrent_title, i.created_at \
+         FROM import_items i JOIN films f ON f.id = i.target_film_id \
+         WHERE i.action = 'added_film' \
+         ORDER BY i.created_at DESC LIMIT 200",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Films where we only attached a new SKT playback source.
+    let updated_films = sqlx::query_as::<_, UpdatedFilmRow>(
+        "SELECT f.title, f.slug, f.year, f.cover_filename, i.sktorrent_title, i.created_at \
+         FROM import_items i JOIN films f ON f.id = i.target_film_id \
+         WHERE i.action = 'updated_film' \
+         ORDER BY i.created_at DESC LIMIT 200",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Brand-new series — detect via the heuristic "series.added_at equals
+    // the earliest import_items.created_at referencing any of its episodes".
+    // The dedicated action='added_series' row is only written for runs
+    // #9 onwards; this keeps historical runs (#3–#8) visible too by looking
+    // at the episode trail instead.
+    let new_series = sqlx::query_as::<_, NewSeriesRow>(
+        "WITH per_series AS ( \
+            SELECT e.series_id, MIN(i.created_at) AS first_touch, COUNT(*) AS ep_cnt \
+            FROM import_items i JOIN episodes e ON e.id = i.target_episode_id \
+            WHERE i.action IN ('added_episode') \
+            GROUP BY e.series_id \
+         ) \
+         SELECT s.title AS series_title, s.slug AS series_slug, \
+                s.first_air_year, s.cover_filename, s.imdb_id, \
+                ps.ep_cnt AS episode_count, \
+                ps.first_touch AS created_at \
+         FROM per_series ps JOIN series s ON s.id = ps.series_id \
+         WHERE s.added_at <= ps.first_touch + INTERVAL '2 minutes' \
+           AND s.added_at >= ps.first_touch - INTERVAL '2 minutes' \
+         ORDER BY ps.first_touch DESC LIMIT 100",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Collect ids of series the auto-import CREATED so the "episodes for
+    // existing series" panel can exclude them (their episodes show under
+    // the new-series panel instead). Same 2-minute window heuristic.
+    let new_series_ids: Vec<i32> = sqlx::query_scalar(
+        "SELECT s.id \
+         FROM series s JOIN ( \
+             SELECT e.series_id, MIN(i.created_at) AS first_touch \
+             FROM import_items i JOIN episodes e ON e.id = i.target_episode_id \
+             WHERE i.action IN ('added_episode') \
+             GROUP BY e.series_id \
+         ) ps ON ps.series_id = s.id \
+         WHERE s.added_at <= ps.first_touch + INTERVAL '2 minutes' \
+           AND s.added_at >= ps.first_touch - INTERVAL '2 minutes'",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let episodes_for_existing = sqlx::query_as::<_, EpisodeForExistingRow>(
+        "SELECT s.title AS series_title, s.slug AS series_slug, s.cover_filename, \
+         e.season, e.episode, e.episode_name, i.sktorrent_title, i.action, i.created_at \
+         FROM import_items i \
+         JOIN episodes e ON e.id = i.target_episode_id \
+         JOIN series s ON s.id = e.series_id \
+         WHERE i.action IN ('added_episode', 'updated_episode') \
+           AND (e.series_id IS NULL OR NOT (e.series_id = ANY($1))) \
+         ORDER BY i.created_at DESC LIMIT 300",
+    )
+    .bind(&new_series_ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    let skipped = sqlx::query_as::<_, SkippedRow>(
+        "SELECT sktorrent_title, sktorrent_url, detected_type, \
+         failure_step, failure_message, created_at \
+         FROM import_items WHERE action = 'skipped' \
+         ORDER BY created_at DESC LIMIT 200",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let failed = sqlx::query_as::<_, FailureItemRow>(
+        "SELECT run_id, sktorrent_video_id, sktorrent_url, sktorrent_title, \
+         failure_step, failure_message, created_at \
+         FROM import_items WHERE action = 'failed' \
+         ORDER BY created_at DESC LIMIT 100",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let total_runs = sqlx::query_scalar::<_, Option<i64>>("SELECT COUNT(*) FROM import_runs")
+        .fetch_one(&state.db)
+        .await?
+        .unwrap_or(0);
+
+    let tmpl = AdminImportSummaryTemplate {
+        img: state.image_base_url.clone(),
+        new_films,
+        updated_films,
+        new_series,
+        episodes_for_existing,
+        skipped,
+        failed,
+        total_runs,
+    };
+    Ok(noindex(tmpl.render()?))
 }

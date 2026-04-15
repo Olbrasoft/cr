@@ -136,9 +136,10 @@ def fetch_detail(
     if detail_url is None:
         detail_url = f"https://online.sktorrent.eu/video/{video_id}/x"
 
+    from scripts.auto_import.cz_proxy import proxy_get
     try:
         try:
-            r = session.get(detail_url, timeout=timeout)
+            r = proxy_get(detail_url, session, timeout=timeout)
         except requests.RequestException as e:
             raise DetailFetchError(f"detail {video_id} request failed: {e}") from e
 

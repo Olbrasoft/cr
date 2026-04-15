@@ -18,7 +18,7 @@ from pathlib import Path
 
 import psycopg2
 
-from scripts.auto_import.cover_downloader import download_cover
+from scripts.auto_import.cover_downloader import download_cover, download_sktorrent_thumb
 from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.auto_import.tmdb_resolver import MovieResolution
 
@@ -94,6 +94,8 @@ def upsert_film(
     sktorrent_qualities: list[str],
     movie: MovieResolution,
     cover_dir: Path,
+    has_dub: bool = False,
+    has_subtitles: bool = False,
 ) -> tuple[str, int | None]:
     """Decide between updated_film / added_film / skipped and execute it.
 
@@ -127,10 +129,18 @@ def upsert_film(
             log.info("film %d (imdb=%s) already has SKT %d — skipping",
                      film_id, movie.imdb_id, existing_skt)
             return "skipped", film_id
+        # Preserve existing has_dub/has_subtitles when updating — the DB value
+        # reflects any previously linked source (e.g. Bombuj) and we only want
+        # to OR-in the new signal from SK Torrent, not downgrade to False.
         cur.execute(
             "UPDATE films SET sktorrent_video_id = %s, sktorrent_cdn = %s, "
-            "sktorrent_qualities = %s WHERE id = %s",
-            (sktorrent_video_id, sktorrent_cdn, qualities_str, film_id),
+            "sktorrent_qualities = %s, "
+            "has_dub = has_dub OR %s, "
+            "has_subtitles = has_subtitles OR %s, "
+            "sktorrent_added_at = now() "
+            "WHERE id = %s",
+            (sktorrent_video_id, sktorrent_cdn, qualities_str,
+             has_dub, has_subtitles, film_id),
         )
         log.info("upserted SKT into existing film %d (imdb=%s)", film_id, movie.imdb_id)
         return "updated_film", film_id
@@ -141,11 +151,18 @@ def upsert_film(
     base_slug = _slugify(title_cs)
     slug = _unique_slug(cur, base_slug, movie.year)
 
-    # Cover (best-effort)
+    # Cover (best-effort). TMDB first, then SK Torrent thumbnail as a
+    # low-res fallback for obscure CZ titles that TMDB doesn't have any
+    # poster for (e.g. 53-min ČT dramas). Better a 200×300 thumbnail than
+    # a black "no cover" placeholder.
     cover_filename: str | None = None
     if movie.poster_path:
         result = download_cover(movie.poster_path, slug, cover_dir)
         if result is not None:
+            cover_filename = slug
+    if cover_filename is None:
+        fallback = download_sktorrent_thumb(sktorrent_video_id, slug, cover_dir)
+        if fallback is not None:
             cover_filename = slug
 
     # Gemma 4 unique CS text
@@ -162,14 +179,16 @@ def upsert_film(
            (title, original_title, slug, year, description, generated_description,
             imdb_id, tmdb_id, runtime_min, cover_filename,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
-            added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            has_dub, has_subtitles,
+            added_at, sktorrent_added_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
             description, generated,
             movie.imdb_id, movie.tmdb_id, movie.runtime_min, cover_filename,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
+            has_dub, has_subtitles,
         ),
     )
     film_id = cur.fetchone()[0]
