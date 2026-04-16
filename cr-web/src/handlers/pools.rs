@@ -191,7 +191,7 @@ pub(crate) async fn render_pool_short(
     orp_slug: &str,
     pool_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
+    let Some(region_slug) = region_slug_for_orp(state, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
     render_pool(state, &region_slug, orp_slug, pool_slug).await
