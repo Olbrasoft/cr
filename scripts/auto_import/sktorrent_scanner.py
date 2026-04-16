@@ -27,6 +27,14 @@ from dataclasses import dataclass, asdict
 import requests
 
 LISTING_URL = "https://online.sktorrent.eu/videos"
+TV_PORADY_LISTING_URL = "https://online.sktorrent.eu/videos/tv-porady"
+
+# Known sections. Each returns ScannedVideo entries tagged with their section
+# so the downstream router can decide film/series vs tv_show routing.
+SECTIONS: dict[str, str] = {
+    "generic": LISTING_URL,
+    "tv-porady": TV_PORADY_LISTING_URL,
+}
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
@@ -55,6 +63,7 @@ class ScannedVideo:
     duration_str: str | None = None     # "02:06:10"
     added_text: str | None = None       # raw "6 hodinami před" / "1 dnem před"
     is_hd: bool = False                 # listing badge
+    section: str = "generic"            # "generic" (/videos) or "tv-porady"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -111,15 +120,20 @@ def _parse_listing_html(html: str) -> list[ScannedVideo]:
     return out
 
 
-def _fetch_page(session: requests.Session, page: int, timeout: int = 20) -> str:
-    """GET listing page N. Returns raw HTML; raises ScannerError on failure.
+def _fetch_page(
+    session: requests.Session,
+    page: int,
+    listing_url: str = LISTING_URL,
+    timeout: int = 20,
+) -> str:
+    """GET listing page N for a given section URL. Returns raw HTML.
 
     Uses the CZ proxy when `CZ_PROXY_URL` + `CZ_PROXY_KEY` are set (required
     when running from a datacenter IP — SK Torrent blocks Hetzner et al.).
     """
     from scripts.auto_import.cz_proxy import proxy_get
 
-    target = LISTING_URL if page <= 1 else f"{LISTING_URL}?page={page}"
+    target = listing_url if page <= 1 else f"{listing_url}?page={page}"
     try:
         r = proxy_get(target, session, timeout=timeout)
     except requests.RequestException as e:
@@ -154,6 +168,7 @@ def scan_new_videos(
     max_pages: int = MAX_PAGES_HARD_CAP,
     session: requests.Session | None = None,
     sleep_s: float = PAGE_SLEEP_S,
+    section: str = "generic",
 ) -> "ScanResult":
     """Crawl pages from newest until checkpoint, return new videos ASC.
 
@@ -169,13 +184,26 @@ def scan_new_videos(
             (User-Agent, Accept-Encoding: identity) are set if missing,
             so even caller-provided sessions get the malformed-gzip fix.
         sleep_s: throttle between page fetches.
+        section: which SK Torrent section to crawl. `"generic"` uses
+            `/videos`, `"tv-porady"` uses `/videos/tv-porady`. Each
+            section has its own newest-first ordering and its own
+            checkpoint — the caller is expected to pass the right one.
 
     Returns:
-        New videos sorted by id ASC (oldest-new first).
+        New videos sorted by id ASC (oldest-new first), with each item's
+        `section` field set so the downstream router can branch on it.
 
     Raises:
         ScannerError: SK Torrent unreachable or returns non-200.
+        ValueError: unknown section name.
     """
+    try:
+        listing_url = SECTIONS[section]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown section {section!r} — expected one of {sorted(SECTIONS)}"
+        ) from exc
+
     if max_pages > MAX_PAGES_HARD_CAP:
         log.warning("max_pages=%d clamped to hard cap %d", max_pages, MAX_PAGES_HARD_CAP)
         max_pages = MAX_PAGES_HARD_CAP
@@ -199,15 +227,17 @@ def scan_new_videos(
         for page in range(1, max_pages + 1):
             if page > 1:
                 time.sleep(sleep_s)
-            html = _fetch_page(session, page)
+            html = _fetch_page(session, page, listing_url=listing_url)
             pages_scanned += 1
             items = _parse_listing_html(html)
             if not items:
-                log.warning("page %d returned 0 items — stopping", page)
+                log.warning("section=%s page %d returned 0 items — stopping",
+                            section, page)
                 break
 
             page_has_known = False
             for item in items:
+                item.section = section
                 if item.video_id <= checkpoint:
                     page_has_known = True
                     continue
@@ -218,8 +248,8 @@ def scan_new_videos(
                 break  # everything older than this page is also ≤ checkpoint
         else:
             log.warning(
-                "scanned %d pages without hitting checkpoint=%d — stopping",
-                max_pages, checkpoint,
+                "section=%s scanned %d pages without hitting checkpoint=%d — stopping",
+                section, max_pages, checkpoint,
             )
     finally:
         if own_session:
@@ -240,8 +270,8 @@ def scan_new_videos(
         deduped = deduped[:max_new]
 
     log.info(
-        "scanned %d pages, found %d new videos (checkpoint=%d, reached=%s, capped=%s)",
-        pages_scanned, len(deduped), checkpoint, reached_checkpoint,
+        "section=%s scanned %d pages, found %d new videos (checkpoint=%d, reached=%s, capped=%s)",
+        section, pages_scanned, len(deduped), checkpoint, reached_checkpoint,
         bool(max_new),
     )
     return ScanResult(videos=deduped, pages_scanned=pages_scanned)
@@ -255,6 +285,8 @@ def _cli() -> None:
                     help="Hard cap on returned new videos (default 5; 0 = unlimited)")
     ap.add_argument("--max-pages", type=int, default=MAX_PAGES_HARD_CAP,
                     help=f"Defensive crawl ceiling (default {MAX_PAGES_HARD_CAP})")
+    ap.add_argument("--section", choices=sorted(SECTIONS), default="generic",
+                    help="Which SK Torrent section to scan (default: generic)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
@@ -267,6 +299,7 @@ def _cli() -> None:
         checkpoint=args.checkpoint,
         max_new=args.max_new,
         max_pages=args.max_pages,
+        section=args.section,
     )
     print(f"Found {len(new)} new videos:")
     for v in new:
