@@ -284,38 +284,84 @@ function applySortCombined(v) {
     }
 })();
 
-/* Autocomplete — mirrors series_list.html, hits /api/tv-porady/search */
+/* Autocomplete — hits /api/tv-porady/search. Uses DOM APIs + AbortController
+   to avoid XSS from untrusted titles and stale responses overwriting fresh
+   results (both flagged by Copilot on PR #493). */
 (function() {
     var input = document.getElementById('tv-search');
     var dd = document.getElementById('search-results');
     var timer = null;
+    var currentCtrl = null;
     if (!input || !dd) return;
+
+    function renderResults(results) {
+        dd.textContent = '';
+        if (!results.length) {
+            var empty = document.createElement('div');
+            empty.style.padding = '0.8rem';
+            empty.style.color = '#888';
+            empty.style.textAlign = 'center';
+            empty.textContent = 'Nic nenalezeno';
+            dd.appendChild(empty);
+            return;
+        }
+        results.forEach(function(r) {
+            var item = document.createElement('a');
+            item.href = '/tv-porady/' + r.slug + '/';
+            item.className = 'search-item';
+            item.title = r.title;
+
+            if (r.cover) {
+                var img = document.createElement('img');
+                img.src = '/tv-porady/' + r.slug + '.webp';
+                img.alt = r.title;
+                img.title = r.title;
+                item.appendChild(img);
+            } else {
+                var placeholder = document.createElement('div');
+                placeholder.className = 'si-placeholder';
+                item.appendChild(placeholder);
+            }
+
+            var info = document.createElement('div');
+            info.className = 'si-info';
+            var title = document.createElement('span');
+            title.className = 'si-title';
+            title.textContent = r.title + (r.year ? ' (' + r.year + ')' : '');
+            var meta = document.createElement('span');
+            meta.className = 'si-meta';
+            meta.textContent = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+            info.appendChild(title);
+            info.appendChild(meta);
+            item.appendChild(info);
+            dd.appendChild(item);
+        });
+    }
 
     input.addEventListener('input', function() {
         clearTimeout(timer);
         var q = this.value.trim();
-        if (q.length < 2) { dd.classList.remove('open'); return; }
+        if (q.length < 2) {
+            if (currentCtrl) { currentCtrl.abort(); currentCtrl = null; }
+            dd.classList.remove('open');
+            return;
+        }
         timer = setTimeout(function() {
-            fetch('/api/tv-porady/search?q=' + encodeURIComponent(q))
+            if (currentCtrl) currentCtrl.abort();
+            currentCtrl = new AbortController();
+            var myCtrl = currentCtrl;
+            fetch('/api/tv-porady/search?q=' + encodeURIComponent(q),
+                  { signal: myCtrl.signal })
                 .then(function(r) { return r.json(); })
                 .then(function(results) {
-                    if (!results.length) {
-                        dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>';
-                    } else {
-                        dd.innerHTML = results.map(function(r) {
-                            var cover = r.cover
-                                ? '<img src="/tv-porady/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
-                                : '<div class="si-placeholder"></div>';
-                            var yr = r.year ? ' (' + r.year + ')' : '';
-                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
-                            return '<a href="/tv-porady/' + r.slug + '/" class="search-item" title="' + r.title + '">'
-                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
-                                + '<span class="si-meta">' + rat + '</span></div></a>';
-                        }).join('');
-                    }
+                    if (myCtrl !== currentCtrl) return; // stale
+                    renderResults(results);
                     dd.classList.add('open');
                 })
-                .catch(function() { dd.classList.remove('open'); });
+                .catch(function(err) {
+                    if (err.name === 'AbortError') return;
+                    dd.classList.remove('open');
+                });
         }, 200);
     });
 
