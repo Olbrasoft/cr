@@ -105,7 +105,7 @@
         <div class="film-poster">
             {% match ep.series_cover_filename %}
             {% when Some with (c) %}
-            <img src="/serialy-online/{{ ep.series_slug }}.webp?v=3" alt="{{ ep.series_title }}" title="{{ ep.series_title }}" loading="lazy" width="200" height="300">
+            <img src="/serialy-online/{{ ep.series_slug }}.webp" alt="{{ ep.series_title }}" title="{{ ep.series_title }}" loading="lazy" width="200" height="300">
             {% when None %}
             <div class="no-poster">{{ ep.series_title }}</div>
             {% endmatch %}
@@ -144,7 +144,7 @@
         <div class="film-poster">
             {% match s.cover_filename %}
             {% when Some with (cover) %}
-            <img src="/serialy-online/{{ s.slug }}.webp?v=3" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
+            <img src="/serialy-online/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
             {% when None %}
             <div class="no-poster">{{ s.title }}</div>
             {% endmatch %}
@@ -346,7 +346,7 @@ function applySortCombined(v) {
                     } else {
                         dd.innerHTML = results.map(function(r) {
                             var cover = r.cover
-                                ? '<img src="/serialy-online/' + r.slug + '.webp?v=3" alt="' + r.title + '" title="' + r.title + '">'
+                                ? '<img src="/serialy-online/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
