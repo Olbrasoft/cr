@@ -145,8 +145,8 @@
                    alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
                    title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
                     <div class="ep-head">
-                        <span class="ep-badge">S{{ ep.season }}E{{ ep.episode }}</span>
-                        <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{{ n }}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
+                        <span class="ep-badge">S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
+                        <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }}{% else %}Epizoda {{ ep.episode }}{% endif %}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
                     </div>
                     <div class="ep-meta">
                         {% match ep.air_date %}{% when Some with (d) %}<span>📅 {{ d }}</span>{% when None %}{% endmatch %}

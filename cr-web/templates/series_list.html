@@ -123,7 +123,7 @@
             <div class="film-info">
                 <span class="film-title">{{ ep.series_title }}</span>
                 {% match ep.series_original_title %}{% when Some with (ot) %}{% if ot.as_str() != ep.series_title.as_str() %}<span class="film-original">{{ ot }}</span>{% endif %}{% when None %}{% endmatch %}
-                <span class="film-episode-label">Epizoda S{{ ep.season }}×{{ ep.episode }}</span>
+                <span class="film-episode-label">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
             </div>
             <div class="film-list-extra">
                 <div class="film-ratings">

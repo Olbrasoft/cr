@@ -56,6 +56,7 @@ pub struct EpisodeCardRow {
     #[allow(dead_code)] // Used in ORDER BY; not rendered in series_list template
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub episode_slug: Option<String>,
+    pub episode_name: Option<String>,
 }
 
 #[derive(FromRow, Serialize)]
@@ -296,7 +297,8 @@ async fn fetch_latest_episode_cards(
         s.csfd_rating AS series_csfd_rating, \
         s.description AS series_description, \
         ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
-        (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug \
+        (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
+        (SELECT e2.episode_name FROM episodes e2 WHERE e2.id = ps.id) AS episode_name \
      FROM per_series ps \
      JOIN series s ON s.id = ps.series_id \
      ORDER BY ps.created_at DESC NULLS LAST \
