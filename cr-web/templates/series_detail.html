@@ -141,7 +141,7 @@
             </button>
             <div class="episode-grid" id="season-{{ season.number }}">
                 {% for ep in season.episodes %}
-                <a class="episode-card" href="/serialy-online/{{ series.slug }}/{{ ep.season }}x{{ ep.episode }}/"
+                <a class="episode-card" href="/serialy-online/{{ series.slug }}/{% match ep.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/"
                    alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
                    title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
                     <div class="ep-head">

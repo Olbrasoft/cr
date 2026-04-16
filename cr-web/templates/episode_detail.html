@@ -5,7 +5,7 @@
 {% block meta_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ series.title }} S{{ episode.season }}E{{ episode.episode }} — sledujte online{% endmatch %}{% endblock %}
 
 {% block og_title %}{{ series.title }} — S{{ episode.season }}E{{ episode.episode }}{% match episode.episode_name %}{% when Some with (n) %} {{ n }}{% when None %}{% endmatch %}{% endblock %}
-{% block og_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ series.title }} — epizoda {{ episode.season }}x{{ episode.episode }}{% endmatch %}{% endblock %}
+{% block og_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ series.title }} — S{{ episode.season }}E{{ episode.episode }}{% endmatch %}{% endblock %}
 {% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/serialy-online/still/{{ f }}{% when None %}{% match series.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/serialy-online/{{ series.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endmatch %}{% endblock %}
 {% block og_type %}video.episode{% endblock %}
 
@@ -14,7 +14,7 @@
 {% block head %}
 <link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
-<meta property="og:url" content="https://ceskarepublika.wiki/serialy-online/{{ series.slug }}/{{ episode.season }}x{{ episode.episode }}/">
+<meta property="og:url" content="https://ceskarepublika.wiki/serialy-online/{{ series.slug }}/{% match episode.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ episode.season }}x{{ episode.episode }}{% endmatch %}/">
 {% endblock %}
 
 {% block header_left %}
@@ -103,7 +103,7 @@
     <div class="episode-nav">
         {% match prev_episode %}
         {% when Some with (p) %}
-        <a class="nav-prev" href="/serialy-online/{{ series.slug }}/{{ p.season }}x{{ p.episode }}/"
+        <a class="nav-prev" href="/serialy-online/{{ series.slug }}/{% match p.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ p.season }}x{{ p.episode }}{% endmatch %}/"
            alt="Předchozí: S{{ p.season }}E{{ p.episode }}" title="Předchozí: S{{ p.season }}E{{ p.episode }}{% match p.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
            ← S{{ p.season }}E{{ p.episode }}
         </a>
@@ -111,7 +111,7 @@
         <a class="nav-back" href="/serialy-online/{{ series.slug }}/" alt="Zpět na seznam epizod" title="Zpět na seznam epizod">Všechny epizody</a>
         {% match next_episode %}
         {% when Some with (n) %}
-        <a class="nav-next" href="/serialy-online/{{ series.slug }}/{{ n.season }}x{{ n.episode }}/"
+        <a class="nav-next" href="/serialy-online/{{ series.slug }}/{% match n.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ n.season }}x{{ n.episode }}{% endmatch %}/"
            alt="Další: S{{ n.season }}E{{ n.episode }}" title="Další: S{{ n.season }}E{{ n.episode }}{% match n.episode_name %}{% when Some with (nm) %} — {{ nm }}{% when None %}{% endmatch %}">
            S{{ n.season }}E{{ n.episode }} →
         </a>
