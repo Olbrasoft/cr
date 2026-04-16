@@ -278,6 +278,7 @@ def _process_film(conn, *, run_id: int, video: ScannedVideo,
             cover_dir=movies_covers,
             has_dub=film_has_dub,
             has_subtitles=film_has_subs,
+            csfd_rating=parsed.csfd_rating,
         )
     except Exception as e:
         conn.rollback()
