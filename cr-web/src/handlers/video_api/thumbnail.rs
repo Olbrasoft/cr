@@ -19,15 +19,26 @@ pub async fn video_thumb(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ThumbQuery>,
 ) -> impl IntoResponse {
-    // Validate URL — only allow known CDN domains (prevent SSRF)
-    let is_allowed = THUMB_ALLOWED_DOMAINS.iter().any(|d| query.url.contains(d));
-    if !is_allowed || !query.url.starts_with("https://") {
+    // Parse URL and validate host against allow-list with dot-boundary
+    // to prevent bypasses like `attacker.tld/?q=cdninstagram.com`.
+    let parsed = match reqwest::Url::parse(&query.url) {
+        Ok(u) => u,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
+    };
+    if parsed.scheme() != "https" {
+        return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
+    }
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let is_allowed = THUMB_ALLOWED_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    if !is_allowed {
         return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
     }
 
     let resp = state
         .http_client
-        .get(&query.url)
+        .get(parsed.as_str())
         .header("User-Agent", "Mozilla/5.0")
         .header("Referer", "https://www.instagram.com/")
         .timeout(std::time::Duration::from_secs(10))

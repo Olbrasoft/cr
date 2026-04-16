@@ -31,9 +31,10 @@ pub async fn movies_subtitle(
         Ok(u) => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
     };
-    // Only allow premiumcdn.net VTT files
-    let host = parsed.host_str().unwrap_or("");
-    if !host.ends_with("premiumcdn.net") || !parsed.path().ends_with(".vtt") {
+    // Only allow https premiumcdn.net VTT files (dot-boundary to prevent evilpremiumcdn.net)
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let allowed_host = host == "premiumcdn.net" || host.ends_with(".premiumcdn.net");
+    if parsed.scheme() != "https" || !allowed_host || !parsed.path().ends_with(".vtt") {
         return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
     }
 

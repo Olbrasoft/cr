@@ -189,12 +189,14 @@ pub async fn stream_resolve(
 
     // Check cache -- TTL and size cap live on the BoundedTtlCache itself
     // (see AppState::filemoon_cache construction in main.rs).
-    if let Some(url) = state.filemoon_cache.get(&cache_key).await {
+    if let Some(cached_val) = state.filemoon_cache.get(&cache_key).await {
+        // Cache stores "url\ncookies" — extract just the URL for the response.
+        let url = cached_val.split('\n').next().unwrap_or(&cached_val);
         let fmt = if url.contains(".m3u8") { "hls" } else { "mp4" };
         return Json(StreamResolveResponse {
             provider,
             code,
-            stream_url: Some(url),
+            stream_url: Some(url.to_string()),
             format: Some(fmt.to_string()),
             error: None,
             cached: true,

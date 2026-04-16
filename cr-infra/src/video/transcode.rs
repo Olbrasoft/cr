@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use super::extractors::ytdlp::ytdlp_command;
 
-/// Force `path` to be in `container` format (`"mp4"` or `"webm"`). If
+/// Force `path` to be in `container` format (`"mp4"`, `"webm"`, or `"mkv"`). If
 /// ffprobe reports the file is already in that container, returns
 /// without doing any work. Otherwise runs an ffmpeg transcode in
 /// place — first a remux attempt with `-c copy` (fast, works when
@@ -169,7 +169,14 @@ async fn probe_container(path: &std::path::Path) -> Result<String> {
     if !out.status.success() {
         anyhow::bail!("ffprobe failed for {path:?}");
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let format_name = String::from_utf8_lossy(&out.stdout);
+    Ok(format_name
+        .trim()
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 
 /// Decide whether a `format_name` string reported by ffprobe matches
