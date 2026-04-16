@@ -40,7 +40,8 @@ services:
       # (runs outside Docker) — mount the same path read/write so the web
       # container serves freshly-downloaded WebPs instead of the 34-byte
       # transparent placeholder baked into films_cover().
-      - /opt/cr/data/movies/covers-webp:/app/data/movies/covers-webp
+      # Prod sets CR_DATA_DIR=/opt/cr/data in .env; dev falls back to ./data.
+      - ${CR_DATA_DIR:-./data}/movies/covers-webp:/app/data/movies/covers-webp
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

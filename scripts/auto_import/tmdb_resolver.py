@@ -199,18 +199,20 @@ def _movie_search_queries(parsed: ParsedTitle) -> list[tuple[str, dict]]:
 def _shorten_title_candidates(title: str) -> list[str]:
     """Progressive shortenings for TMDB search fallback.
 
-    Returns [full, prefix_before_first_dash, prefix_before_colon] — deduped,
-    preserving order. Handy for SK Torrent titles with marketing noise like
-    "Výměna manželek - nyní pouze na Oneplay" where the full string misses
-    on TMDB but the bare show name matches.
+    Splits on each known separator independently and returns all candidates
+    sorted by length descending, so fallbacks are always monotonically
+    shorter. For "X - Y: Z" we get ["X - Y: Z", "X - Y", "X"]. Handy for SK
+    Torrent titles with marketing noise like "Výměna manželek - nyní pouze
+    na Oneplay" where the full string misses on TMDB but the bare show
+    name matches.
     """
-    out: list[str] = [title]
+    candidates: set[str] = {title}
     for sep in (" - ", ": "):
         if sep in title:
             prefix = title.split(sep, 1)[0].strip()
-            if prefix and prefix not in out:
-                out.append(prefix)
-    return out
+            if prefix:
+                candidates.add(prefix)
+    return sorted(candidates, key=len, reverse=True)
 
 
 def _tv_search_queries(parsed: ParsedTitle) -> list[tuple[str, dict]]:
