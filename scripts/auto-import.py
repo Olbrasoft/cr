@@ -537,6 +537,11 @@ def run(trigger: str, max_new: int) -> int:
             [*scan_generic.videos, *scan_tv.videos],
             key=lambda v: v.video_id,
         )
+        # max_new is a GLOBAL cap — each section was already capped when
+        # crawling to stop runaway pagination, but without this second
+        # slice a manual run would quietly process up to 2*max_new items.
+        if max_new and len(videos) > max_new:
+            videos = videos[:max_new]
         counters["scanned_pages"] = scan_generic.pages_scanned + scan_tv.pages_scanned
         counters["scanned_videos"] = len(videos)
 

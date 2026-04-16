@@ -1,4 +1,4 @@
-"""TV pořad enricher — UPSERT one tv_shows row + INSERT one tv_episodes row.
+"""TV pořad enricher — find-or-create tv_shows + INSERT tv_episodes row.
 
 Called from auto-import.py for every SK Torrent video tagged
 `section='tv-porady'`. Shape matches `series_enricher.process_series_batch`
@@ -10,9 +10,14 @@ Intentional scope cut:
 - No genre / cast / crew enrichment for now. Reality pořady rarely need it
   and we don't want a partial dataset polluting /tv-porady/ pages.
 
-The function is idempotent: ON CONFLICT (tv_show_id, season, episode,
-sktorrent_video_id) DO NOTHING on tv_episodes, and tv_shows is UPSERTed
-by tmdb_id.
+Idempotency caveats:
+- tv_episodes insert carries `ON CONFLICT (tv_show_id, season, episode,
+  sktorrent_video_id) DO NOTHING`, so duplicate runs against the same SK
+  Torrent video are safe.
+- tv_shows is NOT a true SQL UPSERT — tmdb_id has no UNIQUE constraint yet,
+  so we do SELECT-then-INSERT. That's race-y if two workers import the
+  same show concurrently (the second INSERT would duplicate). The auto-
+  import pipeline runs single-threaded, so this is acceptable for now.
 """
 
 from __future__ import annotations
@@ -66,7 +71,7 @@ def _unique_slug(cur, base: str) -> str:
 def process_tv_show_episode(
     conn,
     *,
-    tv,                     # TmdbTv object (has tmdb_id, imdb_id, name, first_air_date, overview, poster_path)
+    tv,                     # TvResolution (tmdb_resolver.resolve_tv()) — name_cs/name_en, first_air_year, overview_cs/overview_en
     season: int,
     episode: int,
     sktorrent_video_id: int,
@@ -75,16 +80,18 @@ def process_tv_show_episode(
     has_dub: bool,
     has_subtitles: bool,
 ) -> UpsertResult:
-    """Upsert tv_show + insert tv_episode. Returns (action, ids)."""
-    first_year: int | None = None
-    if tv.first_air_date and len(tv.first_air_date) >= 4 and tv.first_air_date[:4].isdigit():
-        first_year = int(tv.first_air_date[:4])
+    """Find-or-create tv_show + insert tv_episode. Returns (action, ids)."""
+    # Prefer Czech localisation — /tv-porady/ is a cs-CZ catalog, fall back
+    # only when TMDB has no CZ entry for this show.
+    title = (tv.name_cs or tv.name_en or tv.original_name or "").strip()
+    description = tv.overview_cs or tv.overview_en
 
-    qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else "480p"
+    qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else None
 
     cur = conn.cursor()
 
-    # Find-or-create tv_show by tmdb_id.
+    # Find-or-create tv_show by tmdb_id. NOT a true UPSERT — tmdb_id has no
+    # UNIQUE constraint yet; see module docstring for the race-y implications.
     cur.execute(
         "SELECT id, slug FROM tv_shows WHERE tmdb_id = %s LIMIT 1",
         (tv.tmdb_id,),
@@ -94,7 +101,7 @@ def process_tv_show_episode(
     if row:
         tv_show_id, _slug = row
     else:
-        base_slug = _slugify(tv.name or "") or f"tv-porad-{tv.tmdb_id}"
+        base_slug = _slugify(title) or f"tv-porad-{tv.tmdb_id}"
         slug = _unique_slug(cur, base_slug)
         try:
             cur.execute(
@@ -103,12 +110,12 @@ def process_tv_show_episode(
                    VALUES (%s, %s, %s, %s, %s, %s, %s, now())
                    RETURNING id""",
                 (
-                    (tv.name or "")[:255],
+                    title[:255],
                     slug,
                     tv.tmdb_id,
                     tv.imdb_id,
-                    first_year,
-                    getattr(tv, "overview", None),
+                    tv.first_air_year,
+                    description,
                     slug,  # cover_filename = slug — WebP fetched on demand
                 ),
             )
@@ -116,7 +123,7 @@ def process_tv_show_episode(
             created_show = True
             log.info("created tv_show id=%d slug='%s' (tmdb=%d)",
                      tv_show_id, slug, tv.tmdb_id)
-        except Exception as exc:
+        except Exception:
             conn.rollback()
             log.exception("tv_show insert failed for tmdb=%d", tv.tmdb_id)
             return UpsertResult(action="failed", tv_show_id=None, tv_episode_id=None)
@@ -140,7 +147,7 @@ def process_tv_show_episode(
             ),
         )
         row = cur.fetchone()
-    except Exception as exc:
+    except Exception:
         conn.rollback()
         log.exception("tv_episode insert failed for tmdb=%d s%de%d",
                       tv.tmdb_id, season, episode)
