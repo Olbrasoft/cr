@@ -49,7 +49,7 @@
             {% when Some with (c) %}
             <div class="cover-zoom" data-gallery-open="series" data-index="0"
                  data-gallery-photos="[&quot;/serialy-online/{{ series.slug }}-large.webp&quot;]">
-                <img src="/serialy-online/{{ series.slug }}.webp" alt="{{ series.title }}" title="{{ series.title }}" width="200" height="300">
+                <img src="/serialy-online/{{ series.slug }}.webp?v=3" alt="{{ series.title }}" title="{{ series.title }}" width="200" height="300">
             </div>
             {% when None %}
             <div class="no-cover">{{ series.title }}</div>
@@ -303,7 +303,7 @@ function doSearch() {
                     else {
                         dd.innerHTML = results.map(function(r) {
                             var cover = r.cover
-                                ? '<img src="/serialy-online/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
+                                ? '<img src="/serialy-online/' + r.slug + '.webp?v=3" alt="' + r.title + '" title="' + r.title + '">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';

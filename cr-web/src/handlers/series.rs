@@ -771,17 +771,23 @@ pub async fn series_cover(
     #[derive(sqlx::FromRow)]
     struct CoverRow {
         cover_filename: Option<String>,
+        tmdb_id: Option<i32>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>("SELECT cover_filename FROM series WHERE slug = $1")
-        .bind(slug)
-        .fetch_optional(&state.db)
-        .await?;
+    let row =
+        sqlx::query_as::<_, CoverRow>("SELECT cover_filename, tmdb_id FROM series WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let cover_filename = row.and_then(|r| r.cover_filename);
+    let (cover_filename, tmdb_id) = match row {
+        Some(r) => (r.cover_filename, r.tmdb_id),
+        None => (None, None),
+    };
     let covers_dir = state.config.series_covers_dir.clone();
 
-    if let Some(filename) = cover_filename {
+    // Try local file first
+    if let Some(ref filename) = cover_filename {
         let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
         if path.exists()
             && let Ok(bytes) = tokio::fs::read(&path).await
@@ -798,7 +804,50 @@ pub async fn series_cover(
         }
     }
 
-    // Placeholder
+    // Fallback: fetch w200 poster from TMDB on-the-fly and cache to disk
+    if let Some(tid) = tmdb_id {
+        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
+        if !tmdb_key.is_empty() {
+            let detail_url =
+                format!("https://api.themoviedb.org/3/tv/{tid}?api_key={tmdb_key}&language=cs-CZ");
+            if let Ok(resp) = state
+                .http_client
+                .get(&detail_url)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                && let Ok(data) = resp.json::<serde_json::Value>().await
+                && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
+            {
+                let img_url = format!("https://image.tmdb.org/t/p/w200{poster_path}");
+                if let Ok(img_resp) = state
+                    .http_client
+                    .get(&img_url)
+                    .timeout(std::time::Duration::from_secs(15))
+                    .send()
+                    .await
+                    && let Ok(img_bytes) = img_resp.bytes().await
+                {
+                    // Cache to disk for next request
+                    let cache_path = std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
+                    let _ = tokio::fs::create_dir_all(&covers_dir).await;
+                    let _ = tokio::fs::write(&cache_path, &img_bytes).await;
+
+                    return Ok((
+                        StatusCode::OK,
+                        [
+                            (header::CONTENT_TYPE, "image/webp"),
+                            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                        ],
+                        img_bytes.to_vec(),
+                    )
+                        .into_response());
+                }
+            }
+        }
+    }
+
+    // Placeholder (1x1 WebP)
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

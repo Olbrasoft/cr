@@ -275,10 +275,23 @@ Hierarchical FK chain: `municipality.orp_id → orp.district_id → district.reg
 
 - NEVER drop or recreate `cr_dev` or `cr_staging` databases
 - NEVER truncate tables with imported data
-- To fix migration issues: fix the `_sqlx_migrations` table rows, NOT the database
 - Use `cr_dev_user` (restricted, cannot DROP DATABASE) — configured in `.env`
 - Staging DB (`cr_staging`) stores downloaded source data (Wikipedia texts, etc.) — NEVER modify or delete
 - If migrations fail: delete the problematic row from `_sqlx_migrations`, NOT the database
+
+### SQLx Migration Checksum Rules
+
+**SQLx uses SHA-384 (NOT SHA-256) for migration checksums.** The `_sqlx_migrations` table stores a 48-byte BYTEA checksum per migration.
+
+- **NEVER manually edit migration files** that have already been applied to production — it changes the checksum and breaks startup
+- **NEVER manually UPDATE `_sqlx_migrations.checksum`** unless you are 100% certain you're using SHA-384 of the file content
+- If a migration was modified after deployment (e.g. by a refactoring PR), the correct fix is to recalculate SHA-384:
+  ```python
+  import hashlib
+  hashlib.sha384(open("migration.sql", "rb").read()).hexdigest()
+  ```
+- After fixing checksums, you MUST do `cargo clean && cargo zigbuild` — cargo caches embedded migration hashes and won't recompile unless forced
+- **New migrations** should be added as new files with new version numbers, never by modifying existing ones
 
 ## Development Workflow
 
@@ -340,21 +353,24 @@ cargo run -p cr-web    # Listens on port 3000
 
 ### Deploy to Production
 
-**Local deploy only.** GitHub Actions runs CI checks (check, clippy, fmt, test) — deploy is done from the local machine.
+**CRITICAL: Deploy is ALWAYS done from the LOCAL machine. NEVER run `docker compose build` on the server.**
 
-After merge to main:
+The deploy process is: cross-compile locally → scp binary → docker cp → restart. This takes ~20 seconds for incremental builds and keeps the server minimal (no Rust toolchain, no build tools).
+
+**Standard deploy (after merge to main):**
 ```bash
 # 1. Pull latest main
 git checkout main && git pull
 
-# 2. Cross-compile (~10s incremental, ~47s first build)
+# 2. Cross-compile locally (~10s incremental, ~90s clean build)
+#    IMPORTANT: If migration files changed, do `cargo clean` first to force recompile!
 SQLX_OFFLINE=true cargo zigbuild --release --target aarch64-unknown-linux-musl -p cr-web
 
-# 3. Upload binary + replace in container + restart (~10s)
+# 3. Upload binary to VPS + replace in container + restart (~10s)
 scp -P 2222 target/aarch64-unknown-linux-musl/release/cr-web root@46.225.101.253:/tmp/cr-web-new
 ssh -p 2222 root@46.225.101.253 "docker cp /tmp/cr-web-new cr-web-1:/app/cr-web && docker compose -f /opt/cr/docker-compose.yml restart web"
 
-# 4. Health check
+# 4. Health check (MUST return 200)
 curl -s -o /dev/null -w "%{http_code}" https://ceskarepublika.wiki/health
 
 # 5. Playwright verify (from local PC)
@@ -365,13 +381,19 @@ curl -s -o /dev/null -w "%{http_code}" https://ceskarepublika.wiki/health
 ssh -p 2222 root@46.225.101.253 "docker cp /opt/cr/cr-web/templates/. cr-web-1:/app/templates/ && docker cp /opt/cr/cr-web/static/. cr-web-1:/app/static/ && docker compose -f /opt/cr/docker-compose.yml restart web"
 ```
 
-**Full Docker rebuild (when Dockerfile or dependencies change, ~4min):**
+**Full Docker rebuild (ONLY when Dockerfile or system dependencies change, ~4min):**
 ```bash
 rsync -avz --delete --exclude 'target/' --exclude '.git/' --exclude '.env' --exclude 'data/images/' --exclude 'data/porovnani/' -e "ssh -p 2222" ~/Olbrasoft/cr/ root@46.225.101.253:/opt/cr/
 ssh -p 2222 root@46.225.101.253 "cd /opt/cr && docker compose build web && docker compose up -d web"
 ```
 
-**IMPORTANT:** Use `cargo zigbuild` with `aarch64-unknown-linux-musl` target (static linking). Regular `cargo build --target aarch64-unknown-linux-gnu` does NOT work — glibc version mismatch.
+### Deploy Rules (MANDATORY)
+
+1. **NEVER run `docker compose build` on the server** for routine deploys — it takes 4+ minutes and the server has limited resources. Use local cross-compile + scp instead.
+2. **Use `cargo zigbuild`** with `aarch64-unknown-linux-musl` target (static linking). Regular `cargo build --target aarch64-unknown-linux-gnu` does NOT work — glibc version mismatch.
+3. **If migration files were modified**, run `cargo clean` before `cargo zigbuild` — cargo caches embedded migration checksums and won't detect file content changes without a clean build.
+4. **After deploy, ALWAYS health check** — if `/health` returns non-200, check `docker logs cr-web-1` immediately.
+5. **If startup fails with "migration was previously applied but has been modified"**, the fix is to update `_sqlx_migrations.checksum` in the DB using **SHA-384** (not SHA-256!) of the current file content. See "SQLx Migration Checksum Rules" above.
 
 ## Current Project Status
 
