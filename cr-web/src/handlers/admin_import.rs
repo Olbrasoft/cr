@@ -75,25 +75,45 @@ struct ImportItemRow {
     target_film_id: Option<i32>,
     target_series_id: Option<i32>,
     target_episode_id: Option<i32>,
+    #[sqlx(default)]
+    target_film_slug: Option<String>,
+    #[sqlx(default)]
+    target_series_slug: Option<String>,
+    #[sqlx(default)]
+    target_episode_slug: Option<String>,
+    /// Series slug reached via target_episode_id → episodes.series_id → series.slug.
+    /// Used to build /serialy-online/{series-slug}/{episode-slug}/ URLs.
+    #[sqlx(default)]
+    target_episode_series_slug: Option<String>,
     failure_step: Option<String>,
     failure_message: Option<String>,
     raw_log: Option<JsonValue>,
 }
 
 impl ImportItemRow {
-    /// URL on our own site (link to the imported/updated entity).
-    ///
-    /// Currently None — building a real `/filmy-online/{slug}/` link would
-    /// require joining `films`/`series`/`episodes` to fetch the slug, which
-    /// the listing query doesn't do yet. Better to omit the link than to
-    /// emit a fabricated /admin/import/film/{id} path that would 404.
-    /// (Follow-up: extend the SELECT to JOIN slug, then build proper URLs.)
+    /// URL on our own site linking back to the imported/updated entity.
+    /// Slugs come from the detail handler's JOIN so this is a pure format.
     fn target_url(&self) -> Option<String> {
-        let _ = (
-            self.target_film_id,
-            self.target_series_id,
-            self.target_episode_id,
-        );
+        if let Some(slug) = self.target_film_slug.as_deref() {
+            return Some(format!("/filmy-online/{slug}/"));
+        }
+        if let (Some(series_slug), Some(ep_slug)) = (
+            self.target_episode_series_slug.as_deref(),
+            self.target_episode_slug.as_deref(),
+        ) {
+            return Some(format!("/serialy-online/{series_slug}/{ep_slug}/"));
+        }
+        if let (Some(series_slug), Some(season), Some(episode)) = (
+            self.target_episode_series_slug.as_deref(),
+            self.season,
+            self.episode,
+        ) {
+            // Episode slug not set yet — fall back to legacy N×M URL.
+            return Some(format!("/serialy-online/{series_slug}/{season}x{episode}/"));
+        }
+        if let Some(slug) = self.target_series_slug.as_deref() {
+            return Some(format!("/serialy-online/{slug}/"));
+        }
         None
     }
     fn imdb_url(&self) -> Option<String> {
@@ -252,11 +272,21 @@ pub async fn admin_import_detail(
     };
 
     let items = sqlx::query_as::<_, ImportItemRow>(
-        "SELECT id, sktorrent_video_id, sktorrent_url, sktorrent_title, \
-         detected_type, imdb_id, season, episode, action, target_film_id, \
-         target_series_id, target_episode_id, failure_step, failure_message, \
-         raw_log \
-         FROM import_items WHERE run_id = $1 ORDER BY id",
+        "SELECT i.id, i.sktorrent_video_id, i.sktorrent_url, i.sktorrent_title, \
+         i.detected_type, i.imdb_id, i.season, i.episode, i.action, \
+         i.target_film_id, i.target_series_id, i.target_episode_id, \
+         f.slug AS target_film_slug, \
+         s.slug AS target_series_slug, \
+         e.slug AS target_episode_slug, \
+         es.slug AS target_episode_series_slug, \
+         i.failure_step, i.failure_message, i.raw_log \
+         FROM import_items i \
+         LEFT JOIN films f    ON f.id  = i.target_film_id \
+         LEFT JOIN series s   ON s.id  = i.target_series_id \
+         LEFT JOIN episodes e ON e.id  = i.target_episode_id \
+         LEFT JOIN series es  ON es.id = e.series_id \
+         WHERE i.run_id = $1 \
+         ORDER BY i.id",
     )
     .bind(run_id)
     .fetch_all(&state.db)
