@@ -531,7 +531,7 @@ pub async fn episode_detail(
          FROM episodes \
          WHERE series_id = $1 AND slug = $2 \
            AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         LIMIT 1",
+         ORDER BY sktorrent_video_id LIMIT 1",
     )
     .bind(series.id)
     .bind(&ep_path)

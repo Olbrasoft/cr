@@ -101,7 +101,7 @@
 {% if !episodes.is_empty() %}
 <div class="films-grid" id="films-container">
     {% for ep in episodes %}
-    <a href="/serialy-online/{{ ep.series_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" alt="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}" title="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}">
+    <a href="/serialy-online/{{ ep.series_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" title="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}">
         <div class="film-poster">
             {% match ep.series_cover_filename %}
             {% when Some with (c) %}

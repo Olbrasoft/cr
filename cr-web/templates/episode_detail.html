@@ -14,7 +14,7 @@
 {% block head %}
 <link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
-<meta property="og:url" content="https://ceskarepublika.wiki/serialy-online/{{ series.slug }}/{% match episode.slug %}{% when Some with (s) %}{{ s }}{% when None %}s{{ episode.season|fmt("{:02}") }}e{{ episode.episode|fmt("{:02}") }}{% endmatch %}/">
+<meta property="og:url" content="https://ceskarepublika.wiki/serialy-online/{{ series.slug }}/{% match episode.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ episode.season }}x{{ episode.episode }}{% endmatch %}/">
 {% endblock %}
 
 {% block header_left %}
