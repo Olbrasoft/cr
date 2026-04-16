@@ -55,3 +55,5 @@ data/scripts/__pycache__/
 data/npu/*.csv
 data/prototypes/
 data/scripts/
+scripts/__pycache__/
+scripts/auto_import/__pycache__/
