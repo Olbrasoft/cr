@@ -838,10 +838,7 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
                 .await;
             }
             // Single query: is this an ORP or region slug?
-            let is_orp = state
-                .orp_repo
-                .exists_by_slug(segments[0])
-                .await?;
+            let is_orp = state.orp_repo.exists_by_slug(segments[0]).await?;
 
             if is_orp {
                 return Ok(orp::render_orp_by_slug(&state, segments[0])
