@@ -96,6 +96,7 @@ def upsert_film(
     cover_dir: Path,
     has_dub: bool = False,
     has_subtitles: bool = False,
+    csfd_rating: int | None = None,
 ) -> tuple[str, int | None]:
     """Decide between updated_film / added_film / skipped and execute it.
 
@@ -174,19 +175,27 @@ def upsert_film(
     generated = generate_unique_cs(title_cs, movie.year, sources, is_series=False)
     description = generated or movie.overview_cs or movie.overview_en
 
+    # imdb_rating is seeded from TMDB's vote_average (acceptable proxy —
+    # same 0–10 scale, usually ≤0.5 apart for films with votes). csfd_rating
+    # comes straight from the SK Torrent title when present ("= CSFD 82%").
+    # Both NULL for new-release films and obscure CZ titles; the list page
+    # already handles missing ratings gracefully.
+    imdb_rating = movie.vote_average
     cur.execute(
         """INSERT INTO films
            (title, original_title, slug, year, description, generated_description,
             imdb_id, tmdb_id, runtime_min, cover_filename,
+            imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             added_at, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
             description, generated,
             movie.imdb_id, movie.tmdb_id, movie.runtime_min, cover_filename,
+            imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             has_dub, has_subtitles,
         ),

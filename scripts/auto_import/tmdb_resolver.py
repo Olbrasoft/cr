@@ -56,6 +56,12 @@ class MovieResolution:
     runtime_min: int | None
     poster_path: str | None        # TMDB path like "/abc.jpg" — caller fetches via image.tmdb.org
     genre_ids: list[int]           # raw TMDB genre ids
+    # TMDB's own vote_average on 0–10. Our films table stores imdb_rating
+    # (0–10) and TMDB/IMDB usually agree within ±0.5 on popular titles, so
+    # we use it as an imdb_rating proxy until we wire in the real IMDB
+    # endpoint. Small indie/obscure CZ titles may diverge more — accept
+    # that for now.
+    vote_average: float | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0  # how confident we are in the match
 
@@ -249,6 +255,12 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
     rd = (cs or src_en).get("release_date") or ""
     year = int(rd[:4]) if len(rd) >= 4 and rd[:4].isdigit() else None
 
+    # TMDB returns vote_average=0 for brand-new films with no votes yet —
+    # treat that as "no rating" to avoid seeding the column with a bogus 0.0
+    # that the list page would then display as a legit rating.
+    va_raw = src.get("vote_average") or src_en.get("vote_average")
+    vote_average = float(va_raw) if va_raw else None
+
     return MovieResolution(
         tmdb_id=tmdb_id,
         imdb_id=src.get("imdb_id") or src_en.get("imdb_id"),
@@ -261,6 +273,7 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
         runtime_min=src.get("runtime") or src_en.get("runtime"),
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
+        vote_average=vote_average,
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )
