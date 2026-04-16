@@ -55,6 +55,7 @@ pub struct EpisodeCardRow {
     pub has_dub: Option<bool>,
     #[allow(dead_code)] // Used in ORDER BY; not rendered in series_list template
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub episode_slug: Option<String>,
 }
 
 #[derive(FromRow, Serialize)]
@@ -74,6 +75,7 @@ pub struct EpisodeRow {
     pub prehrajto_url: Option<String>,
     pub prehrajto_has_dub: bool,
     pub prehrajto_has_subs: bool,
+    pub slug: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -160,6 +162,7 @@ pub struct EpisodeNav {
     pub season: i16,
     pub episode: i16,
     pub episode_name: Option<String>,
+    pub slug: Option<String>,
 }
 
 #[derive(FromRow, Clone)]
@@ -292,7 +295,8 @@ async fn fetch_latest_episode_cards(
         s.imdb_rating AS series_imdb_rating, \
         s.csfd_rating AS series_csfd_rating, \
         s.description AS series_description, \
-        ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at \
+        ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
+        (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug \
      FROM per_series ps \
      JOIN series s ON s.id = ps.series_id \
      ORDER BY ps.created_at DESC NULLS LAST \
@@ -361,8 +365,29 @@ pub async fn series_resolve(
     .fetch_optional(&state.db)
     .await?;
 
-    let Some(series) = series else {
-        return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response());
+    let series = match series {
+        Some(s) => s,
+        None => {
+            // Check old_slug for 301 redirect (series slug changed, e.g. year removed)
+            let old_match = sqlx::query_as::<_, SeriesRow>(
+                "SELECT id, title, slug, first_air_year, last_air_year, description, \
+                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 cover_filename, added_at FROM series WHERE old_slug = $1",
+            )
+            .bind(&slug_raw)
+            .fetch_optional(&state.db)
+            .await?;
+            match old_match {
+                Some(s) => {
+                    let new_url = format!("/serialy-online/{}/", s.slug);
+                    return Ok(
+                        (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)])
+                            .into_response(),
+                    );
+                }
+                None => return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response()),
+            }
+        }
     };
 
     let genres = sqlx::query_as::<_, GenreRow>(
@@ -380,7 +405,7 @@ pub async fn series_resolve(
     let episodes = sqlx::query_as::<_, EpisodeRow>(
         "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, \
          episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs \
+         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
          FROM episodes \
          WHERE series_id = $1 \
            AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
@@ -451,22 +476,18 @@ pub async fn series_resolve(
     Ok(Html(tmpl.render()?).into_response())
 }
 
-/// GET /serialy-online/{slug}/{NxM}/ — episode detail page with player
+/// GET /serialy-online/{slug}/{ep_slug}/ — episode detail page with player.
+///
+/// Supports two URL formats:
+/// - **New (SEO):** `/serialy-online/teorie-velkeho-tresku/hamburgerovy-postulat-s01e05/`
+///   Matched via `episodes.slug` column.
+/// - **Old (legacy):** `/serialy-online/teorie-velkeho-tresku/1x5/`
+///   Parsed as season×episode, then 301 redirected to the new slug URL.
 pub async fn episode_detail(
     State(state): State<AppState>,
     Path((slug, ep_path)): Path<(String, String)>,
 ) -> WebResult<Response> {
-    // Parse "1x3" → (1, 3)
-    let Some((s_str, e_str)) = ep_path.split_once('x') else {
-        return Ok((StatusCode::NOT_FOUND, "Neplatná URL").into_response());
-    };
-    let Ok(season_num) = s_str.parse::<i16>() else {
-        return Ok((StatusCode::NOT_FOUND, "Neplatná sezóna").into_response());
-    };
-    let Ok(episode_num) = e_str.parse::<i16>() else {
-        return Ok((StatusCode::NOT_FOUND, "Neplatná epizoda").into_response());
-    };
-
+    // --- Resolve series (support old slugs with year via redirect) ---
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
@@ -475,34 +496,102 @@ pub async fn episode_detail(
     .bind(&slug)
     .fetch_optional(&state.db)
     .await?;
-    let Some(series) = series else {
-        return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response());
+
+    // If not found by current slug, check old_slug for redirect
+    let series = match series {
+        Some(s) => s,
+        None => {
+            let old_match = sqlx::query_as::<_, SeriesRow>(
+                "SELECT id, title, slug, first_air_year, last_air_year, description, \
+                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 cover_filename, added_at FROM series WHERE old_slug = $1",
+            )
+            .bind(&slug)
+            .fetch_optional(&state.db)
+            .await?;
+            match old_match {
+                Some(s) => {
+                    // 301 redirect to new series slug URL
+                    let new_url = format!("/serialy-online/{}/{ep_path}/", s.slug);
+                    return Ok(
+                        (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)])
+                            .into_response(),
+                    );
+                }
+                None => return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response()),
+            }
+        }
     };
 
-    // Episode must have a playable source (SK Torrent or cached Přehraj.to URL).
-    // TMDB-stub episodes without any source 404 — they exist only for future
-    // enrichment and should never be reachable from the listing or via URL.
+    // --- Resolve episode: try slug first, then parse old NxM format ---
     let episode = sqlx::query_as::<_, EpisodeRow>(
         "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, \
          episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs \
+         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
          FROM episodes \
-         WHERE series_id = $1 AND season = $2 AND episode = $3 \
+         WHERE series_id = $1 AND slug = $2 \
            AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY sktorrent_video_id LIMIT 1",
+         LIMIT 1",
     )
     .bind(series.id)
-    .bind(season_num)
-    .bind(episode_num)
+    .bind(&ep_path)
     .fetch_optional(&state.db)
     .await?;
-    let Some(episode) = episode else {
-        return Ok((StatusCode::NOT_FOUND, "Epizoda nenalezena").into_response());
+
+    let episode = match episode {
+        Some(ep) => ep,
+        None => {
+            // Try old "NxM" format → parse and redirect to new slug
+            if let Some((s_str, e_str)) = ep_path.split_once('x') {
+                if let (Ok(season_num), Ok(episode_num)) =
+                    (s_str.parse::<i16>(), e_str.parse::<i16>())
+                {
+                    // Find the episode by season+episode to get its slug
+                    let found = sqlx::query_as::<_, EpisodeRow>(
+                        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, \
+                         sktorrent_qualities, episode_name, overview, air_date, runtime, \
+                         still_filename, prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
+                         FROM episodes \
+                         WHERE series_id = $1 AND season = $2 AND episode = $3 \
+                           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
+                         ORDER BY sktorrent_video_id LIMIT 1",
+                    )
+                    .bind(series.id)
+                    .bind(season_num)
+                    .bind(episode_num)
+                    .fetch_optional(&state.db)
+                    .await?;
+
+                    if let Some(ep) = found {
+                        if let Some(ref ep_slug) = ep.slug {
+                            // 301 redirect old NxM → new slug
+                            let new_url = format!("/serialy-online/{}/{ep_slug}/", series.slug);
+                            return Ok((
+                                StatusCode::MOVED_PERMANENTLY,
+                                [(header::LOCATION, new_url)],
+                            )
+                                .into_response());
+                        }
+                        // Slug not set yet — serve episode directly (fallback)
+                        ep
+                    } else {
+                        return Ok((StatusCode::NOT_FOUND, "Epizoda nenalezena").into_response());
+                    }
+                } else {
+                    return Ok((StatusCode::NOT_FOUND, "Neplatná URL").into_response());
+                }
+            } else {
+                return Ok((StatusCode::NOT_FOUND, "Epizoda nenalezena").into_response());
+            }
+        }
     };
 
+    let season_num = episode.season;
+    let episode_num = episode.episode;
+
     // Navigation: previous and next episode — same source-available filter
-    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>)>(
-        "SELECT DISTINCT ON (season, episode) season, episode, episode_name \
+    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>, Option<String>)>(
+        "SELECT DISTINCT ON (season, episode) season, episode, episode_name, slug \
          FROM episodes \
          WHERE series_id = $1 \
            AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
@@ -514,20 +603,22 @@ pub async fn episode_detail(
     .unwrap_or_default();
     let current_idx = all_episodes
         .iter()
-        .position(|(s, e, _)| *s == season_num && *e == episode_num);
+        .position(|(s, e, _, _)| *s == season_num && *e == episode_num);
     let prev_episode = current_idx
         .and_then(|i| i.checked_sub(1).and_then(|j| all_episodes.get(j)))
-        .map(|(s, e, n)| EpisodeNav {
+        .map(|(s, e, n, sl)| EpisodeNav {
             season: *s,
             episode: *e,
             episode_name: n.clone(),
+            slug: sl.clone(),
         });
     let next_episode = current_idx
         .and_then(|i| all_episodes.get(i + 1))
-        .map(|(s, e, n)| EpisodeNav {
+        .map(|(s, e, n, sl)| EpisodeNav {
             season: *s,
             episode: *e,
             episode_name: n.clone(),
+            slug: sl.clone(),
         });
 
     let directors = sqlx::query_as::<_, PersonRow>(
