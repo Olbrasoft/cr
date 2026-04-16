@@ -54,6 +54,7 @@ from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle
 from scripts.auto_import.tmdb_resolver import resolve_movie, resolve_tv
 from scripts.auto_import.enricher import upsert_film
 from scripts.auto_import.series_enricher import process_series_batch
+from scripts.auto_import.tv_show_enricher import process_tv_show_episode
 
 log = logging.getLogger("auto-import")
 
@@ -72,13 +73,16 @@ def _db_connect() -> psycopg2.extensions.connection:
     return conn
 
 
-def _open_run(conn, trigger: str) -> tuple[int, int]:
+def _open_run(conn, trigger: str) -> tuple[int, int, int]:
+    """Return (run_id, generic_checkpoint, tv_porady_checkpoint)."""
     cur = conn.cursor()
     cur.execute(
-        "SELECT last_sktorrent_video_id FROM import_checkpoint WHERE id = 1"
+        """SELECT last_sktorrent_video_id, last_sktorrent_video_id_tv_porady
+           FROM import_checkpoint WHERE id = 1"""
     )
     row = cur.fetchone()
     checkpoint = row[0] if row else 0
+    checkpoint_tv = row[1] if row else 0
 
     # Bootstrap on very first run: seed checkpoint from the maximum
     # sktorrent_video_id already present in films/episodes so we don't
@@ -102,6 +106,22 @@ def _open_run(conn, trigger: str) -> tuple[int, int]:
                 (checkpoint,),
             )
 
+    # Bootstrap tv-porady checkpoint from tv_episodes the first time round.
+    if checkpoint_tv == 0:
+        cur.execute(
+            "SELECT COALESCE((SELECT MAX(sktorrent_video_id) FROM tv_episodes), 0)"
+        )
+        bootstrap_tv = cur.fetchone()[0] or 0
+        if bootstrap_tv > 0:
+            log.info("bootstrap tv-porady checkpoint from DB: %d", bootstrap_tv)
+            checkpoint_tv = bootstrap_tv
+            cur.execute(
+                """UPDATE import_checkpoint
+                   SET last_sktorrent_video_id_tv_porady = %s, updated_at = now()
+                   WHERE id = 1""",
+                (checkpoint_tv,),
+            )
+
     cur.execute(
         """INSERT INTO import_runs (trigger, checkpoint_before)
            VALUES (%s, %s) RETURNING id""",
@@ -109,10 +129,11 @@ def _open_run(conn, trigger: str) -> tuple[int, int]:
     )
     run_id = cur.fetchone()[0]
     conn.commit()
-    return run_id, checkpoint
+    return run_id, checkpoint, checkpoint_tv
 
 
-def _close_run(conn, run_id: int, status: str, checkpoint_after: int,
+def _close_run(conn, run_id: int, status: str,
+               checkpoint_after: int, checkpoint_after_tv: int,
                counters: dict, error_message: str | None = None) -> None:
     cur = conn.cursor()
     cur.execute(
@@ -149,9 +170,11 @@ def _close_run(conn, run_id: int, status: str, checkpoint_after: int,
     )
     cur.execute(
         """UPDATE import_checkpoint
-           SET last_sktorrent_video_id = %s, updated_at = now()
+           SET last_sktorrent_video_id = %s,
+               last_sktorrent_video_id_tv_porady = %s,
+               updated_at = now()
            WHERE id = 1""",
-        (checkpoint_after,),
+        (checkpoint_after, checkpoint_after_tv),
     )
     conn.commit()
 
@@ -165,6 +188,8 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
                  target_film_id: int | None = None,
                  target_series_id: int | None = None,
                  target_episode_id: int | None = None,
+                 target_tv_show_id: int | None = None,
+                 target_tv_episode_id: int | None = None,
                  failure_step: str | None = None,
                  failure_message: str | None = None,
                  raw_log: dict | None = None) -> None:
@@ -174,9 +199,10 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
            (run_id, sktorrent_video_id, sktorrent_url, sktorrent_title,
             detected_type, imdb_id, tmdb_id, season, episode, action,
             target_film_id, target_series_id, target_episode_id,
+            target_tv_show_id, target_tv_episode_id,
             failure_step, failure_message, raw_log)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s)""",
+                   %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             run_id, video.video_id, video.url, video.title,
             detected_type, imdb_id, tmdb_id,
@@ -184,6 +210,7 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
             parsed.episode if parsed else None,
             action,
             target_film_id, target_series_id, target_episode_id,
+            target_tv_show_id, target_tv_episode_id,
             failure_step, failure_message,
             json.dumps(raw_log, ensure_ascii=False) if raw_log else None,
         ),
@@ -361,6 +388,110 @@ def _process_episode(conn, *, run_id: int, video: ScannedVideo,
     conn.commit()
 
 
+def _process_tv_show(conn, *, run_id: int, video: ScannedVideo,
+                     parsed: ParsedTitle, detail,
+                     counters: dict, tmdb_session: requests.Session) -> None:
+    """Route an SK Torrent video from /videos/tv-porady to tv_shows/tv_episodes.
+
+    Scope: TMDB-matched only. ČSFD fallback is #485.
+    """
+    season = parsed.season if parsed.is_episode and parsed.season else 1
+    episode = parsed.episode if parsed.is_episode and parsed.episode else None
+    if episode is None:
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_show", imdb_id=None, tmdb_id=None,
+                     action="skipped",
+                     failure_step="parse_title",
+                     failure_message="TV pořad video without parseable episode number")
+        counters["skipped_count"] += 1
+        conn.commit()
+        return
+
+    tv = resolve_tv(parsed, session=tmdb_session)
+    if tv is None:
+        # TMDB miss — without ČSFD fallback (#485) we skip for now.
+        _mark_skipped(conn, video.video_id, "tmdb_tv_porady_resolve_failed")
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_show", imdb_id=None, tmdb_id=None,
+                     action="skipped",
+                     failure_step="tmdb_tv_resolve",
+                     failure_message="no TMDB match (ČSFD fallback pending — #485)")
+        counters["skipped_count"] += 1
+        conn.commit()
+        return
+
+    ep_has_dub, ep_has_subs = _langs_to_flags(parsed.langs)
+    try:
+        result = process_tv_show_episode(
+            conn,
+            tv=tv,
+            season=season,
+            episode=episode,
+            sktorrent_video_id=video.video_id,
+            sktorrent_cdn=detail.cdn if detail else None,
+            sktorrent_qualities=detail.qualities if detail else [],
+            has_dub=ep_has_dub,
+            has_subtitles=ep_has_subs,
+        )
+    except Exception as e:
+        conn.rollback()
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_show",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="failed",
+                     failure_step="tv_show_enricher",
+                     failure_message=str(e),
+                     raw_log={"trace": traceback.format_exc()[-2000:]})
+        counters["failed_count"] += 1
+        conn.commit()
+        return
+
+    # Fold into the existing counters so the dashboard / reports stay consistent.
+    # We reuse added_series / added_episodes here rather than bolting new
+    # counters — the semantics match (a new container + an episode under it).
+    if result.action == "added_tv_show+added_tv_episode":
+        counters["added_series"] += 1
+        counters["added_episodes"] += 1
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_show",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="added_tv_show",
+                     target_tv_show_id=result.tv_show_id)
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_episode",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="added_tv_episode",
+                     target_tv_show_id=result.tv_show_id,
+                     target_tv_episode_id=result.tv_episode_id)
+    elif result.action == "added_tv_episode":
+        counters["added_episodes"] += 1
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_episode",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="added_tv_episode",
+                     target_tv_show_id=result.tv_show_id,
+                     target_tv_episode_id=result.tv_episode_id)
+    elif result.action == "skipped":
+        counters["skipped_count"] += 1
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_episode",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="skipped",
+                     target_tv_show_id=result.tv_show_id,
+                     failure_step="tv_episode_insert",
+                     failure_message="already imported (sktorrent_video_id conflict)")
+    else:  # "failed"
+        counters["failed_count"] += 1
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_show",
+                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                     action="failed",
+                     target_tv_show_id=result.tv_show_id,
+                     failure_step="tv_show_enricher",
+                     failure_message="insert aborted")
+    conn.commit()
+
+
 def run(trigger: str, max_new: int) -> int:
     movies_covers = Path(
         os.environ.get("MOVIES_COVERS_DIR", "data/movies/covers-webp")
@@ -372,9 +503,9 @@ def run(trigger: str, max_new: int) -> int:
     series_covers.mkdir(parents=True, exist_ok=True)
 
     conn = _db_connect()
-    run_id, checkpoint = _open_run(conn, trigger)
-    log.info("run %d started (trigger=%s, checkpoint=%d, max_new=%d)",
-             run_id, trigger, checkpoint, max_new)
+    run_id, checkpoint, checkpoint_tv = _open_run(conn, trigger)
+    log.info("run %d started (trigger=%s, cp=%d, cp_tv=%d, max_new=%d)",
+             run_id, trigger, checkpoint, checkpoint_tv, max_new)
 
     counters = {
         "scanned_pages": 0, "scanned_videos": 0,
@@ -383,6 +514,7 @@ def run(trigger: str, max_new: int) -> int:
         "failed_count": 0, "skipped_count": 0,
     }
     checkpoint_after = checkpoint
+    checkpoint_after_tv = checkpoint_tv
     status = "ok"
     error_message: str | None = None
 
@@ -390,11 +522,27 @@ def run(trigger: str, max_new: int) -> int:
     tmdb_session = requests.Session()
 
     try:
-        scan = scan_new_videos(
+        scan_generic = scan_new_videos(
             checkpoint=checkpoint, max_new=max_new, session=skt_session,
+            section="generic",
         )
-        videos = scan.videos
-        counters["scanned_pages"] = scan.pages_scanned
+        scan_tv = scan_new_videos(
+            checkpoint=checkpoint_tv, max_new=max_new, session=skt_session,
+            section="tv-porady",
+        )
+        # Process oldest-first globally so batch grouping of adjacent
+        # episode numbers stays coherent even when the two sections
+        # overlap in SK Torrent video_id space.
+        videos = sorted(
+            [*scan_generic.videos, *scan_tv.videos],
+            key=lambda v: v.video_id,
+        )
+        # max_new is a GLOBAL cap — each section was already capped when
+        # crawling to stop runaway pagination, but without this second
+        # slice a manual run would quietly process up to 2*max_new items.
+        if max_new and len(videos) > max_new:
+            videos = videos[:max_new]
+        counters["scanned_pages"] = scan_generic.pages_scanned + scan_tv.pages_scanned
         counters["scanned_videos"] = len(videos)
 
         for video in videos:
@@ -437,7 +585,11 @@ def run(trigger: str, max_new: int) -> int:
 
             parsed = parse_sktorrent_title(video.title)
 
-            if parsed.is_episode and parsed.season and parsed.episode:
+            if video.section == "tv-porady":
+                _process_tv_show(conn, run_id=run_id, video=video,
+                                 parsed=parsed, detail=detail,
+                                 counters=counters, tmdb_session=tmdb_session)
+            elif parsed.is_episode and parsed.season and parsed.episode:
                 _process_episode(conn, run_id=run_id, video=video,
                                  parsed=parsed, detail=detail,
                                  series_covers=series_covers,
@@ -457,8 +609,14 @@ def run(trigger: str, max_new: int) -> int:
                 counters["skipped_count"] += 1
                 conn.commit()
 
-            if video.video_id > checkpoint_after:
-                checkpoint_after = video.video_id
+            # Each section has its own checkpoint — bump only the relevant one
+            # so a gap in one section can't hide new items in the other.
+            if video.section == "tv-porady":
+                if video.video_id > checkpoint_after_tv:
+                    checkpoint_after_tv = video.video_id
+            else:
+                if video.video_id > checkpoint_after:
+                    checkpoint_after = video.video_id
             time.sleep(1.5)  # polite throttle between videos
 
         if counters["failed_count"] > 0:
@@ -481,8 +639,8 @@ def run(trigger: str, max_new: int) -> int:
         log.exception("run %d crashed", run_id)
     finally:
         try:
-            _close_run(conn, run_id, status, checkpoint_after, counters,
-                       error_message)
+            _close_run(conn, run_id, status, checkpoint_after,
+                       checkpoint_after_tv, counters, error_message)
         finally:
             skt_session.close()
             tmdb_session.close()
