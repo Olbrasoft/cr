@@ -75,6 +75,8 @@ struct ImportItemRow {
     target_film_id: Option<i32>,
     target_series_id: Option<i32>,
     target_episode_id: Option<i32>,
+    target_tv_show_id: Option<i32>,
+    target_tv_episode_id: Option<i32>,
     #[sqlx(default)]
     target_film_slug: Option<String>,
     #[sqlx(default)]
@@ -85,6 +87,16 @@ struct ImportItemRow {
     /// Used to build /serialy-online/{series-slug}/{episode-slug}/ URLs.
     #[sqlx(default)]
     target_episode_series_slug: Option<String>,
+    #[sqlx(default)]
+    target_tv_show_slug: Option<String>,
+    /// Episode slug on tv_episodes (e.g. "s01e03"). Used alongside the show
+    /// slug to build /tv-porady/{show}/{ep}/ URLs.
+    #[sqlx(default)]
+    target_tv_episode_slug: Option<String>,
+    /// tv_shows.slug reached via target_tv_episode_id → tv_episodes.tv_show_id.
+    /// Required to build the episode URL when only target_tv_episode_id is set.
+    #[sqlx(default)]
+    target_tv_episode_show_slug: Option<String>,
     failure_step: Option<String>,
     failure_message: Option<String>,
     raw_log: Option<JsonValue>,
@@ -113,6 +125,23 @@ impl ImportItemRow {
         }
         if let Some(slug) = self.target_series_slug.as_deref() {
             return Some(format!("/serialy-online/{slug}/"));
+        }
+        if let (Some(show_slug), Some(ep_slug)) = (
+            self.target_tv_episode_show_slug.as_deref(),
+            self.target_tv_episode_slug.as_deref(),
+        ) {
+            return Some(format!("/tv-porady/{show_slug}/{ep_slug}/"));
+        }
+        if let (Some(show_slug), Some(season), Some(episode)) = (
+            self.target_tv_episode_show_slug.as_deref(),
+            self.season,
+            self.episode,
+        ) {
+            // TV episode slug not set yet — fall back to legacy N×M URL.
+            return Some(format!("/tv-porady/{show_slug}/{season}x{episode}/"));
+        }
+        if let Some(slug) = self.target_tv_show_slug.as_deref() {
+            return Some(format!("/tv-porady/{slug}/"));
         }
         None
     }
@@ -275,16 +304,23 @@ pub async fn admin_import_detail(
         "SELECT i.id, i.sktorrent_video_id, i.sktorrent_url, i.sktorrent_title, \
          i.detected_type, i.imdb_id, i.season, i.episode, i.action, \
          i.target_film_id, i.target_series_id, i.target_episode_id, \
+         i.target_tv_show_id, i.target_tv_episode_id, \
          f.slug AS target_film_slug, \
          s.slug AS target_series_slug, \
          e.slug AS target_episode_slug, \
          es.slug AS target_episode_series_slug, \
+         ts.slug AS target_tv_show_slug, \
+         te.slug AS target_tv_episode_slug, \
+         tes.slug AS target_tv_episode_show_slug, \
          i.failure_step, i.failure_message, i.raw_log \
          FROM import_items i \
-         LEFT JOIN films f    ON f.id  = i.target_film_id \
-         LEFT JOIN series s   ON s.id  = i.target_series_id \
-         LEFT JOIN episodes e ON e.id  = i.target_episode_id \
-         LEFT JOIN series es  ON es.id = e.series_id \
+         LEFT JOIN films f     ON f.id   = i.target_film_id \
+         LEFT JOIN series s    ON s.id   = i.target_series_id \
+         LEFT JOIN episodes e  ON e.id   = i.target_episode_id \
+         LEFT JOIN series es   ON es.id  = e.series_id \
+         LEFT JOIN tv_shows ts ON ts.id  = i.target_tv_show_id \
+         LEFT JOIN tv_episodes te ON te.id = i.target_tv_episode_id \
+         LEFT JOIN tv_shows tes ON tes.id = te.tv_show_id \
          WHERE i.run_id = $1 \
          ORDER BY i.id",
     )
@@ -304,7 +340,8 @@ pub async fn admin_import_detail(
     let mut skipped = Vec::new();
     for it in items {
         match it.action.as_str() {
-            "added_film" | "added_series" | "added_episode" => added.push(it),
+            "added_film" | "added_series" | "added_episode" | "added_tv_show"
+            | "added_tv_episode" => added.push(it),
             "updated_film" | "updated_episode" => updated.push(it),
             "failed" => failed.push(it),
             "skipped" => skipped.push(it),
@@ -364,6 +401,8 @@ struct ItemJson<'a> {
     target_film_id: Option<i32>,
     target_series_id: Option<i32>,
     target_episode_id: Option<i32>,
+    target_tv_show_id: Option<i32>,
+    target_tv_episode_id: Option<i32>,
     failure_step: Option<&'a str>,
     failure_message: Option<&'a str>,
     raw_log: Option<&'a JsonValue>,
@@ -408,6 +447,8 @@ fn serialize_run_detail<'a>(
                 target_film_id: it.target_film_id,
                 target_series_id: it.target_series_id,
                 target_episode_id: it.target_episode_id,
+                target_tv_show_id: it.target_tv_show_id,
+                target_tv_episode_id: it.target_tv_episode_id,
                 failure_step: it.failure_step.as_deref(),
                 failure_message: it.failure_message.as_deref(),
                 raw_log: it.raw_log.as_ref(),
