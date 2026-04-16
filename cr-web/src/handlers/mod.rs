@@ -841,8 +841,7 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
             let is_orp = state
                 .orp_repo
                 .exists_by_slug(segments[0])
-                .await
-                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                .await?;
 
             if is_orp {
                 return Ok(orp::render_orp_by_slug(&state, segments[0])
