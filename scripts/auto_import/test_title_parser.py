@@ -27,6 +27,23 @@ CASES = [
       "is_episode": True, "langs": ["DUB_CZ"]}),
     ("",
      {"cz_title": None, "en_title": None, "is_episode": False}),
+    # TV pořad with no slash separator — parser must strip SxxExx from title
+    ("Královny Brna S01E03 (CZ)",
+     {"cz_title": "Královny Brna", "en_title": None,
+      "season": 1, "episode": 3, "is_episode": True, "langs": ["CZ"]}),
+    # Double-escaped HTML entity (&amp;amp; → &) from SK Torrent listing
+    ("Survivor Česko &amp;amp; Slovensko S05E24 (2026)",
+     {"cz_title": "Survivor Česko & Slovensko", "season": 5, "episode": 24,
+      "year": 2026, "is_episode": True}),
+    # Marketing noise between title and episode marker is kept for now, but
+    # SxxExx + trailing episode-name ("- Katka a Denisa") must be stripped.
+    ("Výměna manželek - nyní pouze na Oneplay S03E01 - Katka a Denisa (2026)(CZ)",
+     {"season": 3, "episode": 1, "year": 2026, "is_episode": True,
+      "langs": ["CZ"]}),
+    # Ruža pre nevestu — SK show that exists on TMDB (was blacklisted due to parser)
+    ("Ruža pre nevestu S04E11 (2026)(SK)",
+     {"cz_title": "Ruža pre nevestu", "season": 4, "episode": 11,
+      "year": 2026, "is_episode": True, "langs": ["SK"]}),
 ]
 
 

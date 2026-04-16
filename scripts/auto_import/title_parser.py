@@ -20,6 +20,7 @@ missing fields as a softer match signal.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, asdict, field
 
@@ -182,6 +183,14 @@ def _split_titles(title: str) -> tuple[str | None, str | None]:
         s = _STRIP_PARENS_RE.sub("", p).strip()
         # Strip trailing CSFD rating
         s = _CSFD_RE.sub("", s).strip()
+        # Strip SxxExx (and everything after it). SK Torrent episode titles
+        # without a `/` separator between show and marker look like
+        # "Královny Brna S01E03" or "Výměna manželek S03E01 - Katka a Denisa";
+        # keep only the show name. Also handles "NxM" form.
+        for rx in (_EPISODE_RE, _EPISODE_X_RE):
+            m = rx.search(s)
+            if m:
+                s = s[: m.start()].rstrip()
         # Strip dangling = signs / dashes / dots
         s = re.sub(r"\s*[=\-•·.]+\s*$", "", s).strip()
         return s
@@ -199,7 +208,11 @@ def parse_sktorrent_title(title: str) -> ParsedTitle:
     """
     if not title:
         return ParsedTitle(raw="")
-    raw = title.strip()
+    # Decode HTML entities — SK Torrent occasionally double-escapes `&` in the
+    # listing's `title="..."` attribute (e.g. "Survivor Česko &amp;amp;
+    # Slovensko"). One unescape pass handles the normal case; the second pass
+    # catches double-encoded strings. `html.unescape` is a no-op on clean text.
+    raw = html.unescape(html.unescape(title)).strip()
     season, episode = _detect_episode(raw)
     cz, en = _split_titles(raw)
     return ParsedTitle(
