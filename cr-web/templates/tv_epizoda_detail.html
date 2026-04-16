@@ -30,7 +30,6 @@
 <div class="search-container" id="header-search-box">
     <input type="text" id="tv-search" class="search-input" placeholder="Hledat TV pořad..." autocomplete="off">
     <button class="search-btn" onclick="doSearch()" alt="Hledat" title="Hledat">Hledat</button>
-    <div id="search-results" class="search-dropdown"></div>
 </div>
 {% endblock %}
 
@@ -507,7 +506,8 @@ function playPrehrajtoEpisode(movie, item) {
     var player = document.getElementById('tv-player');
     var status = document.getElementById('source-status');
     if (!player) return;
-    document.getElementById('player-section') && document.querySelector('.player-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var ps = document.querySelector('.player-section');
+    if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     function useResolved(resolved) {
         var url = resolved.video_url;
@@ -623,44 +623,17 @@ function setSubSize(px) {
     }, true);
 })();
 
-/* Header search autocomplete */
+/* Header search: submit-on-Enter, no autocomplete (no /api/tv-porady/search yet) */
 function doSearch() {
     var q = document.getElementById('tv-search').value.trim();
     if (q.length >= 2) window.location = '/tv-porady/?q=' + encodeURIComponent(q);
 }
 (function() {
     var input = document.getElementById('tv-search');
-    var dd = document.getElementById('search-results');
-    var timer = null;
-    if (!input || !dd) return;
-    input.addEventListener('input', function() {
-        clearTimeout(timer);
-        var q = this.value.trim();
-        if (q.length < 2) { dd.classList.remove('open'); return; }
-        timer = setTimeout(function() {
-            fetch('/api/tv-porady/search?q=' + encodeURIComponent(q))
-                .then(function(r) { return r.json(); })
-                .then(function(results) {
-                    if (!results.length) { dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>'; }
-                    else {
-                        dd.innerHTML = results.map(function(r) {
-                            var cover = r.cover
-                                ? '<img src="/tv-porady/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
-                                : '<div class="si-placeholder"></div>';
-                            var yr = r.year ? ' (' + r.year + ')' : '';
-                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
-                            return '<a href="/tv-porady/' + r.slug + '/" class="search-item" alt="' + r.title + '" title="' + r.title + '">'
-                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
-                                + '<span class="si-meta">' + rat + '</span></div></a>';
-                        }).join('');
-                    }
-                    dd.classList.add('open');
-                })
-                .catch(function() { dd.classList.remove('open'); });
-        }, 200);
+    if (!input) return;
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
     });
-    document.addEventListener('click', function(e) { if (!e.target.closest('#header-search-box')) dd.classList.remove('open'); });
-    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 })();
 
 initPlayer();

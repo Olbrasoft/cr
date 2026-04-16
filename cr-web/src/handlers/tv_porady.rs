@@ -571,11 +571,25 @@ pub async fn tv_porad_cover(
                     .timeout(std::time::Duration::from_secs(15))
                     .send()
                     .await
-                    && let Ok(img_bytes) = img_resp.bytes().await
+                    && let Ok(raw_bytes) = img_resp.bytes().await
                 {
+                    // TMDB returns JPEG; re-encode to WebP so we can honour
+                    // the .webp Content-Type + avoid content/extension mismatch.
+                    let output_bytes = if let Ok(img) = image::load_from_memory(&raw_bytes) {
+                        let mut buf = Vec::new();
+                        let mut cursor = std::io::Cursor::new(&mut buf);
+                        if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
+                            buf
+                        } else {
+                            raw_bytes.to_vec()
+                        }
+                    } else {
+                        raw_bytes.to_vec()
+                    };
+
                     let cache_path = std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
                     let _ = tokio::fs::create_dir_all(&covers_dir).await;
-                    let _ = tokio::fs::write(&cache_path, &img_bytes).await;
+                    let _ = tokio::fs::write(&cache_path, &output_bytes).await;
 
                     return Ok((
                         StatusCode::OK,
@@ -583,7 +597,7 @@ pub async fn tv_porad_cover(
                             (header::CONTENT_TYPE, "image/webp"),
                             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
                         ],
-                        img_bytes.to_vec(),
+                        output_bytes,
                     )
                         .into_response());
                 }

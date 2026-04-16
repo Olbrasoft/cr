@@ -230,7 +230,9 @@ def main():
                 conn.commit()
                 stats["episodes_inserted"] += 1
 
-    if not args.dry_run:
+    if not args.dry_run and shows:
+        # Empty tuple would render as `IN ()` — invalid SQL. Skip the rollup
+        # when there's nothing to update.
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE tv_shows s SET
