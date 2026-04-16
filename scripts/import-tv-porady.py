@@ -49,8 +49,14 @@ def slugify(text: str) -> str:
     return s
 
 
-def unique_slug(cur, base: str, table: str, column: str = "slug", extra_where: str = "") -> str:
-    """Generate unique slug by appending -N if needed."""
+def unique_slug(cur, base: str, table: str, column: str = "slug", extra_where: str = "",
+                cross_tables: tuple = ()) -> str:
+    """Generate unique slug by appending -N if needed.
+
+    Checks `table.column` for collisions, plus any additional `cross_tables`
+    (flat slug columns) so that tv_shows slug won't collide with films, series
+    or genres — which the DB triggers would reject.
+    """
     if not base:
         base = "tv-porad"
     candidate = base
@@ -58,7 +64,14 @@ def unique_slug(cur, base: str, table: str, column: str = "slug", extra_where: s
     while True:
         q = f"SELECT 1 FROM {table} WHERE {column} = %s {extra_where} LIMIT 1"
         cur.execute(q, (candidate,))
-        if not cur.fetchone():
+        collision = cur.fetchone() is not None
+        if not collision:
+            for other in cross_tables:
+                cur.execute(f"SELECT 1 FROM {other} WHERE slug = %s LIMIT 1", (candidate,))
+                if cur.fetchone():
+                    collision = True
+                    break
+        if not collision:
             return candidate
         n += 1
         candidate = f"{base}-{n}"
@@ -130,7 +143,10 @@ def main():
         else:
             base_slug = slugify(tmdb_name) or f"tv-porad-{tmdb_id}"
             with conn.cursor() as cur:
-                tv_show_slug = unique_slug(cur, base_slug, "tv_shows")
+                tv_show_slug = unique_slug(
+                    cur, base_slug, "tv_shows",
+                    cross_tables=("films", "series", "genres"),
+                )
                 if args.dry_run:
                     log.info("[DRY] Would create tv_show '%s' (slug=%s, tmdb=%d, year=%s)",
                              tmdb_name, tv_show_slug, tmdb_id, first_year)
@@ -230,7 +246,9 @@ def main():
                 conn.commit()
                 stats["episodes_inserted"] += 1
 
-    if not args.dry_run:
+    if not args.dry_run and shows:
+        # Empty tuple would render as `IN ()` — invalid SQL. Skip the rollup
+        # when there's nothing to update.
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE tv_shows s SET

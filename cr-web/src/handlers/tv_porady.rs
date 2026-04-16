@@ -571,21 +571,40 @@ pub async fn tv_porad_cover(
                     .timeout(std::time::Duration::from_secs(15))
                     .send()
                     .await
-                    && let Ok(img_bytes) = img_resp.bytes().await
+                    && img_resp.status().is_success()
+                    && let Ok(raw_bytes) = img_resp.bytes().await
                 {
-                    let cache_path = std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
-                    let _ = tokio::fs::create_dir_all(&covers_dir).await;
-                    let _ = tokio::fs::write(&cache_path, &img_bytes).await;
+                    // TMDB returns JPEG; re-encode to WebP off the async
+                    // runtime (CPU-bound) and bail out if transcoding fails
+                    // so we don't cache raw JPEG under a .webp filename.
+                    let raw = raw_bytes.to_vec();
+                    let output_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
+                        let img = image::load_from_memory(&raw).ok()?;
+                        let mut buf = Vec::new();
+                        let mut cursor = std::io::Cursor::new(&mut buf);
+                        img.write_to(&mut cursor, image::ImageFormat::WebP).ok()?;
+                        Some(buf)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
 
-                    return Ok((
-                        StatusCode::OK,
-                        [
-                            (header::CONTENT_TYPE, "image/webp"),
-                            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                        ],
-                        img_bytes.to_vec(),
-                    )
-                        .into_response());
+                    if let Some(output_bytes) = output_bytes {
+                        let cache_path =
+                            std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
+                        let _ = tokio::fs::create_dir_all(&covers_dir).await;
+                        let _ = tokio::fs::write(&cache_path, &output_bytes).await;
+
+                        return Ok((
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, "image/webp"),
+                                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                            ],
+                            output_bytes,
+                        )
+                            .into_response());
+                    }
                 }
             }
         }
@@ -669,30 +688,32 @@ pub async fn tv_porad_cover_large(
                     && img_resp.status().is_success()
                     && let Ok(bytes) = img_resp.bytes().await
                 {
-                    let output_bytes = if let Ok(img) = image::load_from_memory(&bytes) {
+                    let raw = bytes.to_vec();
+                    let output_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
+                        let img = image::load_from_memory(&raw).ok()?;
                         let mut buf = Vec::new();
                         let mut cursor = std::io::Cursor::new(&mut buf);
-                        if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
-                            buf
-                        } else {
-                            bytes.to_vec()
-                        }
-                    } else {
-                        bytes.to_vec()
-                    };
+                        img.write_to(&mut cursor, image::ImageFormat::WebP).ok()?;
+                        Some(buf)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
 
-                    let _ = tokio::fs::create_dir_all(&cache_dir).await;
-                    let _ = tokio::fs::write(&cache_path, &output_bytes).await;
+                    if let Some(output_bytes) = output_bytes {
+                        let _ = tokio::fs::create_dir_all(&cache_dir).await;
+                        let _ = tokio::fs::write(&cache_path, &output_bytes).await;
 
-                    return Ok((
-                        StatusCode::OK,
-                        [
-                            (header::CONTENT_TYPE, "image/webp"),
-                            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                        ],
-                        output_bytes,
-                    )
-                        .into_response());
+                        return Ok((
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, "image/webp"),
+                                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                            ],
+                            output_bytes,
+                        )
+                            .into_response());
+                    }
                 }
             }
         }
