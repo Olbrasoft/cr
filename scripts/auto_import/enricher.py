@@ -118,6 +118,13 @@ def upsert_film(
     cur = conn.cursor()
     qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else None
 
+    # Clamp csfd_rating to 0..100 — _detect_csfd accepts any 1–3 digit number
+    # so a malformed title like "CSFD 999%" would otherwise land in DB and
+    # corrupt sorting / card rendering.
+    if csfd_rating is not None and not (0 <= csfd_rating <= 100):
+        log.warning("csfd_rating=%d out of range, dropping", csfd_rating)
+        csfd_rating = None
+
     # --- Path A: film already in DB? ---
     cur.execute(
         "SELECT id, sktorrent_video_id FROM films WHERE imdb_id = %s",
@@ -133,15 +140,21 @@ def upsert_film(
         # Preserve existing has_dub/has_subtitles when updating — the DB value
         # reflects any previously linked source (e.g. Bombuj) and we only want
         # to OR-in the new signal from SK Torrent, not downgrade to False.
+        # Backfill ratings via COALESCE — only fill if DB value is NULL, so
+        # manually-curated numbers are never overwritten.
         cur.execute(
             "UPDATE films SET sktorrent_video_id = %s, sktorrent_cdn = %s, "
             "sktorrent_qualities = %s, "
             "has_dub = has_dub OR %s, "
             "has_subtitles = has_subtitles OR %s, "
+            "imdb_rating = COALESCE(imdb_rating, %s), "
+            "csfd_rating = COALESCE(csfd_rating, %s), "
             "sktorrent_added_at = now() "
             "WHERE id = %s",
             (sktorrent_video_id, sktorrent_cdn, qualities_str,
-             has_dub, has_subtitles, film_id),
+             has_dub, has_subtitles,
+             movie.vote_average, csfd_rating,
+             film_id),
         )
         log.info("upserted SKT into existing film %d (imdb=%s)", film_id, movie.imdb_id)
         return "updated_film", film_id

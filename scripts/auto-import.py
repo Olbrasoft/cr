@@ -293,32 +293,73 @@ def _process_film(conn, *, run_id: int, video: ScannedVideo,
         conn.commit()
         return
 
-    _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
-                 detected_type="film",
-                 imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
-                 action=action, target_film_id=film_id)
-    if action == "added_film":
-        counters["added_films"] += 1
-    elif action == "updated_film":
-        counters["updated_films"] += 1
-    elif action == "skipped":
+    # When upsert_film returns "skipped" it means the film already has this
+    # exact SK Torrent video id linked — record that as the reason so the
+    # admin dashboard doesn't show a reason-less row.
+    if action == "skipped":
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="film",
+                     imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
+                     action="skipped", target_film_id=film_id,
+                     failure_step="already_imported",
+                     failure_message="film already linked to this SK Torrent video")
         counters["skipped_count"] += 1
+    else:
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="film",
+                     imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
+                     action=action, target_film_id=film_id)
+        if action == "added_film":
+            counters["added_films"] += 1
+        elif action == "updated_film":
+            counters["updated_films"] += 1
     conn.commit()
 
 
 def _process_episode(conn, *, run_id: int, video: ScannedVideo,
                      parsed: ParsedTitle, detail, series_covers: Path,
                      counters: dict, tmdb_session: requests.Session) -> None:
+    # SK Torrent sometimes lists a TV pořad video (e.g. Královny Brna,
+    # Asia Express) in BOTH /videos/ (generic) and /videos/tv-porady/.
+    # If the tv-porady scan already created a tv_episode for this id,
+    # silently skip the duplicate from the generic scan — don't touch
+    # the blacklist and don't flag it as a failure in the admin log.
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT tv_show_id FROM tv_episodes WHERE sktorrent_video_id = %s LIMIT 1",
+        (video.video_id,),
+    )
+    existing_tv_ep = cur.fetchone()
+    if existing_tv_ep is not None:
+        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                     detected_type="tv_episode", imdb_id=None, tmdb_id=None,
+                     action="skipped",
+                     failure_step="duplicate_tv_porad",
+                     failure_message="already imported via /videos/tv-porady scan",
+                     target_tv_show_id=existing_tv_ep[0])
+        counters["skipped_count"] += 1
+        conn.commit()
+        return
+
     tv = resolve_tv(parsed, session=tmdb_session)
-    if tv is None or not tv.imdb_id:
+    if tv is None:
         _mark_skipped(conn, video.video_id, "tmdb_tv_resolve_failed")
         _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
                      detected_type="episode", imdb_id=None, tmdb_id=None,
                      action="skipped",
                      failure_step="tmdb_tv_resolve",
-                     failure_message="no TV match or missing imdb_id",
+                     failure_message="no TMDB match",
                      raw_log={"detail": asdict(detail) if detail else None})
         counters["skipped_count"] += 1
+        return
+    if not tv.imdb_id:
+        # TMDB has a TV match but no IMDB link — hallmark of a CZ/SK-only
+        # production (Královny Brna, Asia Express, Superlov). Route to the
+        # tv_show flow instead of failing here; `series` table needs an
+        # imdb_id but `tv_shows` doesn't.
+        _process_tv_show(conn, run_id=run_id, video=video, parsed=parsed,
+                         detail=detail, counters=counters,
+                         tmdb_session=tmdb_session)
         return
 
     ep_has_dub, ep_has_subs = _langs_to_flags(parsed.langs)
@@ -377,15 +418,22 @@ def _process_episode(conn, *, run_id: int, video: ScannedVideo,
             store_action = action
         elif action == "failed":
             counters["failed_count"] += 1
-            store_action = action
+            _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                         detected_type="episode",
+                         imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                         action=action,
+                         target_episode_id=ep_id)
         else:
             counters["skipped_count"] += 1
-            store_action = action
-        _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
-                     detected_type="episode",
-                     imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
-                     action=store_action,
-                     target_episode_id=ep_id)
+            # Episode already had this sktorrent_video_id linked — record a
+            # reason so the admin "Skipped" tab never shows a blank why.
+            _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                         detected_type="episode",
+                         imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                         action=action,
+                         target_episode_id=ep_id,
+                         failure_step="already_imported",
+                         failure_message="episode already linked to this SK Torrent video")
     conn.commit()
 
 
