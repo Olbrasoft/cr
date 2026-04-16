@@ -379,16 +379,26 @@ pub async fn series_resolve(
             .bind(&slug_raw)
             .fetch_optional(&state.db)
             .await?;
-            match old_match {
-                Some(s) => {
-                    let new_url = format!("/serialy-online/{}/", s.slug);
-                    return Ok(
-                        (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)])
-                            .into_response(),
-                    );
-                }
-                None => return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response()),
+            if let Some(s) = old_match {
+                let new_url = format!("/serialy-online/{}/", s.slug);
+                return Ok(
+                    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)]).into_response(),
+                );
             }
+            // Moved to tv_shows? Redirect to /tv-porady/
+            let tv_slug = sqlx::query_scalar::<_, String>(
+                "SELECT slug FROM tv_shows WHERE slug = $1 OR old_slug = $1 LIMIT 1",
+            )
+            .bind(&slug_raw)
+            .fetch_optional(&state.db)
+            .await?;
+            if let Some(s) = tv_slug {
+                let new_url = format!("/tv-porady/{s}/");
+                return Ok(
+                    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)]).into_response(),
+                );
+            }
+            return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response());
         }
     };
 
@@ -511,17 +521,27 @@ pub async fn episode_detail(
             .bind(&slug)
             .fetch_optional(&state.db)
             .await?;
-            match old_match {
-                Some(s) => {
-                    // 301 redirect to new series slug URL
-                    let new_url = format!("/serialy-online/{}/{ep_path}/", s.slug);
-                    return Ok(
-                        (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)])
-                            .into_response(),
-                    );
-                }
-                None => return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response()),
+            if let Some(s) = old_match {
+                // 301 redirect to new series slug URL
+                let new_url = format!("/serialy-online/{}/{ep_path}/", s.slug);
+                return Ok(
+                    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)]).into_response(),
+                );
             }
+            // Moved to tv_shows? Redirect episode URL to /tv-porady/
+            let tv_slug = sqlx::query_scalar::<_, String>(
+                "SELECT slug FROM tv_shows WHERE slug = $1 OR old_slug = $1 LIMIT 1",
+            )
+            .bind(&slug)
+            .fetch_optional(&state.db)
+            .await?;
+            if let Some(s) = tv_slug {
+                let new_url = format!("/tv-porady/{s}/{ep_path}/");
+                return Ok(
+                    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, new_url)]).into_response(),
+                );
+            }
+            return Ok((StatusCode::NOT_FOUND, "Seriál nenalezen").into_response());
         }
     };
 

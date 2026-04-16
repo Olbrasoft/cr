@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Import TMDB-matched TV pořady from staging to production series/episodes.
+"""Import TMDB-matched TV pořady from staging to production tv_shows/tv_episodes.
 
 Source: sktorrent_tv_porady (staging, 864 videos, 745 matched to TMDB)
-Target: series + episodes (production tables)
+Target: tv_shows + tv_episodes (production tables; see migration 041)
 
 Strategy:
 - For each unique tmdb_id in staging:
-  - If series exists (by tmdb_id): reuse it, only add new episodes
-  - Otherwise: INSERT series with TMDB metadata
-  - Covers auto-fetch via existing series_cover handler (TMDB fallback)
+  - If tv_show exists (by tmdb_id): reuse it, only add new episodes
+  - Otherwise: INSERT tv_show with TMDB metadata
+  - Covers auto-fetch via tv_porad_cover handler (TMDB fallback)
 - For each video:
   - season = season_number OR 1 (default if only episode_number present)
   - Skip if episode_number is NULL
@@ -106,7 +106,7 @@ def main():
 
     log.info("Processing %d TMDB-matched shows...", len(shows))
 
-    stats = {"series_created": 0, "series_reused": 0, "episodes_inserted": 0,
+    stats = {"shows_created": 0, "shows_reused": 0, "episodes_inserted": 0,
              "episodes_skipped": 0, "videos_skipped_no_ep": 0}
 
     for show in shows:
@@ -117,45 +117,44 @@ def main():
         if first_air and len(first_air) >= 4 and first_air[:4].isdigit():
             first_year = int(first_air[:4])
 
-        # Find or create series
+        # Find or create tv_show
         with conn.cursor() as cur:
-            cur.execute("SELECT id, slug FROM series WHERE tmdb_id = %s LIMIT 1", (tmdb_id,))
+            cur.execute("SELECT id, slug FROM tv_shows WHERE tmdb_id = %s LIMIT 1", (tmdb_id,))
             existing = cur.fetchone()
 
         if existing:
-            series_id, series_slug = existing
-            stats["series_reused"] += 1
-            log.info("Reusing series id=%d slug='%s' (tmdb=%d '%s')",
-                     series_id, series_slug, tmdb_id, tmdb_name)
+            tv_show_id, tv_show_slug = existing
+            stats["shows_reused"] += 1
+            log.info("Reusing tv_show id=%d slug='%s' (tmdb=%d '%s')",
+                     tv_show_id, tv_show_slug, tmdb_id, tmdb_name)
         else:
-            # Create new series
             base_slug = slugify(tmdb_name) or f"tv-porad-{tmdb_id}"
             with conn.cursor() as cur:
-                series_slug = unique_slug(cur, base_slug, "series")
+                tv_show_slug = unique_slug(cur, base_slug, "tv_shows")
                 if args.dry_run:
-                    log.info("[DRY] Would create series '%s' (slug=%s, tmdb=%d, year=%s)",
-                             tmdb_name, series_slug, tmdb_id, first_year)
-                    series_id = -1
+                    log.info("[DRY] Would create tv_show '%s' (slug=%s, tmdb=%d, year=%s)",
+                             tmdb_name, tv_show_slug, tmdb_id, first_year)
+                    tv_show_id = -1
                 else:
                     cur.execute("""
-                        INSERT INTO series (title, slug, tmdb_id, imdb_id,
+                        INSERT INTO tv_shows (title, slug, tmdb_id, imdb_id,
                           first_air_year, description, cover_filename, added_at)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, now())
                         RETURNING id
                     """, (
                         tmdb_name[:255],
-                        series_slug,
+                        tv_show_slug,
                         tmdb_id,
                         show["imdb_id"],
                         first_year,
                         show["tmdb_overview"],
-                        series_slug,  # cover_filename = slug; actual WebP fetched on demand
+                        tv_show_slug,  # cover_filename = slug; actual WebP fetched on demand
                     ))
-                    series_id = cur.fetchone()[0]
+                    tv_show_id = cur.fetchone()[0]
                     conn.commit()
-                    log.info("Created series id=%d slug='%s' (tmdb=%d '%s')",
-                             series_id, series_slug, tmdb_id, tmdb_name)
-            stats["series_created"] += 1
+                    log.info("Created tv_show id=%d slug='%s' (tmdb=%d '%s')",
+                             tv_show_id, tv_show_slug, tmdb_id, tmdb_name)
+            stats["shows_created"] += 1
 
         if args.dry_run:
             continue
@@ -191,17 +190,17 @@ def main():
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO episodes (
-                          series_id, season, episode, slug,
+                        INSERT INTO tv_episodes (
+                          tv_show_id, season, episode, slug,
                           sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
                           sktorrent_added_at
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, now())
-                        ON CONFLICT (series_id, season, episode, sktorrent_video_id)
+                        ON CONFLICT (tv_show_id, season, episode, sktorrent_video_id)
                         DO NOTHING
                         RETURNING id
                     """, (
-                        series_id, season, ep, ep_slug,
+                        tv_show_id, season, ep, ep_slug,
                         v["sktorrent_video_id"], v["cdn"], qualities_str,
                     ))
                     row = cur.fetchone()
@@ -212,42 +211,40 @@ def main():
                 conn.commit()
             except psycopg2.errors.UniqueViolation as e:
                 conn.rollback()
-                # Slug collision — try with suffix
-                log.warning("Slug collision for series=%d s%de%d, adding suffix", series_id, season, ep)
+                log.warning("Slug collision for tv_show=%d s%de%d, adding suffix", tv_show_id, season, ep)
                 with conn.cursor() as cur:
-                    suffix_slug = unique_slug(cur, ep_slug, "episodes",
-                                              extra_where=f"AND series_id = {series_id}")
+                    suffix_slug = unique_slug(cur, ep_slug, "tv_episodes",
+                                              extra_where=f"AND tv_show_id = {tv_show_id}")
                     cur.execute("""
-                        INSERT INTO episodes (
-                          series_id, season, episode, slug,
+                        INSERT INTO tv_episodes (
+                          tv_show_id, season, episode, slug,
                           sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
                           sktorrent_added_at
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, now())
-                        ON CONFLICT (series_id, season, episode, sktorrent_video_id) DO NOTHING
+                        ON CONFLICT (tv_show_id, season, episode, sktorrent_video_id) DO NOTHING
                     """, (
-                        series_id, season, ep, suffix_slug,
+                        tv_show_id, season, ep, suffix_slug,
                         v["sktorrent_video_id"], v["cdn"], qualities_str,
                     ))
                 conn.commit()
                 stats["episodes_inserted"] += 1
 
-    # Update season_count / episode_count on all touched series
     if not args.dry_run:
         with conn.cursor() as cur:
             cur.execute("""
-                UPDATE series s SET
+                UPDATE tv_shows s SET
                   season_count = sub.s_count,
                   episode_count = sub.e_count
                 FROM (
-                  SELECT series_id,
+                  SELECT tv_show_id,
                          MAX(season) as s_count,
                          COUNT(*) as e_count
-                  FROM episodes
-                  WHERE series_id IN (SELECT id FROM series WHERE tmdb_id IN %s)
-                  GROUP BY series_id
+                  FROM tv_episodes
+                  WHERE tv_show_id IN (SELECT id FROM tv_shows WHERE tmdb_id IN %s)
+                  GROUP BY tv_show_id
                 ) sub
-                WHERE s.id = sub.series_id
+                WHERE s.id = sub.tv_show_id
             """, (tuple(s["tmdb_id"] for s in shows),))
             conn.commit()
 

@@ -22,6 +22,7 @@ mod orp;
 mod pools;
 mod regions;
 mod series;
+mod tv_porady;
 pub mod video_api;
 
 // Re-export all public handlers so main.rs doesn't need changes
@@ -36,6 +37,7 @@ pub use series::{
     episode_detail, series_episode_still, series_list, series_person_image, series_resolve,
     series_search,
 };
+pub use tv_porady::{tv_epizoda_detail, tv_porad_detail, tv_porady_list};
 pub use video_api::{
     library_delete, library_file, library_list, library_play, library_stream, video_cleanup,
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,
