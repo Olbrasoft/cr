@@ -272,6 +272,66 @@ async fn fetch_latest_episode_cards(
     Ok(rows)
 }
 
+#[derive(Serialize)]
+struct TvPoradSearchResult {
+    slug: String,
+    title: String,
+    year: Option<i16>,
+    imdb_rating: Option<f32>,
+    cover: bool,
+}
+
+#[derive(FromRow)]
+struct TvPoradSearchRow {
+    slug: String,
+    title: String,
+    first_air_year: Option<i16>,
+    imdb_rating: Option<f32>,
+    cover_filename: Option<String>,
+}
+
+/// GET /api/tv-porady/search?q=...
+pub async fn tv_porady_search(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> WebResult<Response> {
+    let q = params.get("q").map(|s| s.trim()).unwrap_or("");
+    if q.len() < 2 {
+        return Ok(axum::Json(Vec::<TvPoradSearchResult>::new()).into_response());
+    }
+    let pattern = format!("%{q}%");
+    let starts_pattern = format!("{q}%");
+    let rows = sqlx::query_as::<_, TvPoradSearchRow>(
+        "SELECT slug, title, first_air_year, imdb_rating, cover_filename \
+         FROM tv_shows \
+         WHERE title ILIKE $1 OR original_title ILIKE $1 \
+         ORDER BY \
+           CASE WHEN title ILIKE $2 THEN 0 \
+                WHEN title ILIKE $1 THEN 1 \
+                WHEN original_title ILIKE $2 THEN 2 \
+                ELSE 3 END, \
+           imdb_rating DESC NULLS LAST \
+         LIMIT 10",
+    )
+    .bind(&pattern)
+    .bind(&starts_pattern)
+    .fetch_all(&state.db)
+    .await?;
+
+    let results: Vec<TvPoradSearchResult> = rows
+        .into_iter()
+        .map(|r| TvPoradSearchResult {
+            slug: r.slug,
+            title: r.title,
+            year: r.first_air_year,
+            imdb_rating: r.imdb_rating,
+            cover: r.cover_filename.is_some(),
+        })
+        .collect();
+
+    Ok(axum::Json(results).into_response())
+}
+
 /// GET /tv-porady/{slug}/ — TV pořad detail with episode list.
 pub async fn tv_porad_detail(
     State(state): State<AppState>,

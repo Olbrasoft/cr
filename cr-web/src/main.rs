@@ -226,6 +226,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::series_search),
         )
         .route(
+            "/tv-porady/search",
+            axum::routing::get(handlers::tv_porady_search),
+        )
+        .route(
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
         )

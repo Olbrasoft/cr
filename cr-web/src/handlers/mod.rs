@@ -37,7 +37,7 @@ pub use series::{
     episode_detail, series_episode_still, series_list, series_person_image, series_resolve,
     series_search,
 };
-pub use tv_porady::{tv_epizoda_detail, tv_porad_detail, tv_porady_list};
+pub use tv_porady::{tv_epizoda_detail, tv_porad_detail, tv_porady_list, tv_porady_search};
 pub use video_api::{
     library_delete, library_file, library_list, library_play, library_stream, video_cleanup,
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,
