@@ -1,0 +1,668 @@
+{% extends "base.html" %}
+
+{% block title %}{{ show.title }} — {% match episode.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }} — TV pořad online{% endblock %}
+
+{% block meta_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }} — sledujte online{% endmatch %}{% endblock %}
+
+{% block og_title %}{{ show.title }} — {% match episode.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endblock %}
+{% block og_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} — S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endmatch %}{% endblock %}
+{% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/tv-porady/still/{{ f }}{% when None %}{% match show.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endmatch %}{% endblock %}
+{% block og_type %}video.episode{% endblock %}
+
+{% block leaflet %}{% endblock %}
+
+{% block head %}
+<link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+<meta property="og:url" content="https://ceskarepublika.wiki/tv-porady/{{ show.slug }}/{% match episode.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ episode.season }}x{{ episode.episode }}{% endmatch %}/">
+{% endblock %}
+
+{% block header_left %}
+<div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
+    <a href="/tv-porady/" style="display:flex;align-items:center;text-decoration:none;" alt="TV pořady" title="TV pořady">
+        <img src="/static/img/logo-filmy-a-serialy.svg?v=6" alt="Logo TV pořady" title="TV pořady" class="header-emblem">
+    </a>
+    <h1>{{ show.title }}</h1>
+</div>
+{% endblock %}
+
+{% block header_search %}
+<div class="search-container" id="header-search-box">
+    <input type="text" id="tv-search" class="search-input" placeholder="Hledat TV pořad..." autocomplete="off">
+    <button class="search-btn" onclick="doSearch()" alt="Hledat" title="Hledat">Hledat</button>
+    <div id="search-results" class="search-dropdown"></div>
+</div>
+{% endblock %}
+
+{% block header_right %}<div class="context-emblem"></div>{% endblock %}
+
+{% block content %}
+<main class="episode-detail-page">
+    <nav class="breadcrumb">
+        <a href="/" alt="Česká republika" title="Česká republika">Česká republika</a>
+        <span>›</span> <a href="/tv-porady/" alt="TV pořady" title="TV pořady">TV pořady</a>
+        <span>›</span> <a href="/tv-porady/{{ show.slug }}/" alt="{{ show.title }}" title="{{ show.title }}">{{ show.title }}</a>
+        <span>›</span> <span>S{{ episode.season }}E{{ episode.episode }}</span>
+    </nav>
+
+    <div class="player-section">
+        <div class="source-tabs" id="source-tabs">
+            <button class="source-tab active" id="tab-source-1" onclick="switchToSource1()">Zdroj 1</button>
+        </div>
+        <div class="player-panel">
+            <video id="tv-player" controls preload="metadata" width="100%"
+                   {% match episode.still_filename %}{% when Some with (f) %}poster="/tv-porady/still/{{ f }}"{% when None %}{% match show.cover_filename %}{% when Some with (c) %}poster="/tv-porady/{{ show.slug }}-large.webp"{% when None %}{% endmatch %}{% endmatch %}></video>
+            <div class="player-controls">
+                <div class="player-quality" id="source-quality"></div>
+                <div id="subtitle-controls" class="subtitle-controls" style="display:none;">
+                    <span class="sub-label">Velikost titulků</span>
+                    <select id="sub-size-select" class="sub-select" onchange="setSubSize(this.value)" title="Velikost titulků">
+                        <option value="14">14 px</option>
+                        <option value="16">16 px</option>
+                        <option value="18">18 px</option>
+                        <option value="20" selected>20 px</option>
+                        <option value="24">24 px</option>
+                        <option value="28">28 px</option>
+                        <option value="32">32 px</option>
+                        <option value="36">36 px</option>
+                        <option value="40">40 px</option>
+                    </select>
+                </div>
+                <div id="source-status" class="source-status"></div>
+            </div>
+        </div>
+        <div class="prehrajto-section" id="prehrajto-section" style="display:none;">
+            <h3>Další zdroje</h3>
+            <div id="prehrajto-results" class="prehrajto-results"></div>
+            <button type="button" id="prehrajto-more" class="prehrajto-more" style="display:none;" alt="Zobrazit další zdroje" title="Zobrazit další zdroje">Zobrazit další zdroje</button>
+        </div>
+    </div>
+
+    <div class="episode-info">
+        <h2>S{{ episode.season }}E{{ episode.episode }}{% match episode.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}</h2>
+        <div class="episode-meta">
+            {% match episode.air_date %}{% when Some with (d) %}<span class="meta-pill">📅 {{ d }}</span>{% when None %}{% endmatch %}
+            {% match episode.runtime %}{% when Some with (r) %}<span class="meta-pill">⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+        </div>
+        {% match episode.overview %}{% when Some with (o) %}<p class="episode-overview">{{ o }}</p>{% when None %}{% endmatch %}
+    </div>
+
+    <div class="episode-nav">
+        {% match prev_episode %}
+        {% when Some with (p) %}
+        <a class="nav-prev" href="/tv-porady/{{ show.slug }}/{% match p.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ p.season }}x{{ p.episode }}{% endmatch %}/"
+           alt="Předchozí: S{{ p.season }}E{{ p.episode }}" title="Předchozí: S{{ p.season }}E{{ p.episode }}{% match p.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
+           ← S{{ p.season }}E{{ p.episode }}
+        </a>
+        {% when None %}<span></span>{% endmatch %}
+        <a class="nav-back" href="/tv-porady/{{ show.slug }}/" alt="Zpět na seznam epizod" title="Zpět na seznam epizod">Všechny epizody</a>
+        {% match next_episode %}
+        {% when Some with (n) %}
+        <a class="nav-next" href="/tv-porady/{{ show.slug }}/{% match n.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ n.season }}x{{ n.episode }}{% endmatch %}/"
+           alt="Další: S{{ n.season }}E{{ n.episode }}" title="Další: S{{ n.season }}E{{ n.episode }}{% match n.episode_name %}{% when Some with (nm) %} — {{ nm }}{% when None %}{% endmatch %}">
+           S{{ n.season }}E{{ n.episode }} →
+        </a>
+        {% when None %}<span></span>{% endmatch %}
+    </div>
+</main>
+
+<style>
+.episode-detail-page { max-width: 960px; margin: 0 auto; padding: 1rem; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+
+/* Search dropdown */
+#header-search-box { position: relative; overflow: visible !important; }
+.search-dropdown { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 200; max-height: 420px; overflow-y: auto; }
+.search-dropdown.open { display: block; }
+.search-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.8rem; text-decoration: none; color: inherit; border-bottom: 1px solid #f0f0f0; }
+.search-item:hover { background: #f5f5f5; }
+.search-item img { width: 40px; height: 60px; object-fit: cover; border-radius: 4px; }
+.search-item .si-placeholder { width: 40px; height: 60px; background: #eee; border-radius: 4px; }
+.search-item .si-info { flex: 1; min-width: 0; }
+.search-item .si-title { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-item .si-meta { font-size: 0.8rem; color: #888; }
+
+/* Player */
+.player-section { margin-bottom: 1.5rem; }
+.source-tabs { display: flex; gap: 0.3rem; background: #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 10px 10px 0 0; }
+.source-tab { background: #333; color: #ccc; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; font-size: 0.8rem; cursor: pointer; transition: background 0.15s; }
+.source-tab:hover { background: #444; }
+.source-tab.active { background: #D7141A; color: white; }
+.player-panel { background: #000; border-radius: 0 0 10px 10px; overflow: hidden; }
+.player-panel video { display: block; width: 100%; max-height: 540px; background: #000; }
+.player-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.4rem 0.6rem; background: #111; }
+.player-quality { display: flex; gap: 0.3rem; }
+.quality-btn { background: #333; color: #ccc; border: none; padding: 0.25rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+.quality-btn.active { background: #D7141A; color: white; }
+.subtitle-controls { display: flex; align-items: center; gap: 0.4rem; margin-left: 0.3rem; }
+.sub-label { color: #bbb; font-size: 0.78rem; }
+.sub-select { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.78rem; cursor: pointer; }
+.source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
+video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif; }
+
+/* Additional sources list */
+.prehrajto-section { margin-top: 1rem; padding: 0.8rem; background: #f8f8f8; border-radius: 8px; }
+.prehrajto-section h3 { font-size: 1rem; margin: 0 0 0.6rem; color: #555; }
+.prehrajto-results { display: flex; flex-direction: column; gap: 0.4rem; }
+.prehrajto-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem; background: white; border: 1px solid #eee; border-radius: 6px; cursor: pointer; transition: background 0.15s, border-color 0.15s; position: relative; width: 100%; text-align: left; font: inherit; color: inherit; }
+.prehrajto-item:hover { background: #f0f0f0; }
+.prehrajto-item.loading { opacity: 0.5; cursor: wait; }
+.prehrajto-item.active { background: #C5A059; border-color: #C5A059; color: white; }
+.prehrajto-item.active .pt-title { color: white; }
+.prehrajto-item .play-indicator { display: none; flex-shrink: 0; width: 22px; height: 22px; align-items: center; justify-content: center; background: rgba(255,255,255,0.2); border-radius: 50%; color: white; font-size: 0.7rem; }
+.prehrajto-item.active .play-indicator { display: inline-flex; }
+.prehrajto-item img { width: 60px; height: 40px; object-fit: cover; border-radius: 3px; }
+.prehrajto-more { margin-top: 0.5rem; width: 100%; padding: 0.5rem 0.8rem; background: #f1f5f9; border: 1px solid #ddd; border-radius: 6px; color: #11457E; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+.prehrajto-more:hover { background: #e2e8f0; }
+.pt-info { flex: 1; min-width: 0; }
+.pt-title { font-size: 0.85rem; font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+.pt-loading { color: #888; font-size: 0.85rem; padding: 0.5rem; text-align: center; }
+.cc-badge-sm { display: inline-block; padding: 0.1rem 0.4rem; margin-left: 0.3rem; background: #4ade80; color: #003c1c; border-radius: 3px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em; }
+.prehrajto-item.active .cc-badge-sm { background: rgba(255,255,255,0.25); color: white; }
+.pt-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.7rem; font-weight: 700; margin-left: 0.3rem; }
+.pt-badge.direct { background: #27ae60; color: white; }
+.pt-badge.proxy { background: #f39c12; color: white; }
+.pt-badge.quality-hd { background: #1e40af; color: white; }
+.pt-badge.quality-sd { background: #92400e; color: white; }
+.pt-badge.quality-low { background: #6b7280; color: white; }
+.pt-badge-dur { display: inline-block; padding: 0.1rem 0.4rem; margin-left: 0.3rem; font-size: 0.7rem; color: #888; }
+.prehrajto-item.active .pt-badge { background: rgba(255,255,255,0.25); color: white; }
+.prehrajto-item.active .pt-badge-dur { color: rgba(255,255,255,0.85); }
+
+/* Episode info */
+.episode-info { margin: 1.5rem 0; }
+.episode-info h2 { margin: 0 0 0.5rem; font-size: 1.3rem; }
+.episode-meta { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+.meta-pill { padding: 0.2rem 0.6rem; background: #f1f5f9; border-radius: 999px; font-size: 0.82rem; color: #555; }
+.episode-overview { line-height: 1.6; color: #333; margin-bottom: 1rem; }
+.crew-row { margin-bottom: 0.4rem; font-size: 0.9rem; }
+.crew-label { font-weight: 600; color: #555; margin-right: 0.3rem; }
+.crew-name { display: inline-block; padding: 0.15rem 0.6rem; background: #f1f5f9; color: #11457E; border-radius: 999px; font-size: 0.82rem; margin: 0 0.2rem 0.2rem 0; }
+
+/* Navigation */
+.episode-nav { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.5rem; align-items: center; margin: 1.5rem 0; }
+.episode-nav a { padding: 0.5rem 0.9rem; border-radius: 6px; background: #f1f5f9; color: #11457E; text-decoration: none; font-size: 0.85rem; font-weight: 600; transition: background 0.15s, color 0.15s; }
+.episode-nav a:hover { background: #11457E; color: white; }
+.episode-nav .nav-prev { text-align: left; justify-self: start; }
+.episode-nav .nav-next { text-align: right; justify-self: end; }
+</style>
+
+<script>
+var showTitle = "{{ show.title }}";
+var initialSeason = {{ episode.season }};
+var initialEpisode = {{ episode.episode }};
+var initialVideoId = {{ episode.sktorrent_video_id.unwrap_or(0) }};
+var initialCdn = {{ episode.sktorrent_cdn.unwrap_or(0) }};
+var initialQualities = "{% match episode.sktorrent_qualities %}{% when Some with (q) %}{{ q }}{% when None %}480p{% endmatch %}".split(",").filter(function(q) { return q.match(/^\d+p$/); });
+// Cached Přehraj.to URL for this episode (stable across searches).
+// Used as primary Zdroj 1 when SK Torrent is not available.
+var prehrajtoUrl = {% match episode.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
+var prehrajtoHasDub  = {{ episode.prehrajto_has_dub }};
+var prehrajtoHasSubs = {{ episode.prehrajto_has_subs }};
+
+// State — same shape as series_detail.html player
+var state = { source1: null, source2: null, activeSource: 1, activeEpisodeBtn: null };
+var resolvedSources = {};
+var currentPrehrajto = { all: [], visibleCount: 3 };
+var _subPoll = null;
+
+function initPlayer() {
+    if (initialVideoId) {
+        // Primary: SK Torrent (has quality options)
+        var qualities = initialQualities.length ? initialQualities : ['480p'];
+        var sources = qualities.map(function(q) {
+            return {
+                url: 'https://online' + initialCdn + '.sktorrent.eu/media/videos//h264/' + initialVideoId + '_' + q + '.mp4',
+                quality: q,
+                res: parseInt(q, 10),
+            };
+        });
+        sources.sort(function(a, b) { return b.res - a.res; });
+        state.source1 = {
+            episode: { season: initialSeason, episode: initialEpisode },
+            sources: sources,
+            currentIndex: 0,
+            videoId: initialVideoId,
+        };
+        switchToSource1();
+    } else if (prehrajtoUrl) {
+        // Fallback: cached Přehraj.to URL. Resolve on the fly, then play.
+        document.getElementById('source-status').textContent = 'Načítání Přehraj.to...';
+        fetch('/api/movies/video-url?url=' + encodeURIComponent(prehrajtoUrl))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success || !data.video_url) {
+                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+                    return;
+                }
+                var url = data.video_url.replace(/&amp;/g, '&');
+                var isHls = url.indexOf('.m3u8') !== -1;
+                state.source1 = {
+                    episode: { season: initialSeason, episode: initialEpisode },
+                    prehrajto: true,
+                    url: url,
+                    isHls: isHls,
+                    subtitles: data.subtitles || [],
+                };
+                switchToSource1Prehrajto();
+            })
+            .catch(function() {
+                document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+            });
+    } else {
+        document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+    }
+    loadPrehrajtoForEpisode(initialSeason, initialEpisode);
+}
+
+/* Variant of switchToSource1 for cached Přehraj.to primary source */
+function switchToSource1Prehrajto() {
+    if (!state.source1 || !state.source1.prehrajto) return;
+    state.activeSource = 1;
+    setActiveTab(1);
+    var qualDiv = document.getElementById('source-quality');
+    qualDiv.innerHTML = '';
+    qualDiv.style.display = 'none';
+    playUrl(state.source1.url, state.source1.isHls ? 'hls' : 'mp4');
+    document.getElementById('source-status').textContent = 'S' + state.source1.episode.season + 'E' + state.source1.episode.episode;
+    applySubtitles(state.source1.subtitles || []);
+    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
+}
+
+function switchToSource1() {
+    if (!state.source1) return;
+    if (state.source1.prehrajto) {
+        switchToSource1Prehrajto();
+        return;
+    }
+    state.activeSource = 1;
+    setActiveTab(1);
+    var subCtrl = document.getElementById('subtitle-controls');
+    if (subCtrl) subCtrl.style.display = 'none';
+    var player = document.getElementById('tv-player');
+    player.querySelectorAll('track').forEach(function(t) { t.remove(); });
+    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
+    renderQualityButtons1();
+    playQuality1(state.source1.currentIndex, true);
+}
+
+function renderQualityButtons1() {
+    var qualDiv = document.getElementById('source-quality');
+    qualDiv.innerHTML = '';
+    state.source1.sources.forEach(function(s, i) {
+        var qBtn = document.createElement('button');
+        qBtn.className = 'quality-btn' + (i === state.source1.currentIndex ? ' active' : '');
+        qBtn.textContent = s.quality;
+        qBtn.onclick = function() { playQuality1(i, true); };
+        qualDiv.appendChild(qBtn);
+    });
+    qualDiv.style.display = '';
+}
+
+function playQuality1(index, doPlay) {
+    if (!state.source1) return;
+    var src = state.source1.sources[index];
+    state.source1.currentIndex = index;
+    var player = document.getElementById('tv-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    player.src = src.url;
+    player.dataset.fallbackVideoId = state.source1.videoId;
+    document.querySelectorAll('#source-quality .quality-btn').forEach(function(b, i) {
+        b.classList.toggle('active', i === index);
+    });
+    document.getElementById('source-status').textContent = 'S' + state.source1.episode.season + 'E' + state.source1.episode.episode;
+    if (doPlay) {
+        player.play().catch(function() {
+            // Browser blocked autoplay with sound on fresh page load — fall back
+            // to muted autoplay, then unmute on the very next user interaction
+            // (click anywhere, keypress, etc.) so the viewer gets sound as soon
+            // as they touch the page instead of hunting for the volume icon.
+            player.muted = true;
+            player.play().catch(function() {});
+            unmuteOnFirstInteraction(player);
+        });
+    }
+}
+
+function unmuteOnFirstInteraction(player) {
+    if (player._unmuteArmed) return;
+    player._unmuteArmed = true;
+    var handler = function() {
+        if (player.muted) {
+            player.muted = false;
+            if (player.volume === 0) player.volume = 1;
+        }
+        document.removeEventListener('click', handler, true);
+        document.removeEventListener('keydown', handler, true);
+        document.removeEventListener('touchstart', handler, true);
+        player._unmuteArmed = false;
+    };
+    document.addEventListener('click', handler, true);
+    document.addEventListener('keydown', handler, true);
+    document.addEventListener('touchstart', handler, true);
+}
+
+function switchToSource2() {
+    if (!state.source2) return;
+    state.activeSource = 2;
+    setActiveTab(2);
+    var qualDiv = document.getElementById('source-quality');
+    qualDiv.innerHTML = '';
+    qualDiv.style.display = 'none';
+    playUrl(state.source2.url, state.source2.isHls ? 'hls' : 'mp4');
+    document.getElementById('source-status').textContent = state.source2.label || 'Externí zdroj';
+    applySubtitles(state.source2.subtitles || []);
+    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
+    if (state.source2.activeItem) state.source2.activeItem.classList.add('active');
+}
+
+function setActiveTab(n) {
+    var t1 = document.getElementById('tab-source-1');
+    var t2 = document.getElementById('tab-source-2');
+    if (t1) t1.classList.toggle('active', n === 1);
+    if (t2) t2.classList.toggle('active', n === 2);
+}
+
+function ensureSource2Tab() {
+    if (document.getElementById('tab-source-2')) return;
+    var tabs = document.getElementById('source-tabs');
+    var btn = document.createElement('button');
+    btn.className = 'source-tab';
+    btn.id = 'tab-source-2';
+    btn.textContent = 'Zdroj 2';
+    btn.onclick = switchToSource2;
+    tabs.appendChild(btn);
+}
+
+function loadPrehrajtoForEpisode(season, episode) {
+    var section = document.getElementById('prehrajto-section');
+    var container = document.getElementById('prehrajto-results');
+    if (!section || !container) return;
+    section.style.display = '';
+    container.innerHTML = '<div class="pt-loading">Hledám další zdroje...</div>';
+    var sStr = season < 10 ? '0' + season : '' + season;
+    var eStr = episode < 10 ? '0' + episode : '' + episode;
+    var query = showTitle + ' S' + sStr + 'E' + eStr;
+
+    fetch('/api/movies/search?q=' + encodeURIComponent(query))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            container.innerHTML = '';
+            var moreBtn = document.getElementById('prehrajto-more');
+            if (moreBtn) moreBtn.style.display = 'none';
+            if (!data.success || !data.movies || !data.movies.length) {
+                container.innerHTML = '<div class="pt-loading">Nic nenalezeno</div>';
+                return;
+            }
+            currentPrehrajto.all = data.movies.slice(0, 15);
+            currentPrehrajto.visibleCount = 3;
+            renderPrehrajto();
+            if (currentPrehrajto.all.length > currentPrehrajto.visibleCount && moreBtn) {
+                moreBtn.style.display = '';
+                moreBtn.textContent = 'Zobrazit další zdroje (' + (currentPrehrajto.all.length - currentPrehrajto.visibleCount) + ')';
+                moreBtn.onclick = function() {
+                    currentPrehrajto.visibleCount = currentPrehrajto.all.length;
+                    renderPrehrajto();
+                    moreBtn.style.display = 'none';
+                    validatePrehrajto(currentPrehrajto.all);
+                };
+            }
+            validatePrehrajto(currentPrehrajto.all.slice(0, currentPrehrajto.visibleCount));
+        })
+        .catch(function() { container.innerHTML = '<div class="pt-loading">Chyba při hledání</div>'; });
+}
+
+function buildPrehrajtoItem(movie) {
+    var item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'prehrajto-item';
+    item.dataset.movieUrl = movie.url;
+    var cached = resolvedSources[movie.url];
+    item.dataset.height = cached && cached.height ? cached.height : 0;
+    var year = movie.year ? ' (' + movie.year + ')' : '';
+    var tooltip = (movie.title || 'Další zdroj') + year;
+    item.title = tooltip;
+    item.setAttribute('alt', tooltip);
+    item.onclick = function() { playPrehrajtoEpisode(movie, item); };
+    var thumb = movie.thumbnail
+        ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="' + (movie.title || 'Náhled') + '" title="' + (movie.title || '') + '">'
+        : '';
+    var badges = '';
+    if (cached) {
+        badges += cached.isDirect
+            ? '<span class="pt-badge direct" title="Přímý zdroj">Přímý</span>'
+            : '<span class="pt-badge proxy" title="Přes proxy">Proxy</span>';
+        // Real video resolution from prehraj.to microdata (not the filename —
+        // "1080p" in a candidate title is often a lie). Same logic as film_detail.
+        if (cached.height) {
+            var qCls = cached.height >= 1080 ? 'quality-hd' : (cached.height >= 720 ? 'quality-sd' : 'quality-low');
+            badges += '<span class="pt-badge ' + qCls + '" title="Skutečné rozlišení streamu">' + cached.height + 'p</span>';
+        }
+        if (cached.subtitles && cached.subtitles.length) badges += '<span class="cc-badge-sm" title="České titulky dostupné">CC</span>';
+        if (cached.duration_sec) {
+            var mm = Math.round(cached.duration_sec / 60);
+            badges += '<span class="pt-badge-dur" title="Délka videa">' + mm + ' min</span>';
+        }
+    }
+    item.innerHTML = thumb
+        + '<div class="pt-info"><span class="pt-title">' + (movie.title || '') + year + badges + '</span></div>'
+        + '<span class="play-indicator">▶</span>';
+    return item;
+}
+
+function renderPrehrajto() {
+    var container = document.getElementById('prehrajto-results');
+    if (!container) return;
+    var all = currentPrehrajto.all.slice();
+    // Primary key: direct > proxy > not-yet-validated.
+    // Secondary key (within each group): height DESC so 1080p > 720p > 480p > 304p.
+    all.sort(function(a, b) {
+        var ra = resolvedSources[a.url]; var rb = resolvedSources[b.url];
+        var ga = ra ? (ra.isDirect ? 0 : 1) : 2;
+        var gb = rb ? (rb.isDirect ? 0 : 1) : 2;
+        if (ga !== gb) return ga - gb;
+        var ha = ra && ra.height ? ra.height : 0;
+        var hb = rb && rb.height ? rb.height : 0;
+        return hb - ha;
+    });
+    container.innerHTML = '';
+    all.slice(0, currentPrehrajto.visibleCount).forEach(function(movie) {
+        container.appendChild(buildPrehrajtoItem(movie));
+    });
+    if (state.source2 && state.source2.movie) {
+        var it = container.querySelector('.prehrajto-item[data-movie-url="' + state.source2.movie.url.replace(/"/g, '\\"') + '"]');
+        if (it) { it.classList.add('active'); state.source2.activeItem = it; }
+    }
+}
+
+function validatePrehrajto(movies) {
+    movies.forEach(function(movie) {
+        if (resolvedSources[movie.url]) return;
+        fetch('/api/movies/validate?url=' + encodeURIComponent(movie.url))
+            .then(function(r) { return r.json(); })
+            .then(function(vdata) {
+                var isDirect = !!vdata.valid;
+                var height = vdata.height || null;
+                var duration_sec = vdata.duration_sec || null;
+                return fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (!data.success || !data.video_url) return;
+                        resolvedSources[movie.url] = {
+                            video_url: data.video_url.replace(/&amp;/g, '&'),
+                            subtitles: data.subtitles || [],
+                            isDirect: isDirect,
+                            height: height,
+                            duration_sec: duration_sec,
+                        };
+                        renderPrehrajto();
+                    });
+            })
+            .catch(function() {});
+    });
+}
+
+function playPrehrajtoEpisode(movie, item) {
+    var player = document.getElementById('tv-player');
+    var status = document.getElementById('source-status');
+    if (!player) return;
+    document.getElementById('player-section') && document.querySelector('.player-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    function useResolved(resolved) {
+        var url = resolved.video_url;
+        var isHls = url.indexOf('.m3u8') !== -1;
+        state.source2 = {
+            movie: movie, url: url, isHls: isHls,
+            subtitles: resolved.subtitles || [], activeItem: item, label: movie.title || 'Externí zdroj',
+        };
+        ensureSource2Tab();
+        switchToSource2();
+    }
+    var cached = resolvedSources[movie.url];
+    if (cached) { useResolved(cached); return; }
+
+    item.classList.add('loading');
+    if (status) status.textContent = 'Načítání...';
+    fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            item.classList.remove('loading');
+            if (!data.success || !data.video_url) { if (status) status.textContent = 'Zdroj nedostupný'; return; }
+            var resolved = { video_url: data.video_url.replace(/&amp;/g, '&'), subtitles: data.subtitles || [] };
+            resolvedSources[movie.url] = resolved;
+            useResolved(resolved);
+        })
+        .catch(function(e) { item.classList.remove('loading'); if (status) status.textContent = 'Chyba: ' + e.message; });
+}
+
+function playUrl(url, format) {
+    var player = document.getElementById('tv-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    if (format === 'hls' && window.Hls && Hls.isSupported()) {
+        var hls = new Hls(); hls.loadSource(url); hls.attachMedia(player);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() { player.play().catch(function(){}); });
+        window._hls = hls;
+    } else {
+        player.src = url; player.play().catch(function(){});
+    }
+}
+
+function applySubtitles(subtitles) {
+    var player = document.getElementById('tv-player');
+    player.querySelectorAll('track').forEach(function(t) { t.remove(); });
+    if (!subtitles || !subtitles.length) {
+        var c0 = document.getElementById('subtitle-controls');
+        if (c0) c0.style.display = 'none';
+        if (_subPoll) { clearInterval(_subPoll); _subPoll = null; }
+        return;
+    }
+    subtitles.forEach(function(sub) {
+        var track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.label || (sub.lang || '').toUpperCase();
+        track.srclang = sub.lang || '';
+        track.src = '/api/movies/subtitle?url=' + encodeURIComponent(sub.url);
+        if (sub.lang === 'cze' || sub.lang === 'cs') track.default = true;
+        player.appendChild(track);
+    });
+    var tt = player.textTracks;
+    var cz = false;
+    for (var i = 0; i < tt.length; i++) {
+        if (!cz && (tt[i].language === 'cze' || tt[i].language === 'cs')) { tt[i].mode = 'showing'; cz = true; }
+        else tt[i].mode = 'hidden';
+    }
+    if (!cz && tt.length > 0) tt[0].mode = 'showing';
+    setSubSize(document.getElementById('sub-size-select').value || 20);
+    var controls = document.getElementById('subtitle-controls');
+    if (controls) {
+        function update() {
+            var any = false;
+            for (var j = 0; j < tt.length; j++) if (tt[j].mode === 'showing') { any = true; break; }
+            controls.style.display = any ? 'flex' : 'none';
+        }
+        for (var k = 0; k < tt.length; k++) tt[k].addEventListener('cuechange', update);
+        if (_subPoll) clearInterval(_subPoll);
+        _subPoll = setInterval(update, 1000);
+        update();
+    }
+}
+
+function setSubSize(px) {
+    var style = document.getElementById('sub-cue-style');
+    if (!style) { style = document.createElement('style'); style.id = 'sub-cue-style'; document.head.appendChild(style); }
+    style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
+}
+
+/* SK Torrent CDN fallback */
+(function() {
+    var player = document.getElementById('tv-player');
+    var tried = false;
+    player.addEventListener('error', function() {
+        if (tried || state.activeSource !== 1) return;
+        var vid = player.dataset.fallbackVideoId;
+        if (!vid || !player.src || player.src.indexOf('sktorrent.eu') === -1) return;
+        tried = true;
+        document.getElementById('source-status').textContent = 'Hledám aktuální zdroj...';
+        fetch('/api/films/sktorrent-resolve?video_id=' + vid)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.sources || !data.sources.length) {
+                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+                    return;
+                }
+                var fresh = data.sources.map(function(s) { return { url: s.url, quality: s.quality, res: s.res }; });
+                fresh.sort(function(a, b) { return b.res - a.res; });
+                state.source1.sources = fresh;
+                state.source1.currentIndex = 0;
+                renderQualityButtons1();
+                playQuality1(0, true);
+                setTimeout(function() { tried = false; }, 5000);
+            })
+            .catch(function() { document.getElementById('source-status').textContent = 'Chyba obnovy zdroje'; });
+    }, true);
+})();
+
+/* Header search autocomplete */
+function doSearch() {
+    var q = document.getElementById('tv-search').value.trim();
+    if (q.length >= 2) window.location = '/tv-porady/?q=' + encodeURIComponent(q);
+}
+(function() {
+    var input = document.getElementById('tv-search');
+    var dd = document.getElementById('search-results');
+    var timer = null;
+    if (!input || !dd) return;
+    input.addEventListener('input', function() {
+        clearTimeout(timer);
+        var q = this.value.trim();
+        if (q.length < 2) { dd.classList.remove('open'); return; }
+        timer = setTimeout(function() {
+            fetch('/api/tv-porady/search?q=' + encodeURIComponent(q))
+                .then(function(r) { return r.json(); })
+                .then(function(results) {
+                    if (!results.length) { dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>'; }
+                    else {
+                        dd.innerHTML = results.map(function(r) {
+                            var cover = r.cover
+                                ? '<img src="/tv-porady/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
+                                : '<div class="si-placeholder"></div>';
+                            var yr = r.year ? ' (' + r.year + ')' : '';
+                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+                            return '<a href="/tv-porady/' + r.slug + '/" class="search-item" alt="' + r.title + '" title="' + r.title + '">'
+                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
+                                + '<span class="si-meta">' + rat + '</span></div></a>';
+                        }).join('');
+                    }
+                    dd.classList.add('open');
+                })
+                .catch(function() { dd.classList.remove('open'); });
+        }, 200);
+    });
+    document.addEventListener('click', function(e) { if (!e.target.closest('#header-search-box')) dd.classList.remove('open'); });
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+})();
+
+initPlayer();
+</script>
+{% endblock %}

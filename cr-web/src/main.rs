@@ -314,6 +314,24 @@ async fn main() -> Result<()> {
             "/serialy-online/{slug}/",
             axum::routing::get(handlers::series_resolve),
         )
+        .route("/tv-porady", axum::routing::get(handlers::tv_porady_list))
+        .route("/tv-porady/", axum::routing::get(handlers::tv_porady_list))
+        .route(
+            "/tv-porady/{slug}/{ep}",
+            axum::routing::get(handlers::tv_epizoda_detail),
+        )
+        .route(
+            "/tv-porady/{slug}/{ep}/",
+            axum::routing::get(handlers::tv_epizoda_detail),
+        )
+        .route(
+            "/tv-porady/{slug}",
+            axum::routing::get(handlers::tv_porad_detail),
+        )
+        .route(
+            "/tv-porady/{slug}/",
+            axum::routing::get(handlers::tv_porad_detail),
+        )
         .route(
             "/filmy-a-serialy",
             axum::routing::get(handlers::filmy_serialy),

@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+
+{% block title %}{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — TV pořad online{% endblock %}
+
+{% block meta_description %}{% match show.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} — sledujte TV pořad online na ceskarepublika.wiki{% endmatch %}{% endblock %}
+
+{% block og_title %}{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — TV pořad online{% endblock %}
+{% block og_description %}{% match show.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} — TV pořad online zdarma{% endmatch %}{% endblock %}
+{% block og_image %}{% match show.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+{% block og_type %}video.tv_show{% endblock %}
+
+{% block leaflet %}{% endblock %}
+
+{% block head %}
+<link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
+<meta property="og:url" content="https://ceskarepublika.wiki/tv-porady/{{ show.slug }}/">
+{% endblock %}
+
+{% block header_left %}
+<div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
+    <a href="/tv-porady/" style="display:flex;align-items:center;text-decoration:none;" alt="TV pořady" title="TV pořady">
+        <img src="/static/img/logo-filmy-a-serialy.svg?v=6" alt="Logo TV pořady" title="TV pořady" class="header-emblem">
+    </a>
+    <h1>{{ show.title }}</h1>
+</div>
+{% endblock %}
+
+{% block header_search %}
+<div class="search-container" id="header-search-box">
+    <input type="text" id="tv-search" class="search-input" placeholder="Hledat TV pořad..." autocomplete="off">
+    <button class="search-btn" onclick="doSearch()" alt="Hledat" title="Hledat">Hledat</button>
+</div>
+{% endblock %}
+
+{% block header_right %}<div class="context-emblem"></div>{% endblock %}
+
+{% block content %}
+<main class="series-detail-page">
+    <nav class="breadcrumb">
+        <a href="/" alt="Česká republika" title="Česká republika">Česká republika</a>
+        <span>›</span> <a href="/tv-porady/" alt="TV pořady" title="TV pořady">TV pořady</a>
+        <span>›</span> <span>{{ show.title }}</span>
+    </nav>
+
+    <div class="film-hero">
+        <div class="film-cover">
+            {% match show.cover_filename %}
+            {% when Some with (c) %}
+            <div class="cover-zoom" data-gallery-open="show" data-index="0"
+                 data-gallery-photos="[&quot;/tv-porady/{{ show.slug }}-large.webp&quot;]">
+                <img src="/tv-porady/{{ show.slug }}.webp" alt="{{ show.title }}" title="{{ show.title }}" width="200" height="300">
+            </div>
+            {% when None %}
+            <div class="no-cover">{{ show.title }}</div>
+            {% endmatch %}
+        </div>
+        <div class="film-meta">
+            <h2>{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} <span class="year">({{ y }}{% match show.last_air_year %}{% when Some with (ly) %}{% if ly != y %}–{{ ly }}{% endif %}{% when None %}{% endmatch %})</span>{% when None %}{% endmatch %}</h2>
+            {% match show.original_title %}
+            {% when Some with (ot) %}{% if ot.as_str() != show.title.as_str() %}<p class="original-title">{{ ot }}</p>{% endif %}
+            {% when None %}{% endmatch %}
+            <div class="meta-row">
+                {% match show.imdb_rating %}
+                {% when Some with (r) %}<span class="meta-badge imdb" title="IMDB hodnocení">IMDB {{ r }}</span>
+                {% when None %}{% endmatch %}
+                {% match show.csfd_rating %}
+                {% when Some with (r) %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>
+                {% when None %}{% endmatch %}
+            </div>
+            {% match show.description %}
+            {% when Some with (d) %}<div class="film-description"><p>{{ d }}</p></div>
+            {% when None %}{% endmatch %}
+        </div>
+    </div>
+
+    <div class="seasons-section">
+        <div class="seasons-header">
+            <h3>Epizody</h3>
+            <div class="films-toolbar">
+                <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleEpView()" alt="Přepnout zobrazení" title="Přepnout zobrazení mřížka / seznam">
+                    <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
+                    <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
+                </button>
+            </div>
+        </div>
+
+        {% for season in seasons %}
+        <div class="season-block collapsed" data-season="{{ season.number }}">
+            <button class="season-title season-toggle" type="button" onclick="toggleSeason({{ season.number }})"
+                    alt="Sbalit nebo rozbalit sérii" title="Sbalit nebo rozbalit sérii">
+                <span class="chev">▾</span>
+                {% if season.number == 0 %}Speciály{% else %}{{ season.number }}. série{% endif %}
+                <span class="ep-count">({{ season.episodes.len() }} epizod)</span>
+            </button>
+            <div class="episode-grid" id="season-{{ season.number }}">
+                {% for ep in season.episodes %}
+                <a class="episode-card" href="/tv-porady/{{ show.slug }}/{% match ep.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/"
+                   alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
+                   title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
+                    <div class="ep-head">
+                        <span class="ep-badge">S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
+                        <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }}{% else %}Epizoda {{ ep.episode }}{% endif %}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
+                    </div>
+                    <div class="ep-meta">
+                        {% match ep.air_date %}{% when Some with (d) %}<span>📅 {{ d }}</span>{% when None %}{% endmatch %}
+                        {% match ep.runtime %}{% when Some with (r) %}<span>⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+                    </div>
+                    {% match ep.overview %}{% when Some with (o) %}<p class="ep-overview">{{ o }}</p>{% when None %}{% endmatch %}
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</main>
+
+<style>
+.series-detail-page { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+
+.film-hero { display: flex; gap: 1.5rem; margin-bottom: 1.5rem; }
+@media (max-width: 600px) { .film-hero { flex-direction: column; align-items: center; } }
+.film-cover { flex-shrink: 0; width: 200px; }
+.film-cover img { width: 200px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.2); display: block; }
+.cover-zoom { cursor: zoom-in; display: inline-block; border-radius: 8px; overflow: hidden; }
+.no-cover { width: 200px; height: 300px; background: #222; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #888; padding: 1rem; text-align: center; }
+.film-meta h2 { margin: 0 0 0.4rem; font-size: 1.5rem; }
+.film-meta .year { color: #888; font-weight: 400; }
+.original-title { color: #888; font-style: italic; margin: 0 0 0.6rem; font-size: 0.9rem; }
+.meta-row { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
+.meta-badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.meta-badge.imdb { background: #f5c518; color: #000; }
+.meta-badge.csfd { background: #ba0305; color: #fff; }
+.film-description { line-height: 1.6; color: #333; }
+
+.seasons-header { display: flex; justify-content: space-between; align-items: center; margin: 1rem 0 0.8rem; }
+.seasons-section h3 { font-size: 1.2rem; margin: 0; color: #333; }
+.films-toolbar { display: flex; gap: 0.4rem; }
+.view-btn { background: #f1f5f9; color: #555; border: none; padding: 0.4rem 0.7rem; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; transition: background 0.15s; }
+.view-btn:hover { background: #e2e8f0; }
+.season-block { margin-bottom: 1.5rem; }
+.season-toggle { display: flex; align-items: center; gap: 0.5rem; width: 100%; background: #f1f5f9; border: none; padding: 0.6rem 0.9rem; border-radius: 8px; font-size: 1rem; font-weight: 600; color: #11457E; cursor: pointer; text-align: left; margin: 0.8rem 0 0.6rem; transition: background 0.15s; }
+.season-toggle:hover { background: #e2e8f0; }
+.season-toggle .chev { display: inline-block; transition: transform 0.15s; font-size: 0.8rem; }
+.season-block.collapsed .season-toggle .chev { transform: rotate(-90deg); }
+.season-block.collapsed .episode-grid { display: none; }
+.season-toggle .ep-count { color: #888; font-weight: 400; font-size: 0.85rem; margin-left: auto; }
+
+.episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.5rem; }
+.episode-card { display: block; background: white; border-radius: 8px; padding: 0.7rem 0.9rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-decoration: none; color: inherit; transition: transform 0.15s, box-shadow 0.15s; }
+.episode-card:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.12); }
+.ep-head { display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.25rem; }
+.ep-badge { flex-shrink: 0; background: #f1f5f9; color: #11457E; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; transition: background 0.15s, color 0.15s; }
+.episode-card:hover .ep-badge { background: #11457E; color: white; }
+.ep-title { margin: 0; font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.ep-meta { display: flex; gap: 0.6rem; font-size: 0.75rem; color: #888; flex-wrap: wrap; }
+.ep-overview { display: none; font-size: 0.82rem; color: #555; margin: 0.4rem 0 0; line-height: 1.4; }
+
+.episode-grid.list-view { grid-template-columns: 1fr; }
+.episode-grid.list-view .episode-card { padding: 0.8rem 1rem; }
+.episode-grid.list-view .ep-title { white-space: normal; }
+.episode-grid.list-view .ep-overview { display: block; }
+</style>
+
+<script>
+function toggleSeason(num) {
+    var block = document.querySelector('.season-block[data-season="' + num + '"]');
+    if (!block) return;
+    block.classList.toggle('collapsed');
+    var key = 'tvSeasonsCollapsed:' + location.pathname;
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+    state[num] = block.classList.contains('collapsed');
+    localStorage.setItem(key, JSON.stringify(state));
+}
+(function() {
+    var key = 'tvSeasonsCollapsed:' + location.pathname;
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+    Object.keys(state).forEach(function(num) {
+        var block = document.querySelector('.season-block[data-season="' + num + '"]');
+        if (!block) return;
+        if (state[num] === false) block.classList.remove('collapsed');
+    });
+})();
+
+function setEpView(mode) {
+    document.querySelectorAll('.episode-grid').forEach(function(g) {
+        g.classList.toggle('list-view', mode === 'list');
+    });
+    var iconGrid = document.querySelector('.view-icon-grid');
+    var iconList = document.querySelector('.view-icon-list');
+    if (iconGrid) iconGrid.style.display = (mode === 'list') ? 'none' : '';
+    if (iconList) iconList.style.display = (mode === 'list') ? '' : 'none';
+    localStorage.setItem('tvEpView', mode);
+}
+function toggleEpView() {
+    var cur = localStorage.getItem('tvEpView') || 'grid';
+    setEpView(cur === 'list' ? 'grid' : 'list');
+}
+(function() {
+    var saved = localStorage.getItem('tvEpView');
+    if (saved === 'list') setEpView('list');
+})();
+
+function doSearch() {
+    var q = document.getElementById('tv-search').value.trim();
+    if (q.length >= 2) window.location = '/tv-porady/?q=' + encodeURIComponent(q);
+}
+(function() {
+    var input = document.getElementById('tv-search');
+    if (!input) return;
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+})();
+
+(function() {
+    var params = new URLSearchParams(window.location.search);
+    var s = parseInt(params.get('s'), 10);
+    var e = parseInt(params.get('e'), 10);
+    if (s && e) {
+        window.location.replace(window.location.pathname + s + 'x' + e + '/');
+    }
+})();
+</script>
+{% endblock %}
