@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 
 const FILMS_PER_PAGE: i64 = 24;
 
+/// SELECT column list for `FilmRow` queries. Kept as a const to avoid
+/// duplication across `films_list`, `films_by_genre`, and `films_detail`.
+const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
+    f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
+    f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
+    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs";
+
 // --- DB row types ---
 
 #[derive(sqlx::FromRow)]
@@ -18,16 +25,16 @@ struct FilmRow {
     runtime_min: Option<i16>,
     cover_filename: Option<String>,
     sktorrent_video_id: Option<i32>,
-    #[allow(dead_code)]
+    // Used by Askama template (film_detail.html) for JS player initialization
     sktorrent_cdn: Option<i16>,
-    #[allow(dead_code)]
+    // Used by Askama template (film_detail.html) for JS player initialization
     sktorrent_qualities: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
     prehrajto_url: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Not rendered in current templates; kept for future dub/sub badges
     prehrajto_has_dub: bool,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Not rendered in current templates; kept for future dub/sub badges
     prehrajto_has_subs: bool,
 }
 
@@ -45,7 +52,7 @@ struct FilmGenreNameRow {
 }
 
 #[derive(sqlx::FromRow)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fetched in films_detail; template accesses via JS, not Askama
 struct FilmSourceRow {
     provider: String,
     code: String,
@@ -171,7 +178,7 @@ struct FilmsListTemplate {
     total_pages: i64,
     total_count: i64,
     current_genre: Option<GenreRow>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: verify usage — may be needed for sort UI active state
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
@@ -183,7 +190,7 @@ struct FilmDetailTemplate {
     img: String,
     film: FilmRow,
     genres: Vec<FilmGenreNameRow>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Fetched from DB but not rendered via Askama; JS handles sources
     sources: Vec<FilmSourceRow>,
 }
 
@@ -304,10 +311,7 @@ pub async fn films_list(
 
     // Films query
     let films_query = format!(
-        "SELECT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-         f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
-         f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-         f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs \
+        "SELECT {FILM_COLUMNS} \
          FROM films f {where_clause} \
          ORDER BY {order} \
          LIMIT ${limit_idx} OFFSET ${offset_idx}",
@@ -339,52 +343,7 @@ pub async fn films_list(
     let genres = load_genres(&state.db).await?;
 
     // Build query string for pagination links (preserve sort + filters)
-    let mut qs_parts = Vec::new();
-    if params.razeni.is_some() {
-        qs_parts.push(format!("razeni={}", params.sort_key()));
-    }
-    if let Some(ref q) = params.q {
-        let t = q.trim();
-        if !t.is_empty() {
-            qs_parts.push(format!("q={}", urlencoding::encode(t)));
-        }
-    }
-    if let Some(ref z) = params.zanry
-        && !z.is_empty()
-    {
-        qs_parts.push(format!("zanry={}", urlencoding::encode(z)));
-    }
-    if let Some(ref m) = params.rezim
-        && m == "and"
-    {
-        qs_parts.push("rezim=and".to_string());
-    }
-    if let Some(ref s) = params.smer
-        && s == "asc"
-    {
-        qs_parts.push("smer=asc".to_string());
-    }
-    if let Some(ref j) = params.jazyk
-        && !j.is_empty()
-    {
-        // Preserve all explicit values including "vse" (default without param = "dub")
-        qs_parts.push(format!("jazyk={}", urlencoding::encode(j)));
-    }
-    if let Some(ref b) = params.bez
-        && !b.is_empty()
-    {
-        qs_parts.push(format!("bez={}", urlencoding::encode(b)));
-    }
-    if let Some(ref r) = params.rok
-        && !r.is_empty()
-    {
-        qs_parts.push(format!("rok={}", urlencoding::encode(r)));
-    }
-    let query_string = if qs_parts.is_empty() {
-        String::new()
-    } else {
-        format!("&{}", qs_parts.join("&"))
-    };
+    let query_string = build_films_query_string(&params);
 
     let search_query = params.q.as_ref().and_then(|q| {
         let t = q.trim();
@@ -436,13 +395,9 @@ pub async fn films_detail(
     }
 
     // Otherwise: film detail
-    let film = sqlx::query_as::<_, FilmRow>(
-        "SELECT id, title, slug, year, description, original_title, \
-         imdb_rating, csfd_rating, runtime_min, cover_filename, \
-         sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, added_at, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs \
-         FROM films WHERE slug = $1",
-    )
+    let film = sqlx::query_as::<_, FilmRow>(&format!(
+        "SELECT {FILM_COLUMNS} FROM films f WHERE f.slug = $1"
+    ))
     .bind(&slug)
     .fetch_optional(&state.db)
     .await?;
@@ -530,10 +485,7 @@ async fn films_by_genre(
 
     // Films
     let films_query = format!(
-        "SELECT DISTINCT f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-         f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
-         f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-         f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs \
+        "SELECT DISTINCT {FILM_COLUMNS} \
          FROM films f \
          JOIN film_genres fg ON f.id = fg.film_id \
          WHERE {where_clause} \
@@ -557,46 +509,7 @@ async fn films_by_genre(
 
     let all_genres = load_genres(&state.db).await?;
 
-    let mut qs_parts = Vec::new();
-    if params.razeni.is_some() {
-        qs_parts.push(format!("razeni={}", params.sort_key()));
-    }
-    if let Some(ref s) = params.smer
-        && s == "asc"
-    {
-        qs_parts.push("smer=asc".to_string());
-    }
-    if let Some(ref j) = params.jazyk
-        && !j.is_empty()
-    {
-        // Preserve all explicit values including "vse" (default without param = "dub")
-        qs_parts.push(format!("jazyk={}", urlencoding::encode(j)));
-    }
-    if let Some(ref z) = params.zanry
-        && !z.is_empty()
-    {
-        qs_parts.push(format!("zanry={}", urlencoding::encode(z)));
-    }
-    if let Some(ref m) = params.rezim
-        && m == "and"
-    {
-        qs_parts.push("rezim=and".to_string());
-    }
-    if let Some(ref b) = params.bez
-        && !b.is_empty()
-    {
-        qs_parts.push(format!("bez={}", urlencoding::encode(b)));
-    }
-    if let Some(ref r) = params.rok
-        && !r.is_empty()
-    {
-        qs_parts.push(format!("rok={}", urlencoding::encode(r)));
-    }
-    let query_string = if qs_parts.is_empty() {
-        String::new()
-    } else {
-        format!("&{}", qs_parts.join("&"))
-    };
+    let query_string = build_films_query_string(&params);
 
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
@@ -1011,6 +924,49 @@ async fn load_genres(db: &sqlx::PgPool) -> Result<Vec<GenreRow>, sqlx::Error> {
     )
     .fetch_all(db)
     .await
+}
+
+/// Build pagination query string for film list/genre views.
+/// Consolidates the qs_parts logic that was duplicated in `films_list`
+/// and `films_by_genre`.
+fn build_films_query_string(params: &FilmsQuery) -> String {
+    let mut parts: Vec<(&str, String)> = Vec::new();
+    if params.razeni.is_some() {
+        parts.push(("razeni", params.sort_key().to_string()));
+    }
+    if let Some(ref q) = params.q {
+        let t = q.trim();
+        if !t.is_empty() {
+            parts.push(("q", t.to_string()));
+        }
+    }
+    if let Some(ref z) = params.zanry
+        && !z.is_empty()
+    {
+        parts.push(("zanry", z.clone()));
+    }
+    if params.rezim.as_deref() == Some("and") {
+        parts.push(("rezim", "and".to_string()));
+    }
+    if params.smer.as_deref() == Some("asc") {
+        parts.push(("smer", "asc".to_string()));
+    }
+    if let Some(ref j) = params.jazyk
+        && !j.is_empty()
+    {
+        parts.push(("jazyk", j.clone()));
+    }
+    if let Some(ref b) = params.bez
+        && !b.is_empty()
+    {
+        parts.push(("bez", b.clone()));
+    }
+    if let Some(ref r) = params.rok
+        && !r.is_empty()
+    {
+        parts.push(("rok", r.clone()));
+    }
+    super::build_pagination_qs(&parts)
 }
 
 fn not_found_response() -> Response {

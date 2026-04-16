@@ -4,7 +4,7 @@ use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
-use cr_domain::repository::{PhotoRepository, RegionRepository};
+use cr_domain::repository::{OrpRepository, PhotoRepository, RegionRepository};
 
 use crate::error::WebResult;
 use crate::state::AppState;
@@ -46,15 +46,15 @@ pub use video_api::{
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct RegionRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from RegionRecord for potential future use
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from RegionRecord for potential future use
     pub(crate) region_code: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from RegionRecord for potential future use
     pub(crate) latitude: Option<f64>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from RegionRecord for potential future use
     pub(crate) longitude: Option<f64>,
     pub(crate) coat_of_arms_ext: Option<String>,
     pub(crate) flag_ext: Option<String>,
@@ -64,7 +64,7 @@ pub(crate) struct RegionRow {
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct OrpRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from OrpRecord for potential future use
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
@@ -76,12 +76,12 @@ pub(crate) struct OrpRow {
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct MunicipalityRow {
-    #[allow(dead_code)]
+    // Used by orp.rs handler for landmark query binding
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) municipality_code: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: verify usage — carried from RegionRecord, not used in templates
     pub(crate) pou_code: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
@@ -90,7 +90,7 @@ pub(crate) struct MunicipalityRow {
     pub(crate) coat_of_arms_ext: Option<String>,
     pub(crate) flag_ext: Option<String>,
     pub(crate) population: Option<i32>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: verify usage — carried from MunicipalityRecord, not in templates
     pub(crate) elevation: Option<f64>,
 }
 
@@ -101,25 +101,25 @@ pub(crate) struct LandmarkRow {
     pub(crate) slug: String,
     pub(crate) latitude: Option<f64>,
     pub(crate) longitude: Option<f64>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from LandmarkRecord; not rendered in current templates
     pub(crate) description: Option<String>,
     pub(crate) wikipedia_url: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from LandmarkRecord; not rendered in current templates
     pub(crate) image_ext: Option<String>,
-    #[allow(dead_code)]
+    // Used by landmarks.rs handler for fetch_photos npu_catalog_id param
     pub(crate) npu_catalog_id: Option<String>,
     #[sqlx(default)]
     pub(crate) npu_description: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from LandmarkRecord; not rendered in current templates
     pub(crate) type_slug: String,
     pub(crate) type_name: String,
     pub(crate) municipality_name: Option<String>,
-    #[allow(dead_code)]
+    // Used by Askama templates (landmark_detail.html, landmarks_list.html)
     pub(crate) municipality_slug: Option<String>,
     pub(crate) orp_slug: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from LandmarkRecord; not rendered in current templates
     pub(crate) region_slug: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from LandmarkRecord; not rendered in current templates
     #[sqlx(default)]
     pub(crate) municipality_code: Option<String>,
     #[sqlx(default)]
@@ -219,9 +219,9 @@ impl From<cr_domain::repository::PoolRecord> for PoolDetailRow {
 pub(crate) struct PhotoInfo {
     pub(crate) url: String,
     pub(crate) thumb_url: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Stored for future responsive img srcset generation
     pub(crate) width: i16,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Stored for future responsive img srcset generation
     pub(crate) height: i16,
 }
 
@@ -379,7 +379,7 @@ pub(crate) struct OrpPoolRow {
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) is_aquapark: bool,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Not shown on ORP page but used on pool_detail.html
     pub(crate) is_indoor: bool,
     pub(crate) is_outdoor: bool,
     pub(crate) is_natural: bool,
@@ -536,7 +536,7 @@ pub(crate) struct LandmarkDetailTemplate {
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct AudiobookRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Primary key; not rendered in audiobooks template
     pub(crate) id: i32,
     pub(crate) title: String,
     pub(crate) author: String,
@@ -582,13 +582,13 @@ pub(crate) struct PoolListRow {
     pub(crate) municipality_name: Option<String>,
     pub(crate) orp_slug: Option<String>,
     pub(crate) region_slug: Option<String>,
-    #[allow(dead_code)]
+    // Used by Askama template (pools_list.html) for conditional photo rendering
     pub(crate) photo_count: i16,
 }
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct PoolDetailRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Primary key; carried from PoolRecord, not rendered in template
     pub(crate) id: i32,
     pub(crate) name: String,
     pub(crate) slug: String,
@@ -606,7 +606,7 @@ pub(crate) struct PoolDetailRow {
     pub(crate) is_indoor: bool,
     pub(crate) is_outdoor: bool,
     pub(crate) is_natural: bool,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Carried from PoolRecord; not rendered in pool_detail template
     pub(crate) photo_count: i16,
     pub(crate) municipality_name: Option<String>,
 }
@@ -626,7 +626,7 @@ pub(crate) struct PoolsHubTemplate {
 pub(crate) struct PoolsListTemplate {
     pub(crate) img: String,
     pub(crate) category_name: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: verify usage — may be needed for breadcrumb/URL generation
     pub(crate) category_slug: String,
     pub(crate) pools: Vec<PoolListRow>,
     pub(crate) page: i64,
@@ -656,21 +656,36 @@ pub(crate) fn not_found(image_base_url: &str) -> (StatusCode, Html<String>) {
     )
 }
 
-/// Helper: find region slug for an ORP slug
-pub(crate) async fn region_slug_for_orp(db: &sqlx::PgPool, orp_slug: &str) -> Option<String> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT r.slug FROM regions r \
-         JOIN districts d ON d.region_id = r.id \
-         JOIN orp o ON o.district_id = d.id \
-         WHERE o.slug = $1",
-    )
-    .bind(orp_slug)
-    .fetch_optional(db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("region_slug_for_orp query failed: {e}");
-        None
-    })
+/// Build a pagination query string from a list of `(key, value)` pairs.
+///
+/// Shared by films and series handlers to avoid duplicating the qs_parts
+/// collection logic. Each pair is URL-encoded and joined with `&`.
+/// Returns an empty string when `parts` is empty, otherwise `&key=val&...`.
+pub(crate) fn build_pagination_qs(parts: &[(&str, String)]) -> String {
+    let encoded: Vec<String> = parts
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
+        .collect();
+    if encoded.is_empty() {
+        String::new()
+    } else {
+        format!("&{}", encoded.join("&"))
+    }
+}
+
+/// Helper: find region slug for an ORP slug.
+/// Delegates to [`OrpRepository::region_slug_for_orp`].
+pub(crate) async fn region_slug_for_orp(state: &AppState, orp_slug: &str) -> Option<String> {
+    use cr_domain::repository::OrpRepository;
+    state
+        .orp_repo
+        .region_slug_for_orp(orp_slug)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("region_slug_for_orp query failed: {e}");
+            None
+        })
 }
 
 /// Map URL path segments to database type slugs
@@ -823,11 +838,11 @@ pub async fn resolve_path(State(state): State<AppState>, uri: Uri) -> WebResult<
                 .await;
             }
             // Single query: is this an ORP or region slug?
-            let is_orp =
-                sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM orp WHERE slug = $1)")
-                    .bind(segments[0])
-                    .fetch_one(&state.db)
-                    .await?;
+            let is_orp = state
+                .orp_repo
+                .exists_by_slug(segments[0])
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
             if is_orp {
                 return Ok(orp::render_orp_by_slug(&state, segments[0])

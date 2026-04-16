@@ -1,5 +1,11 @@
 use cr_domain::repository::{RegionRecord, RegionRepository};
 
+/// SELECT column list for region queries. Shared across `find_all` and
+/// `find_by_slug` to keep the column list in one place.
+pub(crate) const REGION_COLUMNS: &str = "id, name, slug, region_code, latitude, longitude, \
+    coat_of_arms_ext, flag_ext, description, hero_photo_r2_key, \
+    hero_municipality_code, hero_municipality_photo_index";
+
 /// PostgreSQL implementation of [`RegionRepository`].
 pub struct PgRegionRepository {
     pool: sqlx::PgPool,
@@ -50,12 +56,9 @@ impl RegionRepository for PgRegionRepository {
     type Error = sqlx::Error;
 
     async fn find_all(&self) -> Result<Vec<RegionRecord>, Self::Error> {
-        let rows = sqlx::query_as::<_, RegionRow>(
-            "SELECT id, name, slug, region_code, latitude, longitude, \
-             coat_of_arms_ext, flag_ext, description, hero_photo_r2_key, \
-             hero_municipality_code, hero_municipality_photo_index \
-             FROM regions ORDER BY name",
-        )
+        let rows = sqlx::query_as::<_, RegionRow>(&format!(
+            "SELECT {REGION_COLUMNS} FROM regions ORDER BY name"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -63,12 +66,9 @@ impl RegionRepository for PgRegionRepository {
     }
 
     async fn find_by_slug(&self, slug: &str) -> Result<Option<RegionRecord>, Self::Error> {
-        let row = sqlx::query_as::<_, RegionRow>(
-            "SELECT id, name, slug, region_code, latitude, longitude, \
-             coat_of_arms_ext, flag_ext, description, hero_photo_r2_key, \
-             hero_municipality_code, hero_municipality_photo_index \
-             FROM regions WHERE slug = $1",
-        )
+        let row = sqlx::query_as::<_, RegionRow>(&format!(
+            "SELECT {REGION_COLUMNS} FROM regions WHERE slug = $1"
+        ))
         .bind(slug)
         .fetch_optional(&self.pool)
         .await?;

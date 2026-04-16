@@ -1,6 +1,10 @@
 use cr_domain::id::RegionId;
 use cr_domain::repository::{OrpRecord, OrpRepository};
 
+/// SELECT column list for ORP queries (with `o.` table alias).
+pub(crate) const ORP_COLUMNS: &str =
+    "o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude, o.description";
+
 /// PostgreSQL implementation of [`OrpRepository`].
 pub struct PgOrpRepository {
     pool: sqlx::PgPool,
@@ -41,12 +45,11 @@ impl OrpRepository for PgOrpRepository {
     type Error = sqlx::Error;
 
     async fn find_by_slug(&self, slug: &str) -> Result<Option<OrpRecord>, Self::Error> {
-        let row = sqlx::query_as::<_, OrpRow>(
-            "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude, o.description \
-             FROM orp o \
-             JOIN districts d ON o.district_id = d.id \
-             WHERE o.slug = $1",
-        )
+        let row = sqlx::query_as::<_, OrpRow>(&format!(
+            "SELECT {ORP_COLUMNS} FROM orp o \
+                 JOIN districts d ON o.district_id = d.id \
+                 WHERE o.slug = $1"
+        ))
         .bind(slug)
         .fetch_optional(&self.pool)
         .await?;
@@ -55,12 +58,11 @@ impl OrpRepository for PgOrpRepository {
     }
 
     async fn find_by_region(&self, region_id: RegionId) -> Result<Vec<OrpRecord>, Self::Error> {
-        let rows = sqlx::query_as::<_, OrpRow>(
-            "SELECT o.id, o.name, o.slug, o.orp_code, o.latitude, o.longitude, o.description \
-             FROM orp o \
-             JOIN districts d ON o.district_id = d.id \
-             WHERE d.region_id = $1 ORDER BY o.name",
-        )
+        let rows = sqlx::query_as::<_, OrpRow>(&format!(
+            "SELECT {ORP_COLUMNS} FROM orp o \
+                 JOIN districts d ON o.district_id = d.id \
+                 WHERE d.region_id = $1 ORDER BY o.name"
+        ))
         .bind(region_id.value())
         .fetch_all(&self.pool)
         .await?;
@@ -76,5 +78,17 @@ impl OrpRepository for PgOrpRepository {
                 .await?;
 
         Ok(exists)
+    }
+
+    async fn region_slug_for_orp(&self, orp_slug: &str) -> Result<Option<String>, Self::Error> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT r.slug FROM regions r \
+             JOIN districts d ON d.region_id = r.id \
+             JOIN orp o ON o.district_id = d.id \
+             WHERE o.slug = $1",
+        )
+        .bind(orp_slug)
+        .fetch_optional(&self.pool)
+        .await
     }
 }

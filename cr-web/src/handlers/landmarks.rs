@@ -10,7 +10,7 @@ pub(crate) async fn render_landmark_short(
     orp_slug: &str,
     landmark_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
+    let Some(region_slug) = region_slug_for_orp(state, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
     render_landmark(state, &region_slug, orp_slug, landmark_slug).await
@@ -22,7 +22,7 @@ pub(crate) async fn render_landmark_in_municipality(
     landmark_slug: &str,
     _orp_id: i32,
 ) -> (StatusCode, Html<String>) {
-    let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
+    let Some(region_slug) = region_slug_for_orp(state, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
     render_landmark(state, &region_slug, orp_slug, landmark_slug).await

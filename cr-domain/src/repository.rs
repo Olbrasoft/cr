@@ -28,6 +28,8 @@ pub trait OrpRepository {
     async fn find_by_slug(&self, slug: &str) -> Result<Option<OrpRecord>, Self::Error>;
     async fn find_by_region(&self, region_id: RegionId) -> Result<Vec<OrpRecord>, Self::Error>;
     async fn exists_by_slug(&self, slug: &str) -> Result<bool, Self::Error>;
+    /// Find the region slug for an ORP by its slug (joins through districts).
+    async fn region_slug_for_orp(&self, orp_slug: &str) -> Result<Option<String>, Self::Error>;
 }
 
 /// Repository for municipality queries.

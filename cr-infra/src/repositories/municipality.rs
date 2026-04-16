@@ -1,6 +1,12 @@
 use cr_domain::id::OrpId;
 use cr_domain::repository::{MunicipalityRecord, MunicipalityRepository};
 
+/// SELECT column list for municipality queries. Shared across
+/// `find_by_slug_and_orp` and `find_by_orp` to keep columns in one place.
+pub(crate) const MUNICIPALITY_COLUMNS: &str = "id, name, slug, municipality_code, pou_code, \
+    latitude, longitude, wikipedia_url, official_website, coat_of_arms_ext, \
+    flag_ext, population, elevation";
+
 /// PostgreSQL implementation of [`MunicipalityRepository`].
 pub struct PgMunicipalityRepository {
     pool: sqlx::PgPool,
@@ -57,11 +63,9 @@ impl MunicipalityRepository for PgMunicipalityRepository {
         slug: &str,
         orp_id: OrpId,
     ) -> Result<Option<MunicipalityRecord>, Self::Error> {
-        let row = sqlx::query_as::<_, MunicipalityRow>(
-            "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-             wikipedia_url, official_website, coat_of_arms_ext, flag_ext, population, elevation \
-             FROM municipalities WHERE orp_id = $1 AND slug = $2",
-        )
+        let row = sqlx::query_as::<_, MunicipalityRow>(&format!(
+            "SELECT {MUNICIPALITY_COLUMNS} FROM municipalities WHERE orp_id = $1 AND slug = $2"
+        ))
         .bind(orp_id.value())
         .bind(slug)
         .fetch_optional(&self.pool)
@@ -71,11 +75,9 @@ impl MunicipalityRepository for PgMunicipalityRepository {
     }
 
     async fn find_by_orp(&self, orp_id: OrpId) -> Result<Vec<MunicipalityRecord>, Self::Error> {
-        let rows = sqlx::query_as::<_, MunicipalityRow>(
-            "SELECT id, name, slug, municipality_code, pou_code, latitude, longitude, \
-             wikipedia_url, official_website, coat_of_arms_ext, flag_ext, population, elevation \
-             FROM municipalities WHERE orp_id = $1 ORDER BY name",
-        )
+        let rows = sqlx::query_as::<_, MunicipalityRow>(&format!(
+            "SELECT {MUNICIPALITY_COLUMNS} FROM municipalities WHERE orp_id = $1 ORDER BY name"
+        ))
         .bind(orp_id.value())
         .fetch_all(&self.pool)
         .await?;

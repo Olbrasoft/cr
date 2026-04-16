@@ -19,18 +19,18 @@ pub struct SeriesRow {
     title: String,
     slug: String,
     first_air_year: Option<i16>,
-    #[allow(dead_code)]
+    // Used by Askama template (series_detail.html) for year range display
     last_air_year: Option<i16>,
     description: Option<String>,
     original_title: Option<String>,
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     season_count: Option<i16>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     episode_count: Option<i16>,
     cover_filename: Option<String>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -39,7 +39,7 @@ pub struct SeriesRow {
 /// + "Epizoda S×E" badge + CC (subtitles) badge.
 #[derive(FromRow, Serialize)]
 pub struct EpisodeCardRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Primary key; not rendered in series_list template
     pub id: i32,
     pub series_slug: String,
     pub series_title: String,
@@ -53,7 +53,7 @@ pub struct EpisodeCardRow {
     pub episode: i16,
     pub has_subtitles: Option<bool>,
     pub has_dub: Option<bool>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in ORDER BY; not rendered in series_list template
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -127,7 +127,7 @@ struct SeriesListTemplate {
     total_pages: i64,
     total_count: i64,
     current_genre: Option<GenreRow>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: verify usage — may be needed for sort UI active state
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
@@ -164,7 +164,7 @@ pub struct EpisodeNav {
 
 #[derive(FromRow, Clone)]
 pub struct PersonRow {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Primary key; not rendered in templates
     pub id: i32,
     pub name: String,
     pub profile_filename: Option<String>,
@@ -239,21 +239,7 @@ pub async fn series_list(
     .fetch_all(&state.db)
     .await?;
 
-    let mut qs_parts = Vec::new();
-    if params.razeni.is_some() {
-        qs_parts.push(format!("razeni={}", params.sort_key()));
-    }
-    if let Some(ref q) = params.q {
-        let t = q.trim();
-        if !t.is_empty() {
-            qs_parts.push(format!("q={}", urlencoding::encode(t)));
-        }
-    }
-    let query_string = if qs_parts.is_empty() {
-        String::new()
-    } else {
-        format!("&{}", qs_parts.join("&"))
-    };
+    let query_string = build_series_query_string(&params);
 
     let search_query = params.q.clone().and_then(|q| {
         let t = q.trim();
@@ -867,6 +853,21 @@ pub async fn series_cover_large(
         PLACEHOLDER.to_vec(),
     )
         .into_response())
+}
+
+/// Build pagination query string for series list views.
+fn build_series_query_string(params: &SeriesQuery) -> String {
+    let mut parts: Vec<(&str, String)> = Vec::new();
+    if params.razeni.is_some() {
+        parts.push(("razeni", params.sort_key().to_string()));
+    }
+    if let Some(ref q) = params.q {
+        let t = q.trim();
+        if !t.is_empty() {
+            parts.push(("q", t.to_string()));
+        }
+    }
+    super::build_pagination_qs(&parts)
 }
 
 #[derive(sqlx::FromRow)]

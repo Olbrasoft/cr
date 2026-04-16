@@ -7,7 +7,7 @@ pub(crate) async fn render_orp_by_slug(
     state: &AppState,
     orp_slug: &str,
 ) -> (StatusCode, Html<String>) {
-    let Some(region_slug) = region_slug_for_orp(&state.db, orp_slug).await else {
+    let Some(region_slug) = region_slug_for_orp(state, orp_slug).await else {
         return not_found(&state.image_base_url);
     };
     render_orp(state, &region_slug, orp_slug).await
