@@ -1,6 +1,6 @@
 //! Periodic background reaper for temp video files (#192).
 
-use super::{TMP_VIDEO_CLEANUP_INTERVAL, TMP_VIDEO_MAX_AGE, TMP_VIDEO_DIR, VideoDownloads};
+use super::{TMP_VIDEO_CLEANUP_INTERVAL, TMP_VIDEO_DIR, TMP_VIDEO_MAX_AGE, VideoDownloads};
 
 /// Scan `dir` once and delete any regular file whose last-modified
 /// timestamp is older than `max_age`. Returns `(deleted_count,
@@ -199,11 +199,11 @@ mod temp_cleanup_tests {
 
     #[tokio::test]
     async fn prunes_video_downloads_older_than_max_age() {
-        use super::{prune_stale_video_downloads, VideoDownloads};
+        use super::{VideoDownloads, prune_stale_video_downloads};
         use crate::handlers::video_api::{DownloadStatus, VideoTask};
         use std::sync::{
-            atomic::{AtomicU8, Ordering},
             Arc,
+            atomic::{AtomicU8, Ordering},
         };
 
         let downloads: VideoDownloads =

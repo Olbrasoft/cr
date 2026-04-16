@@ -1,4 +1,4 @@
-//! Streamtape/R2 hosted video library: list, play, stream, file download, delete.
+//! Streamtape/R2 hosted video library CRUD + streaming proxy.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 use super::{VideoErrorResponse, sanitize_filename_ascii, sanitize_filename_unicode};
 
-// --- Types ---
+// --- Response types ---
 
 #[derive(Serialize)]
 pub struct LibraryEntry {
@@ -53,43 +53,6 @@ pub struct LibraryPlayResponse {
     stream_url: String,
 }
 
-/// Two filenames for a library entry — an ASCII fallback (always
-/// header-safe) and a Unicode form that keeps Czech / Cyrillic / CJK
-/// letters intact. They feed `Content-Disposition` as `filename="…"`
-/// (the ASCII one) and `filename*=UTF-8''…` (the percent-encoded
-/// Unicode one); browsers prefer `filename*` when both are present.
-struct DownloadFilename {
-    ascii: String,
-    unicode: String,
-}
-
-fn library_download_filename(record: &cr_domain::repository::VideoRecord) -> DownloadFilename {
-    let mut ascii = sanitize_filename_ascii(&record.title, 80);
-    if ascii == "video" {
-        ascii = format!("video-{}", record.id);
-    }
-    let mut unicode = sanitize_filename_unicode(&record.title, 80);
-    if unicode == "video" {
-        unicode = format!("video-{}", record.id);
-    }
-    DownloadFilename {
-        ascii: format!("{ascii}.{}", record.format_ext),
-        unicode: format!("{unicode}.{}", record.format_ext),
-    }
-}
-
-/// Disposition mode for the proxied response.
-///
-/// `Inline` keeps the response playable inside `<video>` while still
-/// telling the browser which filename to use when the user picks Save As
-/// from the in-player ... menu. `Attachment` triggers an immediate
-/// download dialog (used by the explicit `/file` endpoint).
-#[derive(Clone, Copy)]
-enum ContentDisposition<'a> {
-    Inline(&'a DownloadFilename),
-    Attachment(&'a DownloadFilename),
-}
-
 // --- Handlers ---
 
 /// `GET /api/video/library` — list the most recent 50 hosted videos.
@@ -111,7 +74,7 @@ pub async fn library_list(
 
 /// `GET /api/video/library/{id}/play` — resolve a fresh `tapecontent.net`
 /// MP4 URL for inline playback. Costs ~5s on the first call (Streamtape's
-/// dlticket -> wait -> dl) but is then served instantly until the upstream
+/// dlticket → wait → dl) but is then served instantly until the upstream
 /// token expires; the frontend treats the URL as ephemeral and refetches
 /// when it expires.
 pub async fn library_play(
@@ -211,9 +174,9 @@ pub async fn library_stream(
             }
         };
     // Inline disposition + filename: the browser still plays the response
-    // inside the <video> element, but the in-player ... menu's "Save video as..."
+    // inside the <video> element, but the in-player ⋮ menu's "Save video as…"
     // (and any other Save As path) pre-fills with the proper title instead
-    // of "stream.mp4". This means the duplicate Stahnout button is no
+    // of "stream.mp4". This means the duplicate Stáhnout button is no
     // longer needed — see #337.
     let download_name = library_download_filename(&record);
     proxy_streamtape(
@@ -228,7 +191,7 @@ pub async fn library_stream(
 /// `GET /api/video/library/{id}/file` — same upstream proxy as `/stream`
 /// but with a `Content-Disposition: attachment` header derived from the
 /// stored title so the browser triggers a download instead of trying to
-/// play it inline. Used by the Stahnout button on the library card.
+/// play it inline. Used by the Stáhnout button on the library card.
 pub async fn library_file(
     State(state): State<AppState>,
     Path(id): Path<i32>,
@@ -325,7 +288,7 @@ pub async fn library_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// --- Internal helpers ---
+// --- Private helpers ---
 
 /// Returns the cached Streamtape CDN URL for `file_id`, resolving a fresh
 /// one (5 s dlticket wait) only when the cache is empty or the entry is
@@ -352,6 +315,31 @@ async fn resolve_cached_stream_url(
     Ok(url)
 }
 
+/// Two filenames for a library entry — an ASCII fallback (always
+/// header-safe) and a Unicode form that keeps Czech / Cyrillic / CJK
+/// letters intact. They feed `Content-Disposition` as `filename="…"`
+/// (the ASCII one) and `filename*=UTF-8''…` (the percent-encoded
+/// Unicode one); browsers prefer `filename*` when both are present.
+struct DownloadFilename {
+    ascii: String,
+    unicode: String,
+}
+
+fn library_download_filename(record: &cr_domain::repository::VideoRecord) -> DownloadFilename {
+    let mut ascii = sanitize_filename_ascii(&record.title, 80);
+    if ascii == "video" {
+        ascii = format!("video-{}", record.id);
+    }
+    let mut unicode = sanitize_filename_unicode(&record.title, 80);
+    if unicode == "video" {
+        unicode = format!("video-{}", record.id);
+    }
+    DownloadFilename {
+        ascii: format!("{ascii}.{}", record.format_ext),
+        unicode: format!("{unicode}.{}", record.format_ext),
+    }
+}
+
 /// Shared upstream proxy for `/stream` and `/file`.
 ///
 /// Streams the upstream body chunk-by-chunk via `bytes_stream()` instead
@@ -359,6 +347,18 @@ async fn resolve_cached_stream_url(
 /// the full download before sending a single byte to the browser; now the
 /// browser starts receiving the first chunk within ~50 ms of the upstream
 /// response headers landing.
+/// Disposition mode for the proxied response.
+///
+/// `Inline` keeps the response playable inside `<video>` while still
+/// telling the browser which filename to use when the user picks Save As
+/// from the in-player ⋮ menu. `Attachment` triggers an immediate
+/// download dialog (used by the explicit `/file` endpoint).
+#[derive(Clone, Copy)]
+enum ContentDisposition<'a> {
+    Inline(&'a DownloadFilename),
+    Attachment(&'a DownloadFilename),
+}
+
 async fn proxy_streamtape(
     http: reqwest::Client,
     upstream_url: &str,
@@ -402,7 +402,7 @@ async fn proxy_streamtape(
             ContentDisposition::Attachment(n) => ("attachment", n),
         };
         // RFC 6266 / RFC 5987: send both `filename` (ASCII fallback for
-        // ancient clients) and `filename*=UTF-8''...` so modern browsers
+        // ancient clients) and `filename*=UTF-8''…` so modern browsers
         // get the original Czech / Unicode title intact. The percent-
         // encoding is intentionally aggressive — over-encoding is safe.
         let encoded = urlencoding::encode(&names.unicode);
