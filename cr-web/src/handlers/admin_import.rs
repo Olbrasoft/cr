@@ -132,6 +132,14 @@ impl ImportItemRow {
         ) {
             return Some(format!("/tv-porady/{show_slug}/{ep_slug}/"));
         }
+        if let (Some(show_slug), Some(season), Some(episode)) = (
+            self.target_tv_episode_show_slug.as_deref(),
+            self.season,
+            self.episode,
+        ) {
+            // TV episode slug not set yet — fall back to legacy N×M URL.
+            return Some(format!("/tv-porady/{show_slug}/{season}x{episode}/"));
+        }
         if let Some(slug) = self.target_tv_show_slug.as_deref() {
             return Some(format!("/tv-porady/{slug}/"));
         }
@@ -332,10 +340,7 @@ pub async fn admin_import_detail(
     let mut skipped = Vec::new();
     for it in items {
         match it.action.as_str() {
-            "added_film"
-            | "added_series"
-            | "added_episode"
-            | "added_tv_show"
+            "added_film" | "added_series" | "added_episode" | "added_tv_show"
             | "added_tv_episode" => added.push(it),
             "updated_film" | "updated_episode" => updated.push(it),
             "failed" => failed.push(it),
