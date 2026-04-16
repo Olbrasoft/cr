@@ -2,6 +2,22 @@
 
 Instructions for Claude Code when working in this repository.
 
+## CRITICAL — Change Workflow Order (MANDATORY)
+
+Every code change in this repo goes through FOUR stages, in this exact order. Never skip, never reorder.
+
+1. **Local implementation** — edit code on the feature branch.
+2. **Local verification** — build + run locally (`cargo check`, `cargo test`, `cargo run -p cr-web`, unit tests for Python scripts). The change MUST work end-to-end on the dev environment before moving on.
+3. **Production deploy + verification** — cross-compile, scp binary (or rsync Python), restart the web container, then **open Playwright against `https://ceskarepublika.wiki` from the local PC** and exercise the feature as a real user (see "Playwright Testing Rules" below). Fix any issues locally, redeploy, re-verify until prod is green.
+4. **PR + code review + merge** — ONLY after step 3 is green: `git push`, `gh pr create`, wait for CI + Copilot review, address comments, merge.
+
+**Why this order matters:** Opening a PR before prod verification means Copilot reviews code that will likely need more fixes once it's been tested on production — triggering a PR-fix-review-fix cycle. Testing on prod first means Copilot reviews the final working version **once**. It also prevents "issue hotová" messages after a merged PR when the actual feature is still broken on the live site.
+
+**Concrete don'ts:**
+- Do NOT `gh pr create` before you have paste-ready "deployed + Playwright-verified" evidence for the PR body's Test plan.
+- Do NOT merge a PR just because CI is green — CI only tests code correctness, not feature correctness.
+- `curl` smoke tests are helpful but do NOT replace Playwright interaction for UI changes.
+
 ## CRITICAL — Issue Completion Rules (MANDATORY)
 
 **An issue is NOT done after creating a PR.** An issue is done ONLY after ALL of these:

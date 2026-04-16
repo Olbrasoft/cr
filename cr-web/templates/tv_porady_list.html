@@ -34,6 +34,7 @@
 <div class="search-container" id="header-search-box">
     <input type="text" id="tv-search" class="search-input" placeholder="Hledat TV pořad..." autocomplete="off" {% match search_query %}{% when Some with (q) %}value="{{ q }}"{% when None %}{% endmatch %}>
     <button class="search-btn" onclick="doSearch()">Hledat</button>
+    <div id="search-results" class="search-dropdown"></div>
 </div>
 {% endblock %}
 
@@ -218,6 +219,19 @@
 .page-link:hover { background: #11457E; color: white; }
 .page-link.current { background: #C5A059; color: white; cursor: default; }
 .page-dots { padding: 0.4rem 0.2rem; color: #888; }
+
+/* Search autocomplete dropdown */
+#header-search-box { position: relative; overflow: visible !important; }
+.search-dropdown { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 200; max-height: 420px; overflow-y: auto; }
+.search-dropdown.open { display: block; }
+.search-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.8rem; text-decoration: none; color: inherit; border-bottom: 1px solid #f0f0f0; transition: background 0.15s; }
+.search-item:last-child { border-bottom: none; }
+.search-item:hover { background: #f5f5f5; }
+.search-item img { width: 40px; height: 60px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.search-item .si-placeholder { width: 40px; height: 60px; background: #eee; border-radius: 4px; flex-shrink: 0; }
+.search-item .si-info { flex: 1; min-width: 0; }
+.search-item .si-title { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-item .si-meta { font-size: 0.8rem; color: #888; }
 </style>
 
 <script>
@@ -270,9 +284,91 @@ function applySortCombined(v) {
     }
 })();
 
+/* Autocomplete — hits /api/tv-porady/search. Uses DOM APIs + AbortController
+   to avoid XSS from untrusted titles and stale responses overwriting fresh
+   results (both flagged by Copilot on PR #493). */
 (function() {
     var input = document.getElementById('tv-search');
-    if (!input) return;
+    var dd = document.getElementById('search-results');
+    var timer = null;
+    var currentCtrl = null;
+    if (!input || !dd) return;
+
+    function renderResults(results) {
+        dd.textContent = '';
+        if (!results.length) {
+            var empty = document.createElement('div');
+            empty.style.padding = '0.8rem';
+            empty.style.color = '#888';
+            empty.style.textAlign = 'center';
+            empty.textContent = 'Nic nenalezeno';
+            dd.appendChild(empty);
+            return;
+        }
+        results.forEach(function(r) {
+            var item = document.createElement('a');
+            item.href = '/tv-porady/' + r.slug + '/';
+            item.className = 'search-item';
+            item.title = r.title;
+
+            if (r.cover) {
+                var img = document.createElement('img');
+                img.src = '/tv-porady/' + r.slug + '.webp';
+                img.alt = r.title;
+                img.title = r.title;
+                item.appendChild(img);
+            } else {
+                var placeholder = document.createElement('div');
+                placeholder.className = 'si-placeholder';
+                item.appendChild(placeholder);
+            }
+
+            var info = document.createElement('div');
+            info.className = 'si-info';
+            var title = document.createElement('span');
+            title.className = 'si-title';
+            title.textContent = r.title + (r.year ? ' (' + r.year + ')' : '');
+            var meta = document.createElement('span');
+            meta.className = 'si-meta';
+            meta.textContent = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+            info.appendChild(title);
+            info.appendChild(meta);
+            item.appendChild(info);
+            dd.appendChild(item);
+        });
+    }
+
+    input.addEventListener('input', function() {
+        clearTimeout(timer);
+        var q = this.value.trim();
+        if (q.length < 2) {
+            if (currentCtrl) { currentCtrl.abort(); currentCtrl = null; }
+            dd.classList.remove('open');
+            return;
+        }
+        timer = setTimeout(function() {
+            if (currentCtrl) currentCtrl.abort();
+            currentCtrl = new AbortController();
+            var myCtrl = currentCtrl;
+            fetch('/api/tv-porady/search?q=' + encodeURIComponent(q),
+                  { signal: myCtrl.signal })
+                .then(function(r) { return r.json(); })
+                .then(function(results) {
+                    if (myCtrl !== currentCtrl) return; // stale
+                    renderResults(results);
+                    dd.classList.add('open');
+                })
+                .catch(function(err) {
+                    if (err.name === 'AbortError') return;
+                    dd.classList.remove('open');
+                });
+        }, 200);
+    });
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#header-search-box')) dd.classList.remove('open');
+    });
+
     input.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
     });
