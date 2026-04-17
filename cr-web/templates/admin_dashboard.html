@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Česká republika{% endblock %}
+{% block meta_description %}Administrační rozcestník — auto-import, zálohy databáze.{% endblock %}
+
+{% block og_title %}Admin — Česká republika{% endblock %}
+{% block og_description %}Administrační rozcestník — auto-import, zálohy databáze.{% endblock %}
+
+{# noindex is enforced via X-Robots-Tag response header from the handler. #}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Admin</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-dashboard">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <span>Admin</span>
+    </nav>
+
+    <h2>Rozcestník administrace</h2>
+    <p class="dashboard-intro">Přehled nočních pipeline a vstup do jednotlivých sekcí. Ráno tu zkontroluj, že všechno proběhlo v pořádku.</p>
+
+    <div class="tiles">
+        <a href="/admin/import/" class="tile {{ import_tile.css_class() }}" title="Auto-import ze SK Torrent — detail">
+            <div class="tile-icon">🎬</div>
+            <h3>Auto-import</h3>
+            <p class="tile-sub">SK Torrent → films / series / tv_shows</p>
+            <p class="tile-status">{{ import_tile.message }}</p>
+        </a>
+
+        <a href="/admin/backups/" class="tile {{ backup_tile.css_class() }}" title="Auto-zálohy DB na Cloudflare R2">
+            <div class="tile-icon">💾</div>
+            <h3>Zálohy DB</h3>
+            <p class="tile-sub">pg_dump → Cloudflare R2 (30 dní retence)</p>
+            <p class="tile-status">{{ backup_tile.message }}</p>
+        </a>
+    </div>
+</main>
+
+<style>
+.admin-dashboard { max-width: 1100px; margin: 0 auto; padding: 1rem; }
+.admin-dashboard h2 { font-size: 1.5rem; margin: 1rem 0 0.6rem; }
+.admin-dashboard .dashboard-intro { color: #64748b; margin: 0 0 1.8rem; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
+.tile {
+    display: block;
+    padding: 1.4rem 1.5rem;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: inherit;
+    text-decoration: none;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.tile:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,0.08); border-color: #cbd5e1; }
+.tile h3 { font-size: 1.25rem; margin: 0.4rem 0 0.2rem; color: #11457E; }
+.tile .tile-icon { font-size: 2rem; line-height: 1; }
+.tile .tile-sub { color: #64748b; font-size: 0.85rem; margin: 0 0 0.8rem; }
+.tile .tile-status { margin: 0; font-weight: 600; font-size: 0.95rem; }
+
+.tile-ok { border-left: 4px solid #10b981; }
+.tile-ok .tile-status { color: #065f46; }
+.tile-warn { border-left: 4px solid #f59e0b; }
+.tile-warn .tile-status { color: #92400e; }
+.tile-error { border-left: 4px solid #ef4444; background: #fef2f2; }
+.tile-error .tile-status { color: #991b1b; }
+.tile-running { border-left: 4px solid #3b82f6; }
+.tile-running .tile-status { color: #1e40af; }
+.tile-unknown { border-left: 4px solid #94a3b8; }
+.tile-unknown .tile-status { color: #64748b; }
+</style>
+{% endblock %}

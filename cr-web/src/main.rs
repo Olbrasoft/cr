@@ -240,6 +240,22 @@ async fn main() -> Result<()> {
         .route("/health", axum::routing::get(handlers::health))
         .nest("/api", api_routes)
         .route(
+            "/admin/",
+            axum::routing::get(handlers::admin_dashboard::admin_dashboard),
+        )
+        .route(
+            "/admin",
+            axum::routing::get(handlers::admin_dashboard::admin_dashboard),
+        )
+        .route(
+            "/admin/backups/",
+            axum::routing::get(handlers::admin_backups::admin_backups_list),
+        )
+        .route(
+            "/admin/backups",
+            axum::routing::get(handlers::admin_backups::admin_backups_list),
+        )
+        .route(
             "/admin/import/",
             axum::routing::get(handlers::admin_import::admin_import_list),
         )

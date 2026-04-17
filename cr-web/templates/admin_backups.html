@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Zálohy DB — admin{% endblock %}
+{% block meta_description %}Přehled auto-záloh produkční PostgreSQL databáze na Cloudflare R2.{% endblock %}
+
+{% block og_title %}Zálohy DB — admin{% endblock %}
+{% block og_description %}Přehled auto-záloh produkční PostgreSQL databáze na Cloudflare R2.{% endblock %}
+
+{# noindex is enforced via X-Robots-Tag response header from the handler. #}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Zálohy DB — běhy</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-backups-page">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <a href="/admin/" title="Admin rozcestník">Admin</a>
+        <span>›</span> <span>Zálohy DB</span>
+    </nav>
+
+    <div class="status-banner {{ banner.css_class }}">{{ banner.text }}</div>
+
+    <h2>Posledních 30 běhů zálohování</h2>
+
+    {% if runs.is_empty() %}
+    <p class="empty-state">Zatím žádný běh — auto-zálohy ještě neběžely.</p>
+    {% else %}
+    <table class="runs-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Začátek</th>
+                <th>Trvání</th>
+                <th>Stav</th>
+                <th>Trigger</th>
+                <th>Velikost</th>
+                <th>Soubor v R2</th>
+                <th>Poznámka</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr class="{{ r.status_class() }}">
+                <td>#{{ r.id }}</td>
+                <td>{{ r.started_at_str() }}</td>
+                <td>{{ r.duration_sec() }}s</td>
+                <td><span class="badge badge-{{ r.status }}" title="{{ r.status }}">{{ r.status }}</span></td>
+                <td>{{ r.trigger }}</td>
+                <td>{{ r.size_human() }}</td>
+                <td class="mono">
+                    {% match r.dump_filename %}
+                        {% when Some with (f) %}{{ f }}
+                        {% when None %}—
+                    {% endmatch %}
+                </td>
+                <td class="{% if r.status == "error" %}error-cell{% endif %}">
+                    {% match r.error_message %}
+                        {% when Some with (e) %}{{ e }}
+                        {% when None %}—
+                    {% endmatch %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <section class="info-box">
+        <h3>Jak se zálohuje</h3>
+        <ul>
+            <li><strong>Kdy:</strong> systemd timer každý den v 03:00 UTC (prod server, port 2222).</li>
+            <li><strong>Jak:</strong> <code>pg_dump -Fc cr | gzip</code> → <code>rclone copyto --s3-no-check-bucket</code> do <code>cr-backups/auto/</code> na Cloudflare R2.</li>
+            <li><strong>Retence:</strong> 30 dní (lifecycle rule na bucketu cr-backups) — drží se stejné okno jako „posledních 30 běhů" nahoře.</li>
+            <li><strong>Formát:</strong> PostgreSQL custom dump (<code>-Fc</code>) — úplný self-contained snapshot, z každé zálohy lze obnovit kompletní DB přes <code>pg_restore</code>.</li>
+            <li><strong>Obnova:</strong> viz <code>~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md</code>.</li>
+        </ul>
+    </section>
+</main>
+
+<style>
+.admin-backups-page { max-width: 1280px; margin: 0 auto; padding: 1rem; }
+.admin-backups-page h2 { font-size: 1.4rem; margin: 1rem 0 1.2rem; }
+.admin-backups-page h3 { font-size: 1.1rem; margin: 0 0 0.6rem; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.runs-table th, .runs-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
+.runs-table th { background: #f8fafc; font-weight: 600; color: #555; }
+.runs-table tbody tr:hover { background: #f9fafb; }
+.runs-table .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: #334155; }
+.error-cell { color: #b91c1c; font-weight: 600; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+.badge-ok { background: #d1fae5; color: #065f46; }
+.badge-error { background: #fee2e2; color: #991b1b; }
+.badge-running { background: #dbeafe; color: #1e40af; }
+.empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+.status-banner { padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1.2rem; font-weight: 600; }
+.banner-ok { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+.banner-warn { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.banner-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.info-box { margin-top: 2rem; padding: 1rem 1.2rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+.info-box ul { margin: 0; padding-left: 1.2rem; font-size: 0.9rem; color: #475569; }
+.info-box li { margin-bottom: 0.35rem; }
+.info-box code { background: #e2e8f0; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.82rem; }
+</style>
+{% endblock %}

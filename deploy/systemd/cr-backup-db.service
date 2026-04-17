@@ -1,0 +1,37 @@
+[Unit]
+Description=CR — Denní záloha produkční PostgreSQL databáze na Cloudflare R2
+Documentation=https://github.com/Olbrasoft/cr (task #97)
+# Wait for docker — skript mluví s kontejnerem `cr-db-1` přes `docker compose exec`.
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=600
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+# /opt/cr/.env drží R2_BACKUP_* credentials (viz ~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md)
+# a případné další env proměnné projektu.
+EnvironmentFile=/opt/cr/.env
+# Mapa env proměnných pro rclone — žádný rclone.conf na disku.
+# "cr_r2_backup" musí matchovat R2_REMOTE v scripts/backup-db.sh.
+Environment=RCLONE_CONFIG_CR_R2_BACKUP_TYPE=s3
+Environment=RCLONE_CONFIG_CR_R2_BACKUP_PROVIDER=Cloudflare
+Environment="RCLONE_CONFIG_CR_R2_BACKUP_ACCESS_KEY_ID=${R2_BACKUP_ACCESS_KEY_ID}"
+Environment="RCLONE_CONFIG_CR_R2_BACKUP_SECRET_ACCESS_KEY=${R2_BACKUP_SECRET_ACCESS_KEY}"
+Environment="RCLONE_CONFIG_CR_R2_BACKUP_ENDPOINT=${R2_BACKUP_ENDPOINT}"
+ExecStart=/bin/bash /opt/cr/scripts/backup-db.sh auto
+# Loguj do journald (default), ne do souboru bez rotace. journalctl -u stačí.
+StandardOutput=journal
+StandardError=journal
+# Drop škrábané logy (i když 1 log/s ze skriptu by neměl nikdy být problém).
+LogRateLimitIntervalSec=10s
+LogRateLimitBurst=200
+# Pokud transientně selže (Cloudflare 502, DB v restartu), zkus ještě jednou.
+# Pokud padne i podruhé, nech to být — admin banner upozorní ráno.
+Restart=on-failure
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target

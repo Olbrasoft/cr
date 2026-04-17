@@ -1,4 +1,13 @@
-# Auto-import systemd unit
+# Systemd units (produkční VPS)
+
+Dvě nezávislé noční úlohy:
+
+| Unit | Čas | Účel | Admin přehled |
+|------|-----|------|---------------|
+| `cr-auto-import.timer` | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
+| `cr-backup-db.timer`   | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
+
+## Auto-import (issue #423)
 
 Daily cron for SK Torrent scanner. See issue #423.
 
@@ -58,3 +67,65 @@ ssh -p "$VPS_PORT" "root@$VPS_HOST" "journalctl -u cr-auto-import.service --sinc
 
 Every run writes a row to `import_runs` visible at
 <https://ceskarepublika.wiki/admin/import/>.
+
+---
+
+## Auto-zálohy DB (task #97)
+
+Denní `pg_dump` celé produkční DB → Cloudflare R2 bucket `cr-backups`.
+Každá záloha je self-contained (custom format `-Fc` + gzip) — z jediné
+zálohy lze obnovit celou DB přes `pg_restore`. Retenci 30 dní řeší
+R2 lifecycle rule (bucket-level, mimo skript) — stejné okno jako
+„posledních 30 běhů" v `/admin/backups/` UI.
+
+### Instalace / enable na VPS
+
+```bash
+# 1. Instaluj rclone (jednou)
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "apt-get install -y rclone"
+
+# 2. Doplň /opt/cr/.env (jednou — credentials viz ~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md):
+#   R2_BACKUP_ACCESS_KEY_ID=...
+#   R2_BACKUP_SECRET_ACCESS_KEY=...
+#   R2_BACKUP_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+
+# 3. Zkopíruj skript + unit files
+scp -P "$VPS_PORT" scripts/backup-db.sh "root@$VPS_HOST:/opt/cr/scripts/"
+scp -P "$VPS_PORT" deploy/systemd/cr-backup-db.{service,timer} \
+    "root@$VPS_HOST:/etc/systemd/system/"
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "chmod +x /opt/cr/scripts/backup-db.sh"
+
+# 4. Enable + start timer
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "systemctl daemon-reload && \
+     systemctl enable --now cr-backup-db.timer && \
+     systemctl list-timers cr-backup-db.timer"
+```
+
+### Ruční spuštění (test / mimořádná záloha)
+
+```bash
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "systemctl start cr-backup-db.service"
+# nebo skript rovnou (zapíše do backup_runs s trigger='manual'):
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "/opt/cr/scripts/backup-db.sh manual"
+```
+
+### Logy
+
+Skript loguje do journald (ne do souboru — žádná log-rotate config potřeba).
+
+```bash
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "journalctl -u cr-backup-db.service --since today"
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "journalctl -u cr-backup-db.service -n 200"
+```
+
+### Dashboard
+
+Každý běh zapíše row do `backup_runs` viditelnou na
+<https://ceskarepublika.wiki/admin/backups/>.
+
+### Retention (Cloudflare R2 lifecycle)
+
+Mimo skript — nastavit jednou v R2 dashboardu na bucketu `cr-backups`:
+- Prefix: `auto/`
+- Expire objects: 30 days after upload

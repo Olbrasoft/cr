@@ -1,0 +1,15 @@
+[Unit]
+Description=CR — Auto-záloha DB denně ve 03:00 UTC
+Documentation=https://github.com/Olbrasoft/cr (task #97)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+# Pokud VPS byl v plánovaném čase rebootovaný, spusť při startu (doženeme).
+Persistent=true
+# Malé rozptýlení proti thundering herd (auto-import běží v 05:00 UTC, takže
+# 03:00 tady je klidné okno, ale nechme si to kvůli Cloudflare side-wide timerům).
+RandomizedDelaySec=5min
+Unit=cr-backup-db.service
+
+[Install]
+WantedBy=timers.target
