@@ -869,7 +869,10 @@ pub async fn series_cover(
         }
     }
 
-    // Placeholder (1x1 WebP)
+    // Placeholder (1x1 WebP). `no-store` is deliberate — browsers that
+    // fetched a placeholder while the real cover was still being imported
+    // would otherwise keep the 1x1 for the full max-age, making the next
+    // pageview still show an empty card even after the WebP lands on disk.
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -879,7 +882,7 @@ pub async fn series_cover(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         PLACEHOLDER.to_vec(),
     )
@@ -1000,7 +1003,9 @@ pub async fn series_cover_large(
                 .into_response());
         }
     }
-    // Tiny empty WebP placeholder
+    // Tiny empty WebP placeholder. `no-store` — same reasoning as the
+    // series_cover fallback above: don't let a transient miss get pinned
+    // in the browser cache for hours after the real file appears.
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1010,7 +1015,7 @@ pub async fn series_cover_large(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         PLACEHOLDER.to_vec(),
     )

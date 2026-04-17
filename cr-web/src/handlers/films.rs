@@ -613,7 +613,9 @@ pub async fn films_cover(
         }
     }
 
-    // Placeholder: 1x1 transparent WebP
+    // Placeholder: 1x1 transparent WebP. `no-store` — a missing cover is a
+    // transient state (import will fill it shortly); caching the placeholder
+    // pins an empty card in the browser for hours after the real WebP lands.
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -623,7 +625,7 @@ pub async fn films_cover(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         PLACEHOLDER.to_vec(),
     )
