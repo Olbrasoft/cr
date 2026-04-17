@@ -82,10 +82,13 @@ async fn fetch_import_tile(state: &AppState) -> LastRunTile {
     {
         Ok(r) => r,
         Err(e) => {
+            // Detail do journaldu, obecná hláška do HTML — /admin/ je zatím
+            // bez auth a je na veřejném vhostu, neleakovat DB hostname /
+            // SQLx driver detaily návštěvníkům.
             tracing::error!("admin dashboard: import_runs query failed: {e}");
             return LastRunTile {
                 status: "error",
-                message: format!("Chyba čtení import_runs: {e}"),
+                message: "Chyba DB (import_runs) — viz journald.".to_string(),
             };
         }
     };
@@ -138,10 +141,11 @@ async fn fetch_backup_tile(state: &AppState) -> LastRunTile {
     {
         Ok(r) => r,
         Err(e) => {
+            // Stejně jako u import_runs — obecná hláška, detaily do journaldu.
             tracing::error!("admin dashboard: backup_runs query failed: {e}");
             return LastRunTile {
                 status: "error",
-                message: format!("Chyba čtení backup_runs: {e}"),
+                message: "Chyba DB (backup_runs) — viz journald.".to_string(),
             };
         }
     };
