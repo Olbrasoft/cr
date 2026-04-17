@@ -22,8 +22,12 @@ Environment="RCLONE_CONFIG_CR_R2_BACKUP_ACCESS_KEY_ID=${R2_BACKUP_ACCESS_KEY_ID}
 Environment="RCLONE_CONFIG_CR_R2_BACKUP_SECRET_ACCESS_KEY=${R2_BACKUP_SECRET_ACCESS_KEY}"
 Environment="RCLONE_CONFIG_CR_R2_BACKUP_ENDPOINT=${R2_BACKUP_ENDPOINT}"
 ExecStart=/bin/bash /opt/cr/scripts/backup-db.sh auto
-StandardOutput=append:/var/log/cr-backup-db.log
-StandardError=append:/var/log/cr-backup-db.log
+# Loguj do journald (default), ne do souboru bez rotace. journalctl -u stačí.
+StandardOutput=journal
+StandardError=journal
+# Drop škrábané logy (i když 1 log/s ze skriptu by neměl nikdy být problém).
+LogRateLimitIntervalSec=10s
+LogRateLimitBurst=200
 # Pokud transientně selže (Cloudflare 502, DB v restartu), zkus ještě jednou.
 # Pokud padne i podruhé, nech to být — admin banner upozorní ráno.
 Restart=on-failure

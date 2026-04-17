@@ -5,7 +5,7 @@ Dvě nezávislé noční úlohy:
 | Unit | Čas | Účel | Admin přehled |
 |------|-----|------|---------------|
 | `cr-auto-import.timer` | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
-| `cr-backup-db.timer`   | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (10 dní retence) | `/admin/backups/` |
+| `cr-backup-db.timer`   | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
 
 ## Auto-import (issue #423)
 
@@ -74,8 +74,9 @@ Every run writes a row to `import_runs` visible at
 
 Denní `pg_dump` celé produkční DB → Cloudflare R2 bucket `cr-backups`.
 Každá záloha je self-contained (custom format `-Fc` + gzip) — z jediné
-zálohy lze obnovit celou DB přes `pg_restore`. Retenci 10 dní řeší
-R2 lifecycle rule (bucket-level, mimo skript).
+zálohy lze obnovit celou DB přes `pg_restore`. Retenci 30 dní řeší
+R2 lifecycle rule (bucket-level, mimo skript) — stejné okno jako
+„posledních 30 běhů" v `/admin/backups/` UI.
 
 ### Instalace / enable na VPS
 
@@ -111,9 +112,11 @@ ssh -p "$VPS_PORT" "root@$VPS_HOST" "/opt/cr/scripts/backup-db.sh manual"
 
 ### Logy
 
+Skript loguje do journald (ne do souboru — žádná log-rotate config potřeba).
+
 ```bash
-ssh -p "$VPS_PORT" "root@$VPS_HOST" "tail -200 /var/log/cr-backup-db.log"
 ssh -p "$VPS_PORT" "root@$VPS_HOST" "journalctl -u cr-backup-db.service --since today"
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "journalctl -u cr-backup-db.service -n 200"
 ```
 
 ### Dashboard
@@ -125,4 +128,4 @@ Každý běh zapíše row do `backup_runs` viditelnou na
 
 Mimo skript — nastavit jednou v R2 dashboardu na bucketu `cr-backups`:
 - Prefix: `auto/`
-- Expire objects: 10 days after upload
+- Expire objects: 30 days after upload

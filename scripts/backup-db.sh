@@ -7,13 +7,16 @@
 #
 # Krok za krokem:
 #   1. INSERT row do backup_runs se status='running'
-#   2. docker exec db pg_dump -Fc cr | gzip > /tmp/…
-#   3. rclone copyto /tmp/… cr-r2-backup:cr-backups/auto/cr_prod_YYYY-MM-DD.dump.gz
+#   2. docker exec db pg_dump -Fc cr | gzip > $(mktemp)
+#   3. rclone copyto --s3-no-check-bucket ... cr-r2-backup:cr-backups/auto/
+#         cr_prod_YYYY-MM-DDTHHMMZ.dump.gz  (čas v názvu kvůli opakovaným
+#         běhům v jeden den — nechceme tiché přepisování v R2)
 #   4. UPDATE backup_runs SET status='ok', size, filename, finished_at
-#   5. Cleanup tmp souboru
+#   5. Cleanup tmp souboru (trap EXIT)
 #
-# Retence starších záloh řeší R2 lifecycle rule (10 dní na prefix auto/)
-# — tento skript pouze uploaduje, nikdy neřízeně nemaže.
+# Retence starších záloh řeší R2 lifecycle rule (30 dní na prefix auto/,
+# stejné okno jako „posledních 30 běhů" v /admin/backups/) — tento skript
+# pouze uploaduje, nikdy neřízeně nemaže.
 #
 # Při jakékoli chybě uprostřed pipeline (pg_dump selže, rclone selže,
 # ztráta sítě) se row v backup_runs označí jako status='error' s err. hláškou
@@ -33,10 +36,30 @@ set -euo pipefail
 # --- Config ---
 COMPOSE_FILE="${COMPOSE_FILE:-/opt/cr/docker-compose.yml}"
 TRIGGER="${1:-auto}"   # 'auto' (timer) nebo 'manual' (operator)
-TODAY=$(date -u +%F)
-FILENAME="cr_prod_${TODAY}.dump.gz"
+
+# Validace vstupu proti whitelistu — TRIGGER se interpoluje do SQL INSERTu
+# (viz dole), takže libovolný string by byl injekce. Skript spouští root
+# přes systemd, ale ruční `backup-db.sh $PAYLOAD` by jinak dokázal cokoli.
+case "$TRIGGER" in
+    auto|manual) ;;
+    *) echo "FAIL: invalid TRIGGER '$TRIGGER' (expected auto|manual)" >&2; exit 2 ;;
+esac
+
+# Unikátní název souboru: datum + čas (HHMMZ). Opakovaný běh ve stejný den
+# (systemd restart po transientní chybě nebo ruční retry po selhání) zapíše
+# do R2 JINÝ objekt — žádné tiché přepisování dřívějšího běhu.
+STAMP=$(date -u +%Y-%m-%dT%H%MZ)
+FILENAME="cr_prod_${STAMP}.dump.gz"
 R2_KEY="auto/${FILENAME}"
-TMP="/tmp/cr_backup_$$.dump.gz"
+
+# Temp soubory přes mktemp v adresáři s mode 0700, aby se zabránilo symlink
+# race attackům v /tmp (skript běží jako root). mktemp respektuje $TMPDIR
+# a default je /tmp. Soubory sám vytvoří s mode 0600.
+TMPDIR_BACKUP=$(mktemp -d -t cr_backup.XXXXXXXX)
+chmod 700 "$TMPDIR_BACKUP"
+TMP="$TMPDIR_BACKUP/dump.gz"
+PGDUMP_ERR="$TMPDIR_BACKUP/pgdump.err"
+RCLONE_ERR="$TMPDIR_BACKUP/rclone.err"
 
 # rclone remote jméno (přes env var — žádný rclone.conf na disku není potřeba).
 # Viz sekci "rclone env mapping" v deploy/systemd/cr-backup-db.service.
@@ -55,25 +78,30 @@ command -v rclone >/dev/null || die "rclone not found (apt install rclone)"
 
 # --- Helpers ---
 psql_exec() {
-    # Runs a single SQL statement inside the db container. Stdin can carry
-    # multi-line SQL. Uses -v ON_ERROR_STOP=1 so any SQL error exits non-zero.
+    # Runs SQL inside the db container. -X ignores ~/.psqlrc (would otherwise
+    # inject \timing / \pset etc. and break parsing of RUN_ID). -q -t -A keep
+    # output minimal. ON_ERROR_STOP=1 makes any SQL error exit non-zero.
     docker compose -f "$COMPOSE_FILE" exec -T db \
-        psql -U cr -d cr -v ON_ERROR_STOP=1 -q -t -A "$@"
+        psql -X -U cr -d cr -v ON_ERROR_STOP=1 -q -t -A "$@"
 }
 
 cleanup() {
-    rm -f "$TMP"
+    # Smaže celý mktemp adresář včetně obsahu.
+    rm -rf "$TMPDIR_BACKUP"
 }
 trap cleanup EXIT
 
 # --- 1. Create running row, capture ID ---
+# TRIGGER je validovaný proti whitelistu výš, takže interpolace je bezpečná.
 RUN_ID=$(psql_exec -c "INSERT INTO backup_runs (trigger) VALUES ('$TRIGGER') RETURNING id;" | tr -d '[:space:]')
 [ -n "$RUN_ID" ] || die "failed to INSERT into backup_runs"
 log "backup_runs #$RUN_ID created (trigger=$TRIGGER)"
 
 # From here on, on any error, mark the row as failed before bailing out.
 mark_failed() {
-    local msg="$1"
+    local msg="${1:-unknown error}"
+    # Fallback text pokud je msg prázdný (head -c může úspět a nic nevrátit)
+    [ -n "$msg" ] || msg="unknown error (empty diagnostic)"
     local escaped
     escaped=$(printf '%s' "$msg" | sed "s/'/''/g")
     # Best-effort — if even this fails (DB down), the row stays 'running'
@@ -81,16 +109,19 @@ mark_failed() {
     psql_exec -c "UPDATE backup_runs SET status='error', finished_at=NOW(), error_message='$escaped' WHERE id=$RUN_ID;" || true
 }
 
+# Chyba kdekoli v pg_dump/rclone → mark failed + echo err. Používáme explicitní
+# if-then, ale pro jistotu i trap ERR kdyby unikla netriviální chyba.
+trap 'mark_failed "unexpected script error at line $LINENO"' ERR
+
 # --- 2. pg_dump + gzip ---
 log "pg_dump starting..."
 if ! docker compose -f "$COMPOSE_FILE" exec -T db \
-        pg_dump -Fc -U cr cr 2>/tmp/cr_backup_pgdump_err.$$ | gzip > "$TMP"; then
-    ERR=$(head -c 500 "/tmp/cr_backup_pgdump_err.$$" 2>/dev/null || echo "pg_dump pipeline failed")
-    rm -f "/tmp/cr_backup_pgdump_err.$$"
+        pg_dump -Fc -U cr cr 2>"$PGDUMP_ERR" | gzip > "$TMP"; then
+    ERR=$(head -c 500 "$PGDUMP_ERR" 2>/dev/null)
+    [ -n "$ERR" ] || ERR="pg_dump pipeline failed (no stderr captured)"
     mark_failed "pg_dump failed: $ERR"
     die "$ERR"
 fi
-rm -f "/tmp/cr_backup_pgdump_err.$$"
 
 SIZE=$(stat -c %s "$TMP")
 [ "$SIZE" -gt 1024 ] || { mark_failed "pg_dump produced only $SIZE bytes"; die "dump suspiciously small: $SIZE bytes"; }
@@ -102,16 +133,18 @@ log "pg_dump done — $SIZE bytes"
 # CreateBucket před uploadem a dostane 403 AccessDenied. Náš bucket existuje,
 # takže sanity check prostě přeskočíme.
 log "uploading to R2 ($R2_REMOTE/$R2_KEY)..."
-if ! rclone copyto --s3-no-check-bucket "$TMP" "$R2_REMOTE/$R2_KEY" 2>/tmp/cr_backup_rclone_err.$$; then
-    ERR=$(head -c 500 "/tmp/cr_backup_rclone_err.$$" 2>/dev/null || echo "rclone copyto failed")
-    rm -f "/tmp/cr_backup_rclone_err.$$"
+if ! rclone copyto --s3-no-check-bucket "$TMP" "$R2_REMOTE/$R2_KEY" 2>"$RCLONE_ERR"; then
+    ERR=$(head -c 500 "$RCLONE_ERR" 2>/dev/null)
+    [ -n "$ERR" ] || ERR="rclone copyto failed (no stderr captured)"
     mark_failed "rclone upload failed: $ERR"
     die "$ERR"
 fi
-rm -f "/tmp/cr_backup_rclone_err.$$"
 log "upload done"
 
 # --- 4. Mark as ok ---
+# Disable ERR trap pro finální UPDATE — kdyby selhal, mark_failed by
+# přepsal už existující ok status na error (false alarm).
+trap - ERR
 psql_exec -c "UPDATE backup_runs SET status='ok', finished_at=NOW(), size_bytes=$SIZE, dump_filename='$R2_KEY' WHERE id=$RUN_ID;" >/dev/null
 log "backup_runs #$RUN_ID marked ok"
 log "Done: s3://cr-backups/$R2_KEY ($SIZE bytes)"

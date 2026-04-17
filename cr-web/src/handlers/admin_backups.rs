@@ -123,7 +123,8 @@ pub async fn admin_backups_list(State(state): State<AppState>) -> WebResult<Resp
     .fetch_optional(&state.db)
     .await?;
 
-    let hours_since_last_ok = last_ok_started_at.map(|t| (chrono::Utc::now() - t).num_hours().max(0));
+    let hours_since_last_ok =
+        last_ok_started_at.map(|t| (chrono::Utc::now() - t).num_hours().max(0));
 
     let tmpl = AdminBackupsTemplate {
         img: state.image_base_url.clone(),

@@ -73,8 +73,8 @@
         <h3>Jak se zálohuje</h3>
         <ul>
             <li><strong>Kdy:</strong> systemd timer každý den v 03:00 UTC (prod server, port 2222).</li>
-            <li><strong>Jak:</strong> <code>pg_dump -Fc cr | gzip</code> → rclone rcat do <code>cr-backups/auto/</code> na Cloudflare R2.</li>
-            <li><strong>Retence:</strong> 10 dní (lifecycle rule na bucketu cr-backups).</li>
+            <li><strong>Jak:</strong> <code>pg_dump -Fc cr | gzip</code> → <code>rclone copyto --s3-no-check-bucket</code> do <code>cr-backups/auto/</code> na Cloudflare R2.</li>
+            <li><strong>Retence:</strong> 30 dní (lifecycle rule na bucketu cr-backups) — drží se stejné okno jako „posledních 30 běhů" nahoře.</li>
             <li><strong>Formát:</strong> PostgreSQL custom dump (<code>-Fc</code>) — úplný self-contained snapshot, z každé zálohy lze obnovit kompletní DB přes <code>pg_restore</code>.</li>
             <li><strong>Obnova:</strong> viz <code>~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md</code>.</li>
         </ul>

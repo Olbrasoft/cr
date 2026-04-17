@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS backup_runs (
     trigger         TEXT NOT NULL DEFAULT 'auto',
     -- Velikost výsledného gzip souboru v bajtech. NULL, pokud pg_dump selhal.
     size_bytes      BIGINT,
-    -- Klíč v R2 bucketu, např. 'auto/cr_prod_2026-04-17_0300.dump.gz'.
+    -- Klíč v R2 bucketu, např. 'auto/cr_prod_2026-04-17T0300Z.dump.gz'.
+    -- Skript přidává čas (HHMMZ) do názvu, aby se opakované běhy ve stejný
+    -- den (manual po transientní chybě automatu) nepřepisovaly v R2.
     dump_filename   TEXT,
     -- Krátká diagnostika pokud status='error'. Detail jde do journald.
     error_message   TEXT,

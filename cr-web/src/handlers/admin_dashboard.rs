@@ -70,16 +70,25 @@ async fn fetch_import_tile(state: &AppState) -> LastRunTile {
         failed_count: i32,
     }
 
-    let row = sqlx::query_as::<_, LastImport>(
+    // Rozlišuj mezi "prázdná tabulka" (= Ok(None)) a "query selhala" (= Err).
+    // Při chybě ukáž červenou dlaždici, ne klidné „zatím žádný běh" — incident
+    // s DB bychom jinak na dashboardu přehlédli.
+    let row = match sqlx::query_as::<_, LastImport>(
         "SELECT started_at, status, added_films, added_series, added_episodes, failed_count \
          FROM import_runs ORDER BY started_at DESC LIMIT 1",
     )
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!("admin dashboard: import_runs query failed: {e}");
-        None
-    });
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("admin dashboard: import_runs query failed: {e}");
+            return LastRunTile {
+                status: "error",
+                message: format!("Chyba čtení import_runs: {e}"),
+            };
+        }
+    };
 
     match row {
         None => LastRunTile {
@@ -119,16 +128,23 @@ async fn fetch_backup_tile(state: &AppState) -> LastRunTile {
         size_bytes: Option<i64>,
     }
 
-    let row = sqlx::query_as::<_, LastBackup>(
+    // Stejně jako u importu — "query selhala" ≠ "prázdná tabulka".
+    let row = match sqlx::query_as::<_, LastBackup>(
         "SELECT started_at, status, size_bytes \
          FROM backup_runs ORDER BY started_at DESC LIMIT 1",
     )
     .fetch_optional(&state.db)
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!("admin dashboard: backup_runs query failed: {e}");
-        None
-    });
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("admin dashboard: backup_runs query failed: {e}");
+            return LastRunTile {
+                status: "error",
+                message: format!("Chyba čtení backup_runs: {e}"),
+            };
+        }
+    };
 
     match row {
         None => LastRunTile {
