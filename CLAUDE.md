@@ -85,10 +85,10 @@ Code review events arrive automatically via event files + FIFO wake. Claude Code
 
 **Copilot review — rely on the ghnotify classifier, not on polling.** The ghnotify classifier now emits an explicit next-action hint on every wake, so the old "check the Agent check-run yourself" dance is no longer needed.
 
-- **`ci-success` wake with `pr!=none`** → merge **now**: `gh pr merge <pr> --squash` (append `--delete-branch` if the branch is safe to delete). Do NOT poll for a Copilot re-review and do NOT wait for an `Agent` check-run to appear. Copilot reviews each PR once automatically; follow-up pushes won't produce another review unless you explicitly request one (`/copilot review` comment — reserve for *substantial* new changes).
+- **First push on a brand-new PR** (listed first because it's the most common wrong-merge trap): wait for Copilot's initial `code-review-complete` wake before merging. Do NOT merge on the first `ci-success` alone. Copilot finds something to fix ~92% of the time on that first look.
+- **`ci-success` wake with `pr!=none` after the initial Copilot review has already completed** → merge **now**: `gh pr merge <pr> --squash` (append `--delete-branch` if the branch is safe to delete). Do NOT poll for a Copilot re-review and do NOT wait for an `Agent` check-run to appear. Copilot reviews each PR once automatically; follow-up pushes won't produce another review unless you explicitly request one (`/copilot review` comment — reserve for *substantial* new changes).
 - **`ci-failure` wake** → diagnose AND fix, push. Do NOT stop at "pre-existing skip" or similar excuses; that is the failure mode this rule prevents.
-- **`code-review-complete` wake** → read comments (`gh api repos/Olbrasoft/cr/pulls/<pr>/comments`), address ALL, push. The next `ci-success` wake will tell you to merge.
-- **Only exception to "no wait":** the very first push on a brand-new PR — wait for Copilot's initial `code-review-complete` wake before merging. Copilot finds something to fix ~92% of the time on that first look.
+- **`code-review-complete` wake** → read comments with `gh pr view <pr> --comments` (which includes the review body/summary and any top-level discussion, not only inline threads), address ALL, push. The next `ci-success` wake will tell you to merge.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
