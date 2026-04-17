@@ -42,6 +42,16 @@ pub struct AppConfig {
     /// Optional CZ-hosted proxy for scraping geo-blocked sources (prehraj.to,
     /// SK Torrent). None if unconfigured.
     pub cz_proxy: Option<CzProxyConfig>,
+    /// Cloudflare API token scoped to Zone.Cache Purge. Enables the admin
+    /// `/admin/cache/` page to invalidate CDN cache on demand. `None` when the
+    /// env vars aren't provisioned — UI hides the purge actions in that case.
+    pub cf_cache_purge: Option<CfCachePurgeConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CfCachePurgeConfig {
+    pub token: String,
+    pub zone_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +103,16 @@ impl AppConfig {
             _ => None,
         };
 
+        let cf_cache_purge = match (
+            std::env::var("CF_CACHE_PURGE_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            std::env::var("CF_ZONE_ID").ok().filter(|s| !s.is_empty()),
+        ) {
+            (Some(token), Some(zone_id)) => Some(CfCachePurgeConfig { token, zone_id }),
+            _ => None,
+        };
+
         Ok(Arc::new(Self {
             database_url,
             port,
@@ -106,6 +126,7 @@ impl AppConfig {
             cr_repo_root,
             admin_import_run_enabled,
             cz_proxy,
+            cf_cache_purge,
         }))
     }
 }

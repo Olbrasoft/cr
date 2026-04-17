@@ -10,6 +10,7 @@ use crate::error::WebResult;
 use crate::state::AppState;
 
 pub mod admin_backups;
+pub mod admin_cache;
 pub mod admin_dashboard;
 pub mod admin_import;
 mod audiobooks;

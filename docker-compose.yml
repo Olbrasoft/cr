@@ -13,6 +13,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    ports:
+      - "127.0.0.1:5432:5432"
 
   web:
     build: .
@@ -35,6 +37,9 @@ services:
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
       R2_BUCKET: ${R2_BUCKET:-}
       R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      # Cloudflare cache purge — enables /admin/cache/ on-demand CDN invalidation.
+      CF_CACHE_PURGE_TOKEN: ${CF_CACHE_PURGE_TOKEN:-}
+      CF_ZONE_ID: ${CF_ZONE_ID:-}
     volumes:
       # Film covers are written to the host by scripts/auto-import.py
       # (runs outside Docker) — mount the same path read/write so the web
@@ -42,6 +47,10 @@ services:
       # transparent placeholder baked into films_cover().
       # Prod sets CR_DATA_DIR=/opt/cr/data in .env; dev falls back to ./data.
       - ${CR_DATA_DIR:-./data}/movies/covers-webp:/app/data/movies/covers-webp
+      # Series + tv_shows share the same covers-webp directory (series handler
+      # and tv_porad handler both read from series_covers_dir). Auto-import's
+      # ČSFD fallback writes posters here for TV pořady that TMDB doesn't know.
+      - ${CR_DATA_DIR:-./data}/series/covers-webp:/app/data/series/covers-webp
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
