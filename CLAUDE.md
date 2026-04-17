@@ -83,11 +83,11 @@ Code review events arrive automatically via event files + FIFO wake. Claude Code
 
 **Branch protection is enabled on main.** Required CI checks: Check & Clippy, Format, Test.
 
-**Copilot review policy — ONE review per PR, period.** Copilot reviews each PR exactly once when it first sees actionable content. It does **not** re-review follow-up pushes on its own, and re-review is not something to wait for, bounded or otherwise.
+**Copilot review policy — one automatic initial review per PR.** Copilot automatically reviews each PR once when it first sees actionable content. It does **not** automatically re-review follow-up pushes on its own, and an automatic re-review is not something to wait for, bounded or otherwise. Explicit re-reviews can be requested via `/copilot review` — see below.
 
 **First push on a new PR:** wait for Copilot's initial review. Copilot almost always finds something to fix (~92%). Read those comments, fix them, push.
 
-**Any subsequent push (fix-push, rebase, follow-up):** merge **IMMEDIATELY** once CI is green. Zero Copilot wait. No bounded timer. No "maybe it's just slow". The Agent check-run will not appear for a fix-push, and sitting there checking for it burns session time and confuses the workflow.
+**Any subsequent push (fix-push, rebase, follow-up):** unless you have explicitly requested a re-review (see below), merge **IMMEDIATELY** once CI is green. Zero Copilot wait. No bounded timer. No "maybe it's just slow". The Agent check-run will not appear for a fix-push on its own, and sitting there checking for it burns session time and confuses the workflow.
 
 ```bash
 # Check CI for the current PR head:
@@ -95,9 +95,9 @@ HEAD=$(gh pr view <PR> --repo Olbrasoft/cr --json headRefOid --jq '.headRefOid')
 gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" \
   --jq '.check_runs[] | .name + ": " + .status + "/" + (.conclusion // "—")'
 ```
-All required checks (Check & Clippy, Test, Format) must read `completed/success`. If they do → merge. An `Agent` check-run being present is ONLY expected on the initial review; its absence on a fix-push is normal, not a signal to wait.
+All required checks (Check & Clippy, Test, Format) must read `completed/success`. If they do → merge. An `Agent` check-run appears automatically on the initial review and on any *explicitly requested* `/copilot review`; its absence on an unrequested fix-push is normal and not a signal to wait.
 
-**Requesting a re-review explicitly** — only when the push added *substantial new code* beyond the original review's scope (e.g., a new handler, a new migration, an architectural change). Simply addressing the comments Copilot already made is NOT substantial; don't request re-review for that. To request: leave a `/copilot review` PR comment.
+**Requesting a re-review explicitly** — only when the push added *substantial new code* beyond the original review's scope (e.g., a new handler, a new migration, an architectural change). Simply addressing the comments Copilot already made is NOT substantial; don't request re-review for that. To request: leave a `/copilot review` PR comment. Once requested, Copilot WILL produce a new `Agent` check-run — in that narrow case, treat the push like a first review and wait for it to complete before merging.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
