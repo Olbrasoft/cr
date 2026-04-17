@@ -180,8 +180,9 @@ var showTitle = "{{ show.title }}";
 var initialSeason = {{ episode.season }};
 var initialEpisode = {{ episode.episode }};
 var initialVideoId = {{ episode.sktorrent_video_id.unwrap_or(0) }};
-var initialCdn = {{ episode.sktorrent_cdn.unwrap_or(0) }};
-var initialQualities = "{% match episode.sktorrent_qualities %}{% when Some with (q) %}{{ q }}{% when None %}480p{% endmatch %}".split(",").filter(function(q) { return q.match(/^\d+p$/); });
+/* SK Torrent CDN + qualities are resolved live via /api/films/sktorrent-resolve —
+   SK Torrent rotates videos across online{N} servers, so any stored value goes
+   stale. Do not pass CDN or qualities from the DB. */
 // Cached Přehraj.to URL for this episode (stable across searches).
 // Used as primary Zdroj 1 when SK Torrent is not available.
 var prehrajtoUrl = {% match episode.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
@@ -196,23 +197,30 @@ var _subPoll = null;
 
 function initPlayer() {
     if (initialVideoId) {
-        // Primary: SK Torrent (has quality options)
-        var qualities = initialQualities.length ? initialQualities : ['480p'];
-        var sources = qualities.map(function(q) {
-            return {
-                url: 'https://online' + initialCdn + '.sktorrent.eu/media/videos//h264/' + initialVideoId + '_' + q + '.mp4',
-                quality: q,
-                res: parseInt(q, 10),
-            };
-        });
-        sources.sort(function(a, b) { return b.res - a.res; });
-        state.source1 = {
-            episode: { season: initialSeason, episode: initialEpisode },
-            sources: sources,
-            currentIndex: 0,
-            videoId: initialVideoId,
-        };
-        switchToSource1();
+        // Primary: SK Torrent. Live-resolve current CDN + qualities.
+        document.getElementById('source-status').textContent = 'Načítám zdroj...';
+        fetch('/api/films/sktorrent-resolve?video_id=' + initialVideoId)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.sources || !data.sources.length) {
+                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+                    return;
+                }
+                var sources = data.sources.map(function(s) {
+                    return { url: s.url, quality: s.quality, res: s.res };
+                });
+                sources.sort(function(a, b) { return b.res - a.res; });
+                state.source1 = {
+                    episode: { season: initialSeason, episode: initialEpisode },
+                    sources: sources,
+                    currentIndex: 0,
+                    videoId: initialVideoId,
+                };
+                switchToSource1();
+            })
+            .catch(function() {
+                document.getElementById('source-status').textContent = 'Chyba obnovy zdroje';
+            });
     } else if (prehrajtoUrl) {
         // Fallback: cached Přehraj.to URL. Resolve on the fly, then play.
         document.getElementById('source-status').textContent = 'Načítání Přehraj.to...';
@@ -300,34 +308,12 @@ function playQuality1(index, doPlay) {
     });
     document.getElementById('source-status').textContent = 'S' + state.source1.episode.season + 'E' + state.source1.episode.episode;
     if (doPlay) {
-        player.play().catch(function() {
-            // Browser blocked autoplay with sound on fresh page load — fall back
-            // to muted autoplay, then unmute on the very next user interaction
-            // (click anywhere, keypress, etc.) so the viewer gets sound as soon
-            // as they touch the page instead of hunting for the volume icon.
-            player.muted = true;
-            player.play().catch(function() {});
-            unmuteOnFirstInteraction(player);
-        });
+        // If the browser blocks autoplay-with-sound, leave the player paused —
+        // the viewer hits play and gets sound via that user gesture. Never
+        // fall back to muted autoplay, which surprises the viewer with a
+        // silent video and a hidden unmute dance.
+        player.play().catch(function() {});
     }
-}
-
-function unmuteOnFirstInteraction(player) {
-    if (player._unmuteArmed) return;
-    player._unmuteArmed = true;
-    var handler = function() {
-        if (player.muted) {
-            player.muted = false;
-            if (player.volume === 0) player.volume = 1;
-        }
-        document.removeEventListener('click', handler, true);
-        document.removeEventListener('keydown', handler, true);
-        document.removeEventListener('touchstart', handler, true);
-        player._unmuteArmed = false;
-    };
-    document.addEventListener('click', handler, true);
-    document.addEventListener('keydown', handler, true);
-    document.addEventListener('touchstart', handler, true);
 }
 
 function switchToSource2() {

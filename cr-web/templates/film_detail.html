@@ -112,13 +112,14 @@
             </div>
         </div>
 
-        {# Pass sktorrent data to JS — use static CDN URLs (sktorrent page is geo-blocked from non-CZ IPs) #}
+        {# SK Torrent video id only — CDN + qualities are resolved live via
+           /api/films/sktorrent-resolve at play time, because SK Torrent rotates
+           videos across online{N}.sktorrent.eu CDN servers and any stored CDN
+           value goes stale. #}
         {% match film.sktorrent_video_id %}
         {% when Some with (vid) %}
         <script>
         var sktorrentVideoId = {{ vid }};
-        var sktorrentCdn = {% match film.sktorrent_cdn %}{% when Some with (cdn) %}{{ cdn }}{% when None %}0{% endmatch %};
-        var sktorrentQualities = "{% match film.sktorrent_qualities %}{% when Some with (q) %}{{ q }}{% when None %}480p{% endmatch %}".split(",").filter(function(q) { return q.match(/^\d+p$/); });
         </script>
         {% when None %}
         {% endmatch %}
@@ -388,7 +389,7 @@ function showSktorrent(btn) {
 /* --- Cached Přehraj.to URL: primary source when SK Torrent is absent --- */
 var cachedPrehrajtoPlayed = false;
 (function() {
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined' && sktorrentCdn;
+    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
     if (hasSktorrent) return;                      // SK Torrent owns primary
     if (!cachedPrehrajtoUrl) return;               // Nothing to play
     var player = document.getElementById('film-player');
@@ -423,7 +424,7 @@ var cachedPrehrajtoPlayed = false;
     var filmTitle = "{{ film.title }}";
     var section = document.getElementById('prehrajto-section');
     var container = document.getElementById('prehrajto-results');
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined' && sktorrentCdn;
+    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
     if (!section || !container || !filmTitle) return;
 
     fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
@@ -762,45 +763,66 @@ function setSubSize(px) {
     style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
 }
 
-/* --- Initialize sktorrent player from static CDN URLs --- */
+/* --- Initialize sktorrent player via live resolver --- */
+/* SK Torrent rotates videos across online{N}.sktorrent.eu CDN servers, so we
+   never trust a stored CDN value — every page load (and every mid-play error)
+   calls /api/films/sktorrent-resolve to find out where the video lives RIGHT
+   NOW. Backend caches resolver results in BoundedTtlCache (6h TTL), so this
+   adds at most one sktorrent fetch per video per 6 hours. */
 var sktorrentSources = [];
 
-(function() {
-    if (typeof sktorrentVideoId === 'undefined' || !sktorrentCdn || !sktorrentQualities.length) return;
-    var player = document.getElementById('film-player');
-    var qualDiv = document.getElementById('sktorrent-quality');
-    if (!player || !qualDiv) return;
-
-    // Build sources from DB data — CDN URLs work globally (no geo-block)
-    sktorrentQualities.forEach(function(q) {
-        var res = parseInt(q);
-        sktorrentSources.push({
-            url: 'https://online' + sktorrentCdn + '.sktorrent.eu/media/videos//h264/' + sktorrentVideoId + '_' + q + '.mp4',
-            quality: q,
-            res: res
-        });
+function renderSktorrentSources(data) {
+    var status = document.getElementById('source-status');
+    if (!data || !data.sources || !data.sources.length) {
+        if (status) status.textContent = 'Zdroj nedostupný';
+        return false;
+    }
+    sktorrentSources = data.sources.map(function(s) {
+        return { url: s.url, quality: s.quality, res: s.res };
     });
-
-    // Sort by resolution desc — prefer highest
     sktorrentSources.sort(function(a, b) { return b.res - a.res; });
 
-    // Build quality buttons
-    sktorrentSources.forEach(function(s, i) {
-        var btn = document.createElement('button');
-        btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
-        btn.textContent = s.quality;
-        btn.onclick = function() { playSktorrent(i, btn); };
-        qualDiv.appendChild(btn);
-    });
+    var qualDiv = document.getElementById('sktorrent-quality');
+    if (qualDiv) {
+        qualDiv.innerHTML = '';
+        sktorrentSources.forEach(function(s, i) {
+            var btn = document.createElement('button');
+            btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
+            btn.textContent = s.quality;
+            btn.onclick = function() { playSktorrent(i, btn); };
+            qualDiv.appendChild(btn);
+        });
+    }
+    return true;
+}
 
-    // Play best quality immediately
-    playSktorrent(0, qualDiv.querySelector('.quality-btn'));
+function resolveAndPlaySktorrent(onStatus) {
+    var status = document.getElementById('source-status');
+    if (status && onStatus) status.textContent = onStatus;
+    return fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!renderSktorrentSources(data)) return;
+            var qualDiv = document.getElementById('sktorrent-quality');
+            playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
+        })
+        .catch(function() {
+            if (status) status.textContent = 'Chyba obnovy zdroje';
+        });
+}
+
+(function() {
+    if (typeof sktorrentVideoId === 'undefined') return;
+    var player = document.getElementById('film-player');
+    if (!player) return;
+    resolveAndPlaySktorrent('Načítám zdroj...');
 })();
 
 function playSktorrent(index, btn) {
     var player = document.getElementById('film-player');
     if (window._hls) { window._hls.destroy(); window._hls = null; }
     var source = sktorrentSources[index];
+    if (!source) return;
     player.src = source.url;
     player.dataset.sktorrentSrc = source.url;
     player.dataset.sktorrentQuality = source.quality;
@@ -809,51 +831,18 @@ function playSktorrent(index, btn) {
     document.getElementById('source-status').textContent = '';
 }
 
-/* Fallback: if static CDN URL fails, fetch fresh URL from sktorrent */
+/* Defence against mid-play CDN rotation: if the SK Torrent URL fails after
+   we already had a working resolver response, try resolving once more. */
 (function() {
     var player = document.getElementById('film-player');
     if (!player || typeof sktorrentVideoId === 'undefined') return;
 
     var fallbackTried = false;
-    player.addEventListener('error', function(e) {
+    player.addEventListener('error', function() {
         if (fallbackTried) return;
-        var status = document.getElementById('source-status');
-        // Only fallback for sktorrent URLs
         if (!player.src || player.src.indexOf('sktorrent.eu') === -1) return;
         fallbackTried = true;
-        if (status) status.textContent = 'Obnovuji zdroj...';
-
-        fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data.sources || !data.sources.length) {
-                    if (status) status.textContent = 'Zdroj nedostupný';
-                    return;
-                }
-                // Rebuild sktorrentSources with fresh URLs
-                sktorrentSources = data.sources.map(function(s) {
-                    return { url: s.url, quality: s.quality, res: s.res };
-                });
-                sktorrentSources.sort(function(a, b) { return b.res - a.res; });
-                // Rebuild quality buttons
-                var qualDiv = document.getElementById('sktorrent-quality');
-                if (qualDiv) {
-                    qualDiv.innerHTML = '';
-                    sktorrentSources.forEach(function(s, i) {
-                        var btn = document.createElement('button');
-                        btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
-                        btn.textContent = s.quality;
-                        btn.onclick = function() { playSktorrent(i, btn); };
-                        qualDiv.appendChild(btn);
-                    });
-                }
-                // Play best quality from fresh URLs
-                playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
-                if (status) status.textContent = 'Obnoveno';
-            })
-            .catch(function() {
-                if (status) status.textContent = 'Zdroj nedostupný';
-            });
+        resolveAndPlaySktorrent('Obnovuji zdroj...');
     }, true);
 })();
 

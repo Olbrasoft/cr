@@ -25,9 +25,13 @@ struct FilmRow {
     runtime_min: Option<i16>,
     cover_filename: Option<String>,
     sktorrent_video_id: Option<i32>,
-    // Used by Askama template (film_detail.html) for JS player initialization
+    // SK Torrent CDN assignment rotates, so template no longer reads these —
+    // player calls /api/films/sktorrent-resolve at play time. Kept in SELECT
+    // so the struct matches the legacy DB row shape; remove once we drop the
+    // columns entirely.
+    #[allow(dead_code)]
     sktorrent_cdn: Option<i16>,
-    // Used by Askama template (film_detail.html) for JS player initialization
+    #[allow(dead_code)]
     sktorrent_qualities: Option<String>,
     #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
