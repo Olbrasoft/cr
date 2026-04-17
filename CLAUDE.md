@@ -83,21 +83,12 @@ Code review events arrive automatically via event files + FIFO wake. Claude Code
 
 **Branch protection is enabled on main.** Required CI checks: Check & Clippy, Format, Test.
 
-**Copilot review policy — one automatic initial review per PR.** Copilot automatically reviews each PR once when it first sees actionable content. It does **not** automatically re-review follow-up pushes on its own, and an automatic re-review is not something to wait for, bounded or otherwise. Explicit re-reviews can be requested via `/copilot review` — see below.
+**Copilot review — rely on the ghnotify classifier, not on polling.** The ghnotify classifier now emits an explicit next-action hint on every wake, so the old "check the Agent check-run yourself" dance is no longer needed.
 
-**First push on a new PR:** wait for Copilot's initial review. Copilot almost always finds something to fix (~92%). Read those comments, fix them, push.
-
-**Any subsequent push (fix-push, rebase, follow-up):** unless you have explicitly requested a re-review (see below), merge **IMMEDIATELY** once CI is green. Zero Copilot wait. No bounded timer. No "maybe it's just slow". The Agent check-run will not appear for a fix-push on its own, and sitting there checking for it burns session time and confuses the workflow.
-
-```bash
-# Check CI for the current PR head:
-HEAD=$(gh pr view <PR> --repo Olbrasoft/cr --json headRefOid --jq '.headRefOid')
-gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" \
-  --jq '.check_runs[] | .name + ": " + .status + "/" + (.conclusion // "—")'
-```
-All required checks (Check & Clippy, Test, Format) must read `completed/success`. If they do → merge. An `Agent` check-run appears automatically on the initial review and on any *explicitly requested* `/copilot review`; its absence on an unrequested fix-push is normal and not a signal to wait.
-
-**Requesting a re-review explicitly** — only when the push added *substantial new code* beyond the original review's scope (e.g., a new handler, a new migration, an architectural change). Simply addressing the comments Copilot already made is NOT substantial; don't request re-review for that. To request: leave a `/copilot review` PR comment. Once requested, Copilot WILL produce a new `Agent` check-run — in that narrow case, treat the push like a first review and wait for it to complete before merging.
+- **`ci-success` wake with `pr!=none`** → merge **now**: `gh pr merge <pr> --squash` (append `--delete-branch` if the branch is safe to delete). Do NOT poll for a Copilot re-review and do NOT wait for an `Agent` check-run to appear. Copilot reviews each PR once automatically; follow-up pushes won't produce another review unless you explicitly request one (`/copilot review` comment — reserve for *substantial* new changes).
+- **`ci-failure` wake** → diagnose AND fix, push. Do NOT stop at "pre-existing skip" or similar excuses; that is the failure mode this rule prevents.
+- **`code-review-complete` wake** → read comments (`gh api repos/Olbrasoft/cr/pulls/<pr>/comments`), address ALL, push. The next `ci-success` wake will tell you to merge.
+- **Only exception to "no wait":** the very first push on a brand-new PR — wait for Copilot's initial `code-review-complete` wake before merging. Copilot finds something to fix ~92% of the time on that first look.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
