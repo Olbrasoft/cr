@@ -83,25 +83,21 @@ Code review events arrive automatically via event files + FIFO wake. Claude Code
 
 **Branch protection is enabled on main.** Required CI checks: Check & Clippy, Format, Test.
 
-**Before merging, ALWAYS check Copilot review status:**
+**Copilot review policy — ONE review per PR, period.** Copilot reviews each PR exactly once when it first sees actionable content. It does **not** re-review follow-up pushes on its own, and re-review is not something to wait for, bounded or otherwise.
+
+**First push on a new PR:** wait for Copilot's initial review. Copilot almost always finds something to fix (~92%). Read those comments, fix them, push.
+
+**Any subsequent push (fix-push, rebase, follow-up):** merge **IMMEDIATELY** once CI is green. Zero Copilot wait. No bounded timer. No "maybe it's just slow". The Agent check-run will not appear for a fix-push, and sitting there checking for it burns session time and confuses the workflow.
+
 ```bash
+# Check CI for the current PR head:
 HEAD=$(gh pr view <PR> --repo Olbrasoft/cr --json headRefOid --jq '.headRefOid')
-gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" --jq '.check_runs[] | select(.name == "Agent") | .status'
+gh api "repos/Olbrasoft/cr/commits/${HEAD}/check-runs" \
+  --jq '.check_runs[] | .name + ": " + .status + "/" + (.conclusion // "—")'
 ```
-- `in_progress`/`queued` → Copilot review still running → WAIT, do NOT merge
-- `completed` → read review comments, fix ALL, push. Then merge.
-- empty (no output) → **bounded wait** (see below).
-
-**Copilot re-review is NOT automatic.** Copilot reviews each PR ONCE when it first sees actionable content, and then does not re-review follow-up pushes on its own. Do NOT sit waiting for a second review that will never arrive — that hangs the session and burns CI minutes for nothing.
-
-**Bounded-wait rule for the "Agent" check-run:**
-- After a push, wait AT MOST ~60 seconds past the last `check_suite` success for an `Agent` check-run to appear.
-- If it has not appeared in that window → Copilot will not re-review this push. **Merge immediately** (assuming CI is green and you have addressed the previous review's comments).
-- Do NOT rationalize further waiting ("previous push triggered Copilot, so this one must too", "maybe it's just slow") — that is the exact failure mode this rule prevents.
+All required checks (Check & Clippy, Test, Format) must read `completed/success`. If they do → merge. An `Agent` check-run being present is ONLY expected on the initial review; its absence on a fix-push is normal, not a signal to wait.
 
 **Requesting a re-review explicitly** — only when the push added *substantial new code* beyond the original review's scope (e.g., a new handler, a new migration, an architectural change). Simply addressing the comments Copilot already made is NOT substantial; don't request re-review for that. To request: leave a `/copilot review` PR comment.
-
-**NEVER merge before the FIRST Copilot review finishes.** Copilot almost always finds something to fix on the initial review (~92%). Read those comments, fix them, push. After that first round, the bounded-wait rule above applies to every subsequent push.
 
 **Progress notifications should say:**
 - After PR: "PR vytvořen, CI běží. Sleduji pipeline." (NOT "Issue hotová")
