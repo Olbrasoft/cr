@@ -39,6 +39,12 @@ pub struct AppConfig {
     /// Hard gate on POST /admin/import/run. Set `ADMIN_IMPORT_RUN_ENABLED=1`
     /// to allow the dashboard button to spawn the importer.
     pub admin_import_run_enabled: bool,
+    /// Hard gate on POST /admin/cache/purge. Set `ADMIN_CACHE_PURGE_ENABLED=1`
+    /// to allow the dashboard button to call the Cloudflare purge API. Even
+    /// with a token present the POST 403s without this flag — prevents a
+    /// stray/CSRF request on the unauthenticated /admin/ path from flushing
+    /// the CDN.
+    pub admin_cache_purge_enabled: bool,
     /// Optional CZ-hosted proxy for scraping geo-blocked sources (prehraj.to,
     /// SK Torrent). None if unconfigured.
     pub cz_proxy: Option<CzProxyConfig>,
@@ -95,6 +101,11 @@ impl AppConfig {
             Ok("1")
         );
 
+        let admin_cache_purge_enabled = matches!(
+            std::env::var("ADMIN_CACHE_PURGE_ENABLED").as_deref(),
+            Ok("1")
+        );
+
         let cz_proxy = match (
             std::env::var("CZ_PROXY_URL").ok().filter(|s| !s.is_empty()),
             std::env::var("CZ_PROXY_KEY").ok().filter(|s| !s.is_empty()),
@@ -125,6 +136,7 @@ impl AppConfig {
             series_people_dir,
             cr_repo_root,
             admin_import_run_enabled,
+            admin_cache_purge_enabled,
             cz_proxy,
             cf_cache_purge,
         }))

@@ -41,10 +41,17 @@
     </div>
     {% else %}
     <p class="zone-info">Zóna: <code>{{ zone_id }}</code></p>
+    {% if !enabled %}
+    <div class="warn-box">
+        <strong>Purge akce je vypnutá.</strong>
+        Token je nastavený, ale chybí pojistka <code>ADMIN_CACHE_PURGE_ENABLED=1</code>.
+        Bez ní by zaslaný POST skončil 403 — /admin/ je zatím bez autentizace, proto je na skutečném spouštění ještě jeden zámek navíc.
+    </div>
+    {% endif %}
     {% endif %}
 
     <form method="post" action="/admin/cache/purge" class="purge-form">
-        <fieldset {% if !configured %}disabled{% endif %}>
+        <fieldset {% if !configured || !enabled %}disabled{% endif %}>
             <legend>Rozsah</legend>
 
             <label class="radio">

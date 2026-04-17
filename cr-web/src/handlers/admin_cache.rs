@@ -16,6 +16,8 @@
 //! Free plan limit is 30 URLs per purge_cache call, so section purges are
 //! chunked. Everything/hostname-style purges are a single call.
 
+use std::time::Duration;
+
 use askama::Template;
 use axum::extract::{Form, State};
 use axum::http::StatusCode;
@@ -27,6 +29,10 @@ use crate::error::WebResult;
 use crate::state::AppState;
 
 const CF_PURGE_BATCH: usize = 30;
+const CF_PURGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Hard cap on the "specific URLs" textarea so a fat-fingered paste can't
+/// kick off thousands of API calls. Admin who needs more can split the work.
+const MAX_URL_LIST: usize = 5000;
 const SITE_ORIGIN: &str = "https://ceskarepublika.wiki";
 
 #[derive(Template)]
@@ -36,6 +42,10 @@ struct AdminCacheTemplate {
     /// Whether CF token is configured. When false the form is disabled and the
     /// page explains the missing env vars.
     configured: bool,
+    /// Whether POST /admin/cache/purge will be honored. Token alone is not
+    /// enough — ADMIN_CACHE_PURGE_ENABLED=1 must also be set. UI shows a
+    /// separate warning when token is present but the gate isn't.
+    enabled: bool,
     /// Zone ID (or empty string) — shown in the info box so an admin can tell
     /// at a glance which zone this would purge.
     zone_id: String,
@@ -103,6 +113,7 @@ pub async fn admin_cache_form(
     let tmpl = AdminCacheTemplate {
         img: state.image_base_url.clone(),
         configured,
+        enabled: state.config.admin_cache_purge_enabled,
         zone_id,
         flash,
     };
@@ -126,6 +137,18 @@ pub async fn admin_cache_purge(
     State(state): State<AppState>,
     Form(form): Form<PurgeForm>,
 ) -> WebResult<Response> {
+    // Feature gate — admin routes are currently unauthenticated, so the POST
+    // path is guarded by ADMIN_CACHE_PURGE_ENABLED=1 (same pattern as the
+    // auto-import Run-now button). Returns 403 without the flag, even if
+    // a token is present, so a stray/CSRF request can't flush the CDN.
+    if !state.config.admin_cache_purge_enabled {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            "Cache purge is disabled. Set ADMIN_CACHE_PURGE_ENABLED=1 in the env to enable.",
+        )
+            .into_response());
+    }
+
     let cfg = match &state.config.cf_cache_purge {
         Some(c) => c.clone(),
         None => {
@@ -184,7 +207,19 @@ pub async fn admin_cache_purge(
                 ));
             }
         },
-        "urls" => parse_url_list(&form.urls),
+        "urls" => {
+            let parsed = parse_url_list(&form.urls);
+            if parsed.len() > MAX_URL_LIST {
+                return Ok(redirect_with_flash(
+                    "error",
+                    &format!(
+                        "Příliš mnoho URL ({}) — maximum je {MAX_URL_LIST}. Rozděl na více dávek.",
+                        parsed.len()
+                    ),
+                ));
+            }
+            parsed
+        }
         other => {
             return Ok(redirect_with_flash(
                 "error",
@@ -269,6 +304,7 @@ async fn purge_everything(
     let res = client
         .post(&url)
         .bearer_auth(&cfg.token)
+        .timeout(CF_PURGE_TIMEOUT)
         .json(&serde_json::json!({ "purge_everything": true }))
         .send()
         .await?;
@@ -299,6 +335,7 @@ async fn purge_urls_batched(
         let res = client
             .post(&api)
             .bearer_auth(&cfg.token)
+            .timeout(CF_PURGE_TIMEOUT)
             .json(&serde_json::json!({ "files": chunk }))
             .send()
             .await?;
