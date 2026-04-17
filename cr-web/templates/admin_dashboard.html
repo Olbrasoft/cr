@@ -38,6 +38,13 @@
             <p class="tile-sub">pg_dump → Cloudflare R2 (30 dní retence)</p>
             <p class="tile-status">{{ backup_tile.message }}</p>
         </a>
+
+        <a href="/admin/cache/" class="tile {{ cache_tile.css_class() }}" title="Promazání Cloudflare CDN cache">
+            <div class="tile-icon">⚡</div>
+            <h3>Cache purge</h3>
+            <p class="tile-sub">Cloudflare CDN (seriály / filmy / TV pořady / URL)</p>
+            <p class="tile-status">{{ cache_tile.message }}</p>
+        </a>
     </div>
 </main>
 

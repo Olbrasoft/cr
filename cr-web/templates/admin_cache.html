@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Cache purge{% endblock %}
+{% block meta_description %}Administrace — promazání Cloudflare cache.{% endblock %}
+
+{% block og_title %}Admin — Cache purge{% endblock %}
+{% block og_description %}Administrace — promazání Cloudflare cache.{% endblock %}
+
+{# noindex is enforced via X-Robots-Tag response header from the handler. #}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Admin — Cache</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-cache">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span>
+        <a href="/admin/" title="Admin rozcestník">Admin</a>
+        <span>›</span>
+        <span>Cache purge</span>
+    </nav>
+
+    <h2>Cloudflare cache purge</h2>
+    <p class="intro">Vynutit okamžité promazání Cloudflare cache pro vybraný rozsah. Bez toho by CDN servírovala starý obsah až do vypršení TTL (typicky 1h).</p>
+
+    {% match flash %}
+    {% when Some with (f) %}
+      <div class="flash flash-{{ f.kind }}">{{ f.text }}</div>
+    {% when None %}
+    {% endmatch %}
+
+    {% if !configured %}
+    <div class="warn-box">
+        <strong>Není nakonfigurováno.</strong>
+        V <code>.env</code> (nebo v <code>docker-compose.yml</code>) chybí proměnné <code>CF_CACHE_PURGE_TOKEN</code> a <code>CF_ZONE_ID</code>.
+        Formulář je vypnutý do té doby, než budou nastavené.
+    </div>
+    {% else %}
+    <p class="zone-info">Zóna: <code>{{ zone_id }}</code></p>
+    {% if !enabled %}
+    <div class="warn-box">
+        <strong>Purge akce je vypnutá.</strong>
+        Token je nastavený, ale chybí pojistka <code>ADMIN_CACHE_PURGE_ENABLED=1</code>.
+        Bez ní by zaslaný POST skončil 403 — /admin/ je zatím bez autentizace, proto je na skutečném spouštění ještě jeden zámek navíc.
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <form method="post" action="/admin/cache/purge" class="purge-form">
+        <fieldset {% if !configured || !enabled %}disabled{% endif %}>
+            <legend>Rozsah</legend>
+
+            <label class="radio">
+                <input type="radio" name="scope" value="series_covers" checked>
+                <span>Cover obrázky seriálů <small>(/serialy-online/*.webp)</small></span>
+            </label>
+
+            <label class="radio">
+                <input type="radio" name="scope" value="films_covers">
+                <span>Cover obrázky filmů <small>(/filmy-online/*.webp)</small></span>
+            </label>
+
+            <label class="radio">
+                <input type="radio" name="scope" value="tv_shows_covers">
+                <span>Cover obrázky TV pořadů <small>(/tv-porady/*.webp)</small></span>
+            </label>
+
+            <label class="radio">
+                <input type="radio" name="scope" value="urls" id="scope-urls">
+                <span>Konkrétní URL <small>(jedna na řádek, max ~5000)</small></span>
+            </label>
+
+            <div class="urls-box" id="urls-box">
+                <textarea name="urls" rows="6" placeholder="https://ceskarepublika.wiki/serialy-online/loki.webp&#10;https://ceskarepublika.wiki/filmy-online/matrix.webp"></textarea>
+            </div>
+
+            <label class="radio radio-danger">
+                <input type="radio" name="scope" value="everything" id="scope-everything">
+                <span><strong>Smazat vše</strong> <small>(celá zóna — použít jen ve výjimečných případech)</small></span>
+            </label>
+
+            <div class="confirm-box" id="confirm-box">
+                <label>
+                    Potvrzení: napiš <code>SMAZAT</code>
+                    <input type="text" name="confirm" autocomplete="off" placeholder="SMAZAT">
+                </label>
+            </div>
+
+            <button type="submit" class="btn-purge">Spustit purge</button>
+        </fieldset>
+    </form>
+
+    <section class="help">
+        <h3>Co která volba dělá</h3>
+        <ul>
+            <li><strong>Covers sekce</strong> — vytáhne <em>všechny</em> slugy z příslušné DB tabulky a pošle jejich cover URL-y po dávkách 30 (Free plan limit).</li>
+            <li><strong>Konkrétní URL</strong> — pošle zadané adresy (http://… nebo https://…).</li>
+            <li><strong>Smazat vše</strong> — pošle <code>purge_everything:true</code> — invaliduje kompletně všechno, co CF cachuje, včetně HTML stránek. Free plan má limit ~1000 takových volání za den.</li>
+        </ul>
+    </section>
+</main>
+
+<script>
+(function () {
+    const scopeRadios = document.querySelectorAll('input[name="scope"]');
+    const urlsBox = document.getElementById('urls-box');
+    const confirmBox = document.getElementById('confirm-box');
+    function update() {
+        const v = document.querySelector('input[name="scope"]:checked')?.value;
+        urlsBox.style.display = v === 'urls' ? '' : 'none';
+        confirmBox.style.display = v === 'everything' ? '' : 'none';
+    }
+    scopeRadios.forEach(r => r.addEventListener('change', update));
+    update();
+})();
+</script>
+
+<style>
+.admin-cache { max-width: 860px; margin: 0 auto; padding: 1rem; }
+.admin-cache h2 { font-size: 1.5rem; margin: 1rem 0 0.4rem; }
+.admin-cache .intro { color: #475569; margin: 0 0 1.2rem; }
+.admin-cache .breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.admin-cache .breadcrumb a { color: #11457E; text-decoration: none; }
+
+.admin-cache .flash { padding: 0.7rem 1rem; border-radius: 8px; margin-bottom: 1.2rem; font-size: 0.95rem; }
+.admin-cache .flash-ok { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; }
+.admin-cache .flash-error { background: #fef2f2; color: #991b1b; border: 1px solid #fca5a5; }
+
+.admin-cache .warn-box {
+    background: #fef3c7; border: 1px solid #fcd34d; color: #92400e;
+    border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 1.2rem;
+}
+.admin-cache .zone-info { color: #64748b; font-size: 0.85rem; margin: 0 0 1rem; }
+.admin-cache .zone-info code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; }
+
+.purge-form fieldset { border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.2rem 1.4rem; }
+.purge-form legend { font-weight: 600; padding: 0 0.4rem; color: #11457E; }
+.purge-form[disabled] fieldset, .purge-form fieldset[disabled] { opacity: 0.55; }
+
+.purge-form .radio { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.4rem 0; cursor: pointer; line-height: 1.35; }
+.purge-form .radio input { margin-top: 0.25rem; }
+.purge-form .radio small { color: #64748b; font-size: 0.85rem; margin-left: 0.4rem; }
+.purge-form .radio-danger span strong { color: #b91c1c; }
+
+.urls-box { padding: 0.4rem 0 0.8rem 1.9rem; }
+.urls-box textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 0.85rem; padding: 0.5rem; border: 1px solid #cbd5e1; border-radius: 6px; }
+
+.confirm-box { padding: 0.4rem 0 0.8rem 1.9rem; }
+.confirm-box input { font-family: ui-monospace, monospace; padding: 0.4rem 0.5rem; border: 1px solid #cbd5e1; border-radius: 6px; margin-left: 0.4rem; }
+.confirm-box code { background: #fee2e2; color: #991b1b; padding: 0.1rem 0.4rem; border-radius: 4px; }
+
+.btn-purge {
+    margin-top: 1rem; background: #11457E; color: #fff; border: 0;
+    border-radius: 8px; padding: 0.55rem 1.4rem; font-size: 0.95rem; cursor: pointer;
+}
+.btn-purge:hover { background: #0d3a6c; }
+.btn-purge:disabled { background: #94a3b8; cursor: not-allowed; }
+
+.help { margin-top: 2rem; }
+.help h3 { font-size: 1.05rem; color: #11457E; margin: 0 0 0.5rem; }
+.help ul { color: #475569; font-size: 0.9rem; line-height: 1.6; }
+.help li { margin-bottom: 0.3rem; }
+.help code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85em; }
+</style>
+{% endblock %}

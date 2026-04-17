@@ -44,6 +44,7 @@ struct AdminDashboardTemplate {
     img: String,
     import_tile: LastRunTile,
     backup_tile: LastRunTile,
+    cache_tile: LastRunTile,
 }
 
 fn noindex(html: String) -> Response {
@@ -176,6 +177,22 @@ async fn fetch_backup_tile(state: &AppState) -> LastRunTile {
     }
 }
 
+fn cache_tile(state: &AppState) -> LastRunTile {
+    // Dashboard tile reflects config state — tracking actual purge history
+    // would require a new table; for now admins just see whether the feature
+    // is wired up.
+    match &state.config.cf_cache_purge {
+        Some(_) => LastRunTile {
+            status: "ok",
+            message: "Nakonfigurováno — klikni pro promazání.".to_string(),
+        },
+        None => LastRunTile {
+            status: "none",
+            message: "Chybí CF_CACHE_PURGE_TOKEN / CF_ZONE_ID.".to_string(),
+        },
+    }
+}
+
 /// GET /admin/ — landing page with per-section status tiles.
 pub async fn admin_dashboard(State(state): State<AppState>) -> WebResult<Response> {
     let (import_tile, backup_tile) =
@@ -185,6 +202,7 @@ pub async fn admin_dashboard(State(state): State<AppState>) -> WebResult<Respons
         img: state.image_base_url.clone(),
         import_tile,
         backup_tile,
+        cache_tile: cache_tile(&state),
     };
     Ok(noindex(tmpl.render()?))
 }

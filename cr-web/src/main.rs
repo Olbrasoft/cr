@@ -256,6 +256,18 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::admin_backups::admin_backups_list),
         )
         .route(
+            "/admin/cache/",
+            axum::routing::get(handlers::admin_cache::admin_cache_form),
+        )
+        .route(
+            "/admin/cache",
+            axum::routing::get(handlers::admin_cache::admin_cache_form),
+        )
+        .route(
+            "/admin/cache/purge",
+            axum::routing::post(handlers::admin_cache::admin_cache_purge),
+        )
+        .route(
             "/admin/import/",
             axum::routing::get(handlers::admin_import::admin_import_list),
         )
