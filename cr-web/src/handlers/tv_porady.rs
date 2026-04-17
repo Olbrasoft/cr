@@ -670,6 +670,9 @@ pub async fn tv_porad_cover(
         }
     }
 
+    // `no-store` — missing TV pořad cover is a transient state; a cached
+    // placeholder would pin an empty card for hours after the real WebP
+    // arrives on disk.
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -679,7 +682,7 @@ pub async fn tv_porad_cover(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         PLACEHOLDER.to_vec(),
     )
@@ -779,6 +782,8 @@ pub async fn tv_porad_cover_large(
         }
     }
 
+    // Same rationale as the small-cover fallback — don't let a transient
+    // miss on the large variant pin an empty poster in the browser cache.
     static PLACEHOLDER: &[u8] = &[
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
         0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -788,7 +793,7 @@ pub async fn tv_porad_cover_large(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         PLACEHOLDER.to_vec(),
     )
