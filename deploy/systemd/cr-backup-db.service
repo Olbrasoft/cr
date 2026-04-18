@@ -11,16 +11,10 @@ StartLimitIntervalSec=600
 Type=oneshot
 User=root
 WorkingDirectory=/opt/cr
-# /opt/cr/.env drží R2_BACKUP_* credentials (viz ~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md)
-# a případné další env proměnné projektu.
+# /opt/cr/.env drží R2_BACKUP_* credentials (viz ~/Dokumenty/přístupy/cloudflare/r2-cr-db-backups.md).
+# Skript si sám exportuje RCLONE_CONFIG_CR_R2_BACKUP_* z R2_BACKUP_* — systemd
+# `Environment="...=${FOO}"` neumí shell expansion, takže to nemůže být tady.
 EnvironmentFile=/opt/cr/.env
-# Mapa env proměnných pro rclone — žádný rclone.conf na disku.
-# "cr_r2_backup" musí matchovat R2_REMOTE v scripts/backup-db.sh.
-Environment=RCLONE_CONFIG_CR_R2_BACKUP_TYPE=s3
-Environment=RCLONE_CONFIG_CR_R2_BACKUP_PROVIDER=Cloudflare
-Environment="RCLONE_CONFIG_CR_R2_BACKUP_ACCESS_KEY_ID=${R2_BACKUP_ACCESS_KEY_ID}"
-Environment="RCLONE_CONFIG_CR_R2_BACKUP_SECRET_ACCESS_KEY=${R2_BACKUP_SECRET_ACCESS_KEY}"
-Environment="RCLONE_CONFIG_CR_R2_BACKUP_ENDPOINT=${R2_BACKUP_ENDPOINT}"
 ExecStart=/bin/bash /opt/cr/scripts/backup-db.sh auto
 # Loguj do journald (default), ne do souboru bez rotace. journalctl -u stačí.
 StandardOutput=journal

@@ -62,7 +62,7 @@ PGDUMP_ERR="$TMPDIR_BACKUP/pgdump.err"
 RCLONE_ERR="$TMPDIR_BACKUP/rclone.err"
 
 # rclone remote jméno (přes env var — žádný rclone.conf na disku není potřeba).
-# Viz sekci "rclone env mapping" v deploy/systemd/cr-backup-db.service.
+# Export se děje níž v sekci "rclone env mapping" až po preflightu R2_BACKUP_*.
 R2_REMOTE="cr_r2_backup:cr-backups"
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
@@ -75,6 +75,18 @@ command -v rclone >/dev/null || die "rclone not found (apt install rclone)"
 [ -n "${R2_BACKUP_ACCESS_KEY_ID:-}" ] || die "R2_BACKUP_ACCESS_KEY_ID not set"
 [ -n "${R2_BACKUP_SECRET_ACCESS_KEY:-}" ] || die "R2_BACKUP_SECRET_ACCESS_KEY not set"
 [ -n "${R2_BACKUP_ENDPOINT:-}" ] || die "R2_BACKUP_ENDPOINT not set"
+
+# --- rclone env mapping ---
+# rclone čte "cr_r2_backup" remote z těchto RCLONE_CONFIG_* env var místo
+# /root/.config/rclone/rclone.conf. Nastavujeme je tady ze skriptu (ne ze
+# systemd unit souboru), protože `Environment="...=${FOO}"` v systemd neudělá
+# shell expansion — literál `${R2_BACKUP_ENDPOINT}` skončil v rclone a každý
+# auto běh padl na "was not a valid URI" (viz task #97 follow-up).
+export RCLONE_CONFIG_CR_R2_BACKUP_TYPE=s3
+export RCLONE_CONFIG_CR_R2_BACKUP_PROVIDER=Cloudflare
+export RCLONE_CONFIG_CR_R2_BACKUP_ACCESS_KEY_ID="$R2_BACKUP_ACCESS_KEY_ID"
+export RCLONE_CONFIG_CR_R2_BACKUP_SECRET_ACCESS_KEY="$R2_BACKUP_SECRET_ACCESS_KEY"
+export RCLONE_CONFIG_CR_R2_BACKUP_ENDPOINT="$R2_BACKUP_ENDPOINT"
 
 # --- Helpers ---
 psql_exec() {
