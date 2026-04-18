@@ -27,8 +27,10 @@ struct FilmRow {
     sktorrent_video_id: Option<i32>,
     // `sktorrent_cdn` is used as a first-try hint by `sktorrent_resolve`
     // (see docs/sktorrent-cdn-stability.md) — ~80 % of films still live on
-    // the node stored here, saving 48 HEAD requests per playback. FilmRow
-    // itself doesn't read it; the resolver queries the column directly.
+    // the node stored here, so the fast path usually resolves after probing
+    // 4 labels (720p/480p/HD/SD) instead of falling back to scanning up to
+    // 25 nodes × 4 labels = 100 HEAD requests. FilmRow itself doesn't read
+    // it; the resolver queries the column directly.
     #[allow(dead_code)]
     sktorrent_cdn: Option<i16>,
     #[allow(dead_code)]
@@ -770,11 +772,12 @@ pub struct SktorrentResolveResponse {
 /// Strategy (min load → max load):
 ///   1. In-memory cache hit (6 h TTL, `AppState.sktorrent_cache`).
 ///   2. DB hint: `sktorrent_cdn` stored at import time. Probe that single
-///      node for 720p + 480p (2 HEAD). Per the 2026-04 stability test
-///      (docs/sktorrent-cdn-stability.md) this works for ~80 % of films.
-///   3. Full scan: `online1..online25` × {720p, 480p} = 50 HEAD. Run only
-///      when the hint is missing or stale. On success we self-heal the DB
-///      row so future plays go back to the 2-HEAD fast path.
+///      node for {720p, 480p, HD, SD} (4 HEAD). Per the 2026-04 stability
+///      test (docs/sktorrent-cdn-stability.md) this works for ~80 % of
+///      films.
+///   3. Full scan: `online1..online25` × {720p, 480p, HD, SD} = 100 HEAD.
+///      Run only when the hint is missing or stale. On success we self-heal
+///      the DB row so future plays go back to the 4-HEAD fast path.
 pub async fn sktorrent_resolve(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<SktorrentResolveQuery>,
@@ -792,23 +795,36 @@ pub async fn sktorrent_resolve(
 
     // DB hint — look up the last known CDN node across all three tables
     // that can carry an SK Torrent video (films / series episodes / tv show
-    // episodes). The same video_id lives in at most one of them.
-    let hint: Option<i16> = sqlx::query_scalar(
-        "SELECT sktorrent_cdn FROM films \
-          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
-         UNION ALL \
-         SELECT sktorrent_cdn FROM series_episodes \
-          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
-         UNION ALL \
-         SELECT sktorrent_cdn FROM tv_episodes \
-          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+    // episodes). If the same video_id ever appeared in more than one table,
+    // the `priority` column fixes a deterministic order: films → series →
+    // tv shows.
+    let hint: Option<i16> = match sqlx::query_scalar(
+        "SELECT sktorrent_cdn FROM ( \
+             SELECT sktorrent_cdn, 1 AS priority FROM films \
+              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+             UNION ALL \
+             SELECT sktorrent_cdn, 2 AS priority FROM series_episodes \
+              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+             UNION ALL \
+             SELECT sktorrent_cdn, 3 AS priority FROM tv_episodes \
+              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+         ) AS cdn_hints \
+         ORDER BY priority \
          LIMIT 1",
     )
     .bind(video_id)
     .fetch_optional(&state.db)
     .await
-    .ok()
-    .flatten();
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // Not fatal — we'll just fall through to the full scan. Logged
+            // so operational issues (connection drops, schema drift) surface
+            // in journalctl instead of silently inflating load.
+            tracing::warn!("sktorrent_resolve hint lookup failed for video_id={video_id}: {e}");
+            None
+        }
+    };
 
     let mut sources: Vec<SktorrentSource> = if let Some(cdn) = hint {
         probe_sktorrent_cdn(&state.http_client, video_id, cdn as i32).await
@@ -931,8 +947,11 @@ async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<Skt
     let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
     let mut found: Vec<SktorrentSource> = vec![];
 
-    // Scan CDNs in parallel batches of 10 — gives us early exit when
-    // we find both qualities without needing to probe the entire range.
+    // Scan CDNs in parallel batches of 10. We break as soon as any batch
+    // returns at least one hit: each film lives on exactly one node, so
+    // further batches can only return 404s. This saves the later batches
+    // for single-label (e.g. HD-only) films too — the earlier `>= 2`
+    // threshold would never trip on those and scan all 25 nodes.
     let cdns: Vec<i32> = (1..=25).collect();
     for batch in cdns.chunks(10) {
         let mut tasks = Vec::new();
@@ -978,10 +997,9 @@ async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<Skt
                     found.push(src);
                 }
             }
-            // If we found both qualities, we're done
-            if found.len() >= 2 {
-                break;
-            }
+            // Any hit identifies the node — no film is served from two
+            // nodes at once — so further batches are wasted HEADs.
+            break;
         }
     }
 
