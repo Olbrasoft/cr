@@ -863,17 +863,27 @@ pub async fn sktorrent_resolve(
     })
 }
 
-/// Probe a single CDN node for all four known quality labels in parallel.
-/// Used as the fast path when we have a DB hint. Some older films live
-/// only under the legacy `HD` or `SD` labels (e.g. video_id 36411) so we
-/// check all four — otherwise those would always fall through to a full
-/// scan despite the hint being correct.
+/// Probe a single CDN node across all six supported quality labels in
+/// parallel. Used as the fast path when we have a DB hint. Order doesn't
+/// matter here because everything fans out in parallel and any hit counts
+/// — older films may live only under the legacy `HD`/`SD` labels (e.g.
+/// video_id 36411) and a small tail only has `360p`/`240p`. Six HEADs is
+/// still cheap versus a 100-HEAD full scan, and returning multiple hits
+/// lets the frontend render a quality switcher when the node has more
+/// than one encode.
 async fn probe_sktorrent_cdn(
     client: &reqwest::Client,
     video_id: i32,
     cdn: i32,
 ) -> Vec<SktorrentSource> {
-    let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
+    let qualities = [
+        ("720p", 720),
+        ("HD", 700),
+        ("480p", 480),
+        ("SD", 360),
+        ("360p", 360),
+        ("240p", 240),
+    ];
     let mut tasks = Vec::new();
     for (q_label, q_res) in qualities.iter() {
         let url =
@@ -933,77 +943,77 @@ async fn update_sktorrent_cdn(db: &sqlx::PgPool, video_id: i32, cdn: i16) {
     }
 }
 
-/// Scan all SK Torrent CDN edge nodes in parallel batches, returning every
-/// URL that answers HEAD 2xx. Called when the DB hint is missing or stale.
+/// Full-scan fallback: called only when the DB hint is missing or stale.
 ///
-/// Range is scoped to `online1..online25` — the 26..30 slots have never
-/// appeared in `films.sktorrent_cdn` across 13 k records (2026-04 snapshot)
-/// and returned no hits in live probes. All four quality labels are kept
-/// because a small share of older films (e.g. video_id 36411) only exist
-/// under the legacy `HD` label.
+/// Tiered probe — for each quality from best to worst, race all 30 CDN
+/// nodes in parallel via `JoinSet` and return on the first HEAD 2xx. A
+/// successful tier drops the set, which aborts the remaining probes;
+/// empty tiers wait out the 3 s per-request timeout before moving on.
+/// Order is 720p → HD → 480p → SD → 360p → 240p; HD covers 267 legacy-
+/// label films and the two new low-res tiers catch the long tail that
+/// SK Torrent only encodes in 360p / 240p (measured on 2026-04-18 over
+/// 834 low-quality films — docs/sktorrent-cdn-stability.md).
 ///
-/// That's 25 × 4 = 100 HEAD per miss, down from the earlier 30 × 4 = 120.
+/// Happy-path cost is ~30 HEAD (whichever CDN answers first). Worst case
+/// (no source anywhere) is 6 × 30 = 180 HEAD, higher than the previous
+/// 100, but we accept that to unlock the 360p/240p tier.
+///
+/// Returns a single source (the first hit in the highest reachable tier);
+/// the frontend's `renderSktorrentSources` handles a 1-element list
+/// fine — one quality button, no switcher — which is the trade-off for
+/// keeping sktorrent.eu's request volume down.
 async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<SktorrentSource> {
-    let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
-    let mut found: Vec<SktorrentSource> = vec![];
+    // (label, res). `res` is used for frontend sorting; HD/SD are rough.
+    const QUALITIES: &[(&str, i32)] = &[
+        ("720p", 720),
+        ("HD", 700),
+        ("480p", 480),
+        ("SD", 360),
+        ("360p", 360),
+        ("240p", 240),
+    ];
 
-    // Scan CDNs in parallel batches of 10. We break as soon as any batch
-    // returns at least one hit: each film lives on exactly one node, so
-    // further batches can only return 404s. This saves the later batches
-    // for single-label (e.g. HD-only) films too — the earlier `>= 2`
-    // threshold would never trip on those and scan all 25 nodes.
-    let cdns: Vec<i32> = (1..=25).collect();
-    for batch in cdns.chunks(10) {
-        let mut tasks = Vec::new();
-        for &cdn in batch {
-            for (q_label, q_res) in qualities.iter() {
-                let url = format!(
-                    "https://online{cdn}.sktorrent.eu/media/videos//h264/{video_id}_{q_label}.mp4"
-                );
-                let client = client.clone();
-                let q_label = q_label.to_string();
-                let q_res = *q_res;
-                let url_clone = url.clone();
-                tasks.push(tokio::spawn(async move {
-                    let ok = client
-                        .head(&url_clone)
-                        .timeout(std::time::Duration::from_secs(3))
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success() || r.status().as_u16() == 206)
-                        .unwrap_or(false);
-                    (ok, url, q_label, q_res)
-                }));
-            }
+    for &(q_label, q_res) in QUALITIES {
+        // JoinSet races all 30 CDN probes; we take the FIRST success and
+        // drop the set to abort the rest — no waiting on slow/timing-out
+        // peers once we already have an answer.
+        let mut set = tokio::task::JoinSet::new();
+        for cdn in 1..=30 {
+            let url = format!(
+                "https://online{cdn}.sktorrent.eu/media/videos//h264/{video_id}_{q_label}.mp4"
+            );
+            let client = client.clone();
+            set.spawn(async move {
+                let ok = client
+                    .head(&url)
+                    .timeout(std::time::Duration::from_secs(3))
+                    .send()
+                    .await
+                    .map(|r| r.status().is_success() || r.status().as_u16() == 206)
+                    .unwrap_or(false);
+                (ok, url)
+            });
         }
 
-        let mut batch_results = Vec::new();
-        for t in tasks {
-            if let Ok((ok, url, q, res)) = t.await
-                && ok
-            {
-                batch_results.push(SktorrentSource {
-                    url,
-                    quality: q,
-                    res,
-                });
+        let mut hit: Option<String> = None;
+        while let Some(res) = set.join_next().await {
+            if let Ok((true, url)) = res {
+                hit = Some(url);
+                break;
             }
         }
+        // Dropping `set` here aborts any still-pending probes.
 
-        if !batch_results.is_empty() {
-            // Dedupe by quality
-            for src in batch_results {
-                if !found.iter().any(|s| s.quality == src.quality) {
-                    found.push(src);
-                }
-            }
-            // Any hit identifies the node — no film is served from two
-            // nodes at once — so further batches are wasted HEADs.
-            break;
+        if let Some(url) = hit {
+            return vec![SktorrentSource {
+                url,
+                quality: q_label.to_string(),
+                res: q_res,
+            }];
         }
     }
 
-    found
+    vec![]
 }
 
 // --- Helpers ---
