@@ -25,10 +25,10 @@ struct FilmRow {
     runtime_min: Option<i16>,
     cover_filename: Option<String>,
     sktorrent_video_id: Option<i32>,
-    // SK Torrent CDN assignment rotates, so template no longer reads these —
-    // player calls /api/films/sktorrent-resolve at play time. Kept in SELECT
-    // so the struct matches the legacy DB row shape; remove once we drop the
-    // columns entirely.
+    // `sktorrent_cdn` is used as a first-try hint by `sktorrent_resolve`
+    // (see docs/sktorrent-cdn-stability.md) — ~80 % of films still live on
+    // the node stored here, saving 48 HEAD requests per playback. FilmRow
+    // itself doesn't read it; the resolver queries the column directly.
     #[allow(dead_code)]
     sktorrent_cdn: Option<i16>,
     #[allow(dead_code)]
@@ -760,7 +760,21 @@ pub struct SktorrentResolveResponse {
 // `max_entries=2000, ttl=6h`.
 
 /// GET /api/films/sktorrent-resolve?video_id=99
-/// Fetches current CDN URLs from sktorrent.eu video page.
+///
+/// Resolves the current CDN node that hosts a given SK Torrent video. The
+/// main page `online.sktorrent.eu/video/{id}/` stealth-blocks datacentre
+/// ASNs (HTTP 200, 0 bytes from Hetzner), so we never parse HTML here —
+/// instead we HEAD-probe the edge CDN nodes `online{N}.sktorrent.eu` which
+/// are not blocked.
+///
+/// Strategy (min load → max load):
+///   1. In-memory cache hit (6 h TTL, `AppState.sktorrent_cache`).
+///   2. DB hint: `sktorrent_cdn` stored at import time. Probe that single
+///      node for 720p + 480p (2 HEAD). Per the 2026-04 stability test
+///      (docs/sktorrent-cdn-stability.md) this works for ~80 % of films.
+///   3. Full scan: `online1..online25` × {720p, 480p} = 50 HEAD. Run only
+///      when the hint is missing or stale. On success we self-heal the DB
+///      row so future plays go back to the 2-HEAD fast path.
 pub async fn sktorrent_resolve(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<SktorrentResolveQuery>,
@@ -776,62 +790,39 @@ pub async fn sktorrent_resolve(
         });
     }
 
-    // Fetch sktorrent video page
-    let page_url = format!("https://online.sktorrent.eu/video/{video_id}/");
-    let result = state
-        .http_client
-        .get(&page_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        )
-        .header("Accept-Encoding", "identity")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
+    // DB hint — look up the last known CDN node across all three tables
+    // that can carry an SK Torrent video (films / series episodes / tv show
+    // episodes). The same video_id lives in at most one of them.
+    let hint: Option<i16> = sqlx::query_scalar(
+        "SELECT sktorrent_cdn FROM films \
+          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+         UNION ALL \
+         SELECT sktorrent_cdn FROM series_episodes \
+          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+         UNION ALL \
+         SELECT sktorrent_cdn FROM tv_episodes \
+          WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
+         LIMIT 1",
+    )
+    .bind(video_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
 
-    let html = match result {
-        Ok(resp) => match resp.text().await {
-            Ok(text) => text,
-            Err(e) => {
-                return axum::Json(SktorrentResolveResponse {
-                    video_id,
-                    sources: vec![],
-                    error: Some(format!("Failed to read response: {e}")),
-                    cached: false,
-                });
-            }
-        },
-        Err(e) => {
-            return axum::Json(SktorrentResolveResponse {
-                video_id,
-                sources: vec![],
-                error: Some(format!("Failed to fetch sktorrent page: {e}")),
-                cached: false,
-            });
-        }
+    let mut sources: Vec<SktorrentSource> = if let Some(cdn) = hint {
+        probe_sktorrent_cdn(&state.http_client, video_id, cdn as i32).await
+    } else {
+        vec![]
     };
 
-    // Extract <source> tags
-    let re = regex::Regex::new(
-        r#"<source\s+src="([^"]+)"\s+type='video/mp4'\s+label='(\d+p)'\s+res='(\d+)'"#,
-    )
-    .expect("const regex literal compiles");
-
-    let mut sources: Vec<SktorrentSource> = re
-        .captures_iter(&html)
-        .filter_map(|cap| {
-            Some(SktorrentSource {
-                url: cap[1].to_string(),
-                quality: cap[2].to_string(),
-                res: cap[3].parse().ok()?,
-            })
-        })
-        .collect();
-
-    // If page didn't return sources (geo-blocked), scan CDN servers with HEAD requests
+    // Fall back to full scan on miss / missing hint. When this finds the
+    // current node, write it back so the next play is cheap again.
     if sources.is_empty() {
         sources = scan_sktorrent_cdns(&state.http_client, video_id).await;
+        if let Some(new_cdn) = infer_cdn_from_sources(&sources) {
+            update_sktorrent_cdn(&state.db, video_id, new_cdn as i16).await;
+        }
     }
 
     if sources.is_empty() {
@@ -856,14 +847,93 @@ pub async fn sktorrent_resolve(
     })
 }
 
-/// Scan sktorrent CDN servers (1..=30) with HEAD request to find working URL.
-/// Used as fallback when page is geo-blocked but CDN URLs work globally.
+/// Probe a single CDN node for all four known quality labels in parallel.
+/// Used as the fast path when we have a DB hint. Some older films live
+/// only under the legacy `HD` or `SD` labels (e.g. video_id 36411) so we
+/// check all four — otherwise those would always fall through to a full
+/// scan despite the hint being correct.
+async fn probe_sktorrent_cdn(
+    client: &reqwest::Client,
+    video_id: i32,
+    cdn: i32,
+) -> Vec<SktorrentSource> {
+    let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
+    let mut tasks = Vec::new();
+    for (q_label, q_res) in qualities.iter() {
+        let url =
+            format!("https://online{cdn}.sktorrent.eu/media/videos//h264/{video_id}_{q_label}.mp4");
+        let client = client.clone();
+        let q_label = q_label.to_string();
+        let q_res = *q_res;
+        let url_clone = url.clone();
+        tasks.push(tokio::spawn(async move {
+            let ok = client
+                .head(&url_clone)
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+                .map(|r| r.status().is_success() || r.status().as_u16() == 206)
+                .unwrap_or(false);
+            (ok, url, q_label, q_res)
+        }));
+    }
+    let mut found = Vec::new();
+    for t in tasks {
+        if let Ok((ok, url, q, res)) = t.await
+            && ok
+        {
+            found.push(SktorrentSource {
+                url,
+                quality: q,
+                res,
+            });
+        }
+    }
+    found
+}
+
+/// Extract the CDN node number from a resolved source URL. URLs look like
+/// `https://online11.sktorrent.eu/media/videos//h264/...` — we just parse
+/// the digits between `online` and the next `.`.
+fn infer_cdn_from_sources(sources: &[SktorrentSource]) -> Option<i32> {
+    let url = sources.first()?.url.as_str();
+    let after = url.strip_prefix("https://online")?;
+    let dot = after.find('.')?;
+    after[..dot].parse::<i32>().ok()
+}
+
+/// Write the freshly-discovered CDN node back to whichever of the three
+/// sktorrent-bearing tables owns this `video_id`. Best-effort — failures
+/// are logged but not surfaced; the playback already has its URL.
+async fn update_sktorrent_cdn(db: &sqlx::PgPool, video_id: i32, cdn: i16) {
+    for sql in [
+        "UPDATE films SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
+        "UPDATE series_episodes SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
+        "UPDATE tv_episodes SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
+    ] {
+        if let Err(e) = sqlx::query(sql).bind(cdn).bind(video_id).execute(db).await {
+            tracing::warn!("sktorrent_cdn self-heal failed ({sql}): {e}");
+        }
+    }
+}
+
+/// Scan all SK Torrent CDN edge nodes in parallel batches, returning every
+/// URL that answers HEAD 2xx. Called when the DB hint is missing or stale.
+///
+/// Range is scoped to `online1..online25` — the 26..30 slots have never
+/// appeared in `films.sktorrent_cdn` across 13 k records (2026-04 snapshot)
+/// and returned no hits in live probes. All four quality labels are kept
+/// because a small share of older films (e.g. video_id 36411) only exist
+/// under the legacy `HD` label.
+///
+/// That's 25 × 4 = 100 HEAD per miss, down from the earlier 30 × 4 = 120.
 async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<SktorrentSource> {
     let qualities = [("720p", 720), ("480p", 480), ("HD", 700), ("SD", 360)];
     let mut found: Vec<SktorrentSource> = vec![];
 
-    // Scan CDNs in parallel batches of 10
-    let cdns: Vec<i32> = (1..=30).collect();
+    // Scan CDNs in parallel batches of 10 — gives us early exit when
+    // we find both qualities without needing to probe the entire range.
+    let cdns: Vec<i32> = (1..=25).collect();
     for batch in cdns.chunks(10) {
         let mut tasks = Vec::new();
         for &cdn in batch {
