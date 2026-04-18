@@ -237,9 +237,7 @@ impl SeriesListTemplate {
         self.current_genre.is_some() || !self.selected_genre_slugs.is_empty()
     }
     fn is_current_genre(&self, g: &GenreRow) -> bool {
-        self.current_genre
-            .as_ref()
-            .is_some_and(|cg| cg.id == g.id)
+        self.current_genre.as_ref().is_some_and(|cg| cg.id == g.id)
     }
     fn series_genres(&self, series_id: &i32) -> &[SeriesGenreNameRow] {
         static EMPTY: Vec<SeriesGenreNameRow> = Vec::new();
@@ -348,27 +346,15 @@ pub async fn series_list(
         .fetch_one(&state.db)
         .await?;
 
-        let episodes = fetch_latest_episode_cards(
-            &state,
-            &[],
-            false,
-            &[],
-            None,
-            SERIES_PER_PAGE,
-            offset,
-        )
-        .await?;
+        let episodes =
+            fetch_latest_episode_cards(&state, &[], false, &[], None, SERIES_PER_PAGE, offset)
+                .await?;
         (count_row.count.unwrap_or(0), Vec::new(), episodes)
     } else {
         // Filters active on the all-series page
-        let count_row = count_filtered_series(
-            &state,
-            &include,
-            params.genre_mode_and(),
-            &exclude,
-            year_f,
-        )
-        .await?;
+        let count_row =
+            count_filtered_series(&state, &include, params.genre_mode_and(), &exclude, year_f)
+                .await?;
         let episodes = fetch_latest_episode_cards(
             &state,
             &include,
@@ -526,7 +512,8 @@ async fn count_filtered_series(
     exclude_slugs: &[String],
     year_f: Option<i16>,
 ) -> WebResult<i64> {
-    let mut where_parts: Vec<String> = vec!["EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)".to_string()];
+    let mut where_parts: Vec<String> =
+        vec!["EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)".to_string()];
     let mut bind_idx: i32 = 1;
     if !include_slugs.is_empty() {
         if include_mode_and {
@@ -607,10 +594,12 @@ async fn load_series_genres_map(
     let mut map: std::collections::HashMap<i32, Vec<SeriesGenreNameRow>> =
         std::collections::HashMap::new();
     for r in rows {
-        map.entry(r.series_id).or_default().push(SeriesGenreNameRow {
-            name_cs: r.name_cs,
-            slug: r.slug,
-        });
+        map.entry(r.series_id)
+            .or_default()
+            .push(SeriesGenreNameRow {
+                name_cs: r.name_cs,
+                slug: r.slug,
+            });
     }
     Ok(map)
 }
@@ -640,7 +629,7 @@ pub async fn series_resolve(
             .get(axum::http::header::REFERER)
             .and_then(|h| h.to_str().ok())
             .map(|r| {
-                if let Some(path) = r.splitn(2, "://").nth(1).and_then(|s| s.split_once('/')) {
+                if let Some(path) = r.split_once("://").and_then(|(_, s)| s.split_once('/')) {
                     let p = format!("/{}", path.1);
                     let clean = p.split('?').next().unwrap_or(&p);
                     clean == "/serialy-online/" || clean == "/serialy-online"

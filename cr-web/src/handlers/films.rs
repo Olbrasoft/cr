@@ -233,9 +233,7 @@ impl FilmsListTemplate {
         self.current_genre.is_some() || !self.selected_genre_slugs.is_empty()
     }
     fn is_current_genre(&self, g: &GenreRow) -> bool {
-        self.current_genre
-            .as_ref()
-            .is_some_and(|cg| cg.id == g.id)
+        self.current_genre.as_ref().is_some_and(|cg| cg.id == g.id)
     }
     fn film_genres(&self, film_id: &i32) -> &[FilmGenreNameRow] {
         static EMPTY: Vec<FilmGenreNameRow> = Vec::new();
@@ -474,7 +472,7 @@ pub async fn films_detail(
             .get(axum::http::header::REFERER)
             .and_then(|h| h.to_str().ok())
             .map(|r| {
-                if let Some(path) = r.splitn(2, "://").nth(1).and_then(|s| s.split_once('/')) {
+                if let Some(path) = r.split_once("://").and_then(|(_, s)| s.split_once('/')) {
                     let p = format!("/{}", path.1);
                     let clean = p.split('?').next().unwrap_or(&p);
                     clean == "/filmy-online/" || clean == "/filmy-online"
@@ -1142,7 +1140,6 @@ async fn scan_sktorrent_cdns(client: &reqwest::Client, video_id: i32) -> Vec<Skt
 
     vec![]
 }
-
 
 // --- Helpers ---
 
