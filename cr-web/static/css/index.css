@@ -570,3 +570,13 @@ body {
         gap: 0.5rem 1.5rem;
     }
 }
+
+@media (max-width: 400px) {
+    .search-container { padding: 1px; }
+    .search-input { padding: 0.4rem 0.7rem; font-size: 0.85rem; min-width: 0; }
+    .search-btn { padding: 0 0.7rem; font-size: 0.85rem; }
+}
+@media (max-width: 360px) {
+    .search-input { padding: 0.4rem 0.5rem; font-size: 0.8rem; }
+    .search-btn { padding: 0 0.55rem; font-size: 0.8rem; }
+}

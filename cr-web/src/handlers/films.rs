@@ -51,6 +51,39 @@ struct GenreRow {
     name_cs: String,
 }
 
+impl GenreRow {
+    /// Pretty Czech plural title for headings and SEO (e.g. "Horory", "Dramata", "Televizní filmy").
+    fn pretty_plural(&self) -> String {
+        let known: &str = match self.slug.as_str() {
+            "akcni" => "Akční filmy",
+            "animovany" => "Animované filmy",
+            "dobrodruzny" => "Dobrodružné filmy",
+            "dokumentarni" => "Dokumentární filmy",
+            "drama" => "Dramata",
+            "fantasy" => "Fantasy filmy",
+            "historicky" => "Historické filmy",
+            "horor" => "Horory",
+            "hudebni" => "Hudební filmy",
+            "komedie" => "Komedie",
+            "krimi" => "Kriminální filmy",
+            "mysteriozni" => "Mysteriózní filmy",
+            "rodinny" => "Rodinné filmy",
+            "romanticky" => "Romantické filmy",
+            "sci-fi" => "Sci-Fi filmy",
+            "thriller" => "Thrillery",
+            "tv-film" => "Televizní filmy",
+            "valecny" => "Válečné filmy",
+            "western" => "Westerny",
+            _ => "",
+        };
+        if known.is_empty() {
+            format!("{} filmy", self.name_cs)
+        } else {
+            known.to_string()
+        }
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct FilmGenreNameRow {
     name_cs: String,
@@ -97,13 +130,9 @@ impl FilmsQuery {
     }
 
     fn audio_filter(&self) -> Option<&'static str> {
-        // Default: no jazyk param → filter to dubbed only
-        let val = self.jazyk.as_deref().map(|s| s.trim()).unwrap_or("dub");
-        if val == "vse" {
+        let val = self.jazyk.as_deref().map(|s| s.trim()).unwrap_or("");
+        if val.is_empty() || val == "vse" {
             return None;
-        }
-        if val.is_empty() {
-            return Some("f.has_dub = true");
         }
         let parts: Vec<&str> = val.split(',').map(|s| s.trim()).collect();
         let has_dub = parts.contains(&"dub") || parts.contains(&"cz") || parts.contains(&"sk");
@@ -143,28 +172,25 @@ impl FilmsQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    fn parse_genre_slugs(input: Option<&String>) -> Vec<String> {
+        // Dedup to keep AND-mode `HAVING COUNT(DISTINCT g.slug) = slugs.len()` correct.
+        let mut slugs: Vec<String> = Vec::new();
+        if let Some(input) = input {
+            for s in input.split(',').map(|g| g.trim()).filter(|g| !g.is_empty()) {
+                if !slugs.iter().any(|x| x == s) {
+                    slugs.push(s.to_string());
+                }
+            }
+        }
+        slugs
+    }
+
     fn include_genres(&self) -> Vec<String> {
-        self.zanry
-            .as_ref()
-            .map(|s| {
-                s.split(',')
-                    .map(|g| g.trim().to_string())
-                    .filter(|g| !g.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        Self::parse_genre_slugs(self.zanry.as_ref())
     }
 
     fn exclude_genres(&self) -> Vec<String> {
-        self.bez
-            .as_ref()
-            .map(|s| {
-                s.split(',')
-                    .map(|g| g.trim().to_string())
-                    .filter(|g| !g.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        Self::parse_genre_slugs(self.bez.as_ref())
     }
 
     fn year_filter(&self) -> Option<i16> {
@@ -188,6 +214,34 @@ struct FilmsListTemplate {
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
+    open_filter: bool,
+    /// Genre slugs the user is filtering by right now (from `?zanry=` on main page).
+    /// Empty on a category sub-page — that info is already in `current_genre`.
+    selected_genre_slugs: Vec<String>,
+    /// Genres per film, keyed by film id — rendered as chips in desktop list view.
+    film_genres_map: std::collections::HashMap<i32, Vec<FilmGenreNameRow>>,
+}
+
+impl FilmsListTemplate {
+    fn is_selected(&self, slug: &str) -> bool {
+        self.selected_genre_slugs.iter().any(|s| s == slug)
+    }
+    fn is_multi_filter_mode(&self) -> bool {
+        self.current_genre.is_some() || !self.selected_genre_slugs.is_empty()
+    }
+    fn is_current_genre(&self, g: &GenreRow) -> bool {
+        self.current_genre.as_ref().is_some_and(|cg| cg.id == g.id)
+    }
+    // NOTE: Askama auto-refs arguments in template method calls — `{{ self.film_genres(f.id) }}`
+    // generates a call with `&f.id`. Keep the signature as `&i32` to match; Copilot's
+    // "accept i32 by value" suggestion would break Askama codegen here.
+    fn film_genres(&self, film_id: &i32) -> &[FilmGenreNameRow] {
+        static EMPTY: Vec<FilmGenreNameRow> = Vec::new();
+        self.film_genres_map
+            .get(film_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(EMPTY.as_slice())
+    }
 }
 
 #[derive(Template)]
@@ -360,6 +414,19 @@ pub async fn films_list(
         }
     });
 
+    let selected_genre_slugs: Vec<String> = params
+        .zanry
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let open_filter = !selected_genre_slugs.is_empty();
+    let film_genres_map = load_film_genres_map(&state.db, &films).await?;
+
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
         films,
@@ -371,6 +438,9 @@ pub async fn films_list(
         sort_key: params.sort_key().to_string(),
         query_string,
         search_query,
+        open_filter,
+        selected_genre_slugs,
+        film_genres_map,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -380,6 +450,7 @@ pub async fn films_detail(
     State(state): State<AppState>,
     Path(slug): Path<String>,
     axum::extract::Query(params): axum::extract::Query<FilmsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
     // WebP cover request: /filmy-online/some-film.webp (small) or -large.webp
     if slug.ends_with("-large.webp") {
@@ -397,7 +468,20 @@ pub async fn films_detail(
             .await?;
 
     if let Some(genre) = genre {
-        return films_by_genre(state, genre, params).await;
+        let from_films_home = headers
+            .get(axum::http::header::REFERER)
+            .and_then(|h| h.to_str().ok())
+            .map(|r| {
+                if let Some(path) = r.split_once("://").and_then(|(_, s)| s.split_once('/')) {
+                    let p = format!("/{}", path.1);
+                    let clean = p.split('?').next().unwrap_or(&p);
+                    clean == "/filmy-online/" || clean == "/filmy-online"
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        return films_by_genre(state, genre, params, from_films_home).await;
     }
 
     // Otherwise: film detail
@@ -445,16 +529,49 @@ async fn films_by_genre(
     state: AppState,
     genre: GenreRow,
     params: FilmsQuery,
+    open_filter: bool,
 ) -> WebResult<Response> {
     let page = params.page();
     let offset = (page - 1) * FILMS_PER_PAGE;
     let order = params.order_clause();
     let exclude = params.exclude_genres();
     let year_f = params.year_filter();
+    let zanry_extras = params.include_genres();
 
-    // Build WHERE clauses for exclude genres and year
-    let mut where_parts: Vec<String> = vec!["fg.genre_id = $1".to_string()];
-    let mut bind_idx = 2;
+    // Merge path genre with extras from ?zanry= into one include list
+    let mut include_slugs: Vec<String> = vec![genre.slug.clone()];
+    for s in zanry_extras.iter() {
+        if !include_slugs.contains(s) {
+            include_slugs.push(s.clone());
+        }
+    }
+    let multi_include = include_slugs.len() > 1;
+
+    // Build WHERE clauses
+    let mut where_parts: Vec<String> = vec![];
+    let mut bind_idx = 1;
+    if !multi_include {
+        where_parts.push(format!(
+            "f.id IN (SELECT fg.film_id FROM film_genres fg WHERE fg.genre_id = ${bind_idx})"
+        ));
+        bind_idx += 1;
+    } else if params.genre_mode_and() {
+        where_parts.push(format!(
+            "f.id IN (SELECT fg.film_id FROM film_genres fg \
+             JOIN genres g ON g.id = fg.genre_id \
+             WHERE g.slug = ANY(${bind_idx}) \
+             GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
+            include_slugs.len()
+        ));
+        bind_idx += 1;
+    } else {
+        where_parts.push(format!(
+            "f.id IN (SELECT fg.film_id FROM film_genres fg \
+             JOIN genres g ON g.id = fg.genre_id \
+             WHERE g.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
     if !exclude.is_empty() {
         where_parts.push(format!(
             "f.id NOT IN (SELECT fg2.film_id FROM film_genres fg2 \
@@ -473,12 +590,13 @@ async fn films_by_genre(
     let where_clause = where_parts.join(" AND ");
 
     // Count
-    let count_query = format!(
-        "SELECT count(DISTINCT f.id) as count FROM films f \
-         JOIN film_genres fg ON f.id = fg.film_id \
-         WHERE {where_clause}"
-    );
-    let mut count_q = sqlx::query_as::<_, CountRow>(&count_query).bind(genre.id);
+    let count_query = format!("SELECT count(*) as count FROM films f WHERE {where_clause}");
+    let mut count_q = sqlx::query_as::<_, CountRow>(&count_query);
+    if multi_include {
+        count_q = count_q.bind(include_slugs.clone());
+    } else {
+        count_q = count_q.bind(genre.id);
+    }
     if !exclude.is_empty() {
         count_q = count_q.bind(exclude.clone());
     }
@@ -491,16 +609,19 @@ async fn films_by_genre(
 
     // Films
     let films_query = format!(
-        "SELECT DISTINCT {FILM_COLUMNS} \
-         FROM films f \
-         JOIN film_genres fg ON f.id = fg.film_id \
+        "SELECT {FILM_COLUMNS} FROM films f \
          WHERE {where_clause} \
          ORDER BY {order} \
          LIMIT ${limit_idx} OFFSET ${offset_idx}",
         limit_idx = bind_idx,
         offset_idx = bind_idx + 1
     );
-    let mut q = sqlx::query_as::<_, FilmRow>(&films_query).bind(genre.id);
+    let mut q = sqlx::query_as::<_, FilmRow>(&films_query);
+    if multi_include {
+        q = q.bind(include_slugs.clone());
+    } else {
+        q = q.bind(genre.id);
+    }
     if !exclude.is_empty() {
         q = q.bind(exclude.clone());
     }
@@ -517,6 +638,7 @@ async fn films_by_genre(
 
     let query_string = build_films_query_string(&params);
 
+    let film_genres_map = load_film_genres_map(&state.db, &films).await?;
     let tmpl = FilmsListTemplate {
         img: state.image_base_url.clone(),
         films,
@@ -528,6 +650,9 @@ async fn films_by_genre(
         sort_key: params.sort_key().to_string(),
         query_string,
         search_query: None,
+        open_filter: open_filter || !zanry_extras.is_empty(),
+        selected_genre_slugs: zanry_extras.clone(),
+        film_genres_map,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -1028,6 +1153,41 @@ async fn load_genres(db: &sqlx::PgPool) -> Result<Vec<GenreRow>, sqlx::Error> {
     )
     .fetch_all(db)
     .await
+}
+
+#[derive(sqlx::FromRow)]
+struct FilmGenreJoinRow {
+    film_id: i32,
+    name_cs: String,
+    slug: String,
+}
+
+async fn load_film_genres_map(
+    db: &sqlx::PgPool,
+    films: &[FilmRow],
+) -> Result<std::collections::HashMap<i32, Vec<FilmGenreNameRow>>, sqlx::Error> {
+    if films.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let ids: Vec<i32> = films.iter().map(|f| f.id).collect();
+    let rows = sqlx::query_as::<_, FilmGenreJoinRow>(
+        "SELECT fg.film_id, g.name_cs, g.slug \
+         FROM film_genres fg JOIN genres g ON g.id = fg.genre_id \
+         WHERE fg.film_id = ANY($1) \
+         ORDER BY fg.film_id, g.name_cs",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    let mut map: std::collections::HashMap<i32, Vec<FilmGenreNameRow>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        map.entry(r.film_id).or_default().push(FilmGenreNameRow {
+            name_cs: r.name_cs,
+            slug: r.slug,
+        });
+    }
+    Ok(map)
 }
 
 /// Build pagination query string for film list/genre views.

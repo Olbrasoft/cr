@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} seriály online{% when None %}Seriály online{% endmatch %}{% endblock %}
+{% block title %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online{% when None %}Seriály online{% endmatch %}{% endblock %}
 
-{% block meta_description %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} seriály online zdarma — {{ total_count }} seriálů ke zhlédnutí.{% when None %}Seriály online zdarma — {{ total_count }} seriálů ke zhlédnutí na ceskarepublika.wiki.{% endmatch %}{% endblock %}
+{% block meta_description %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online zdarma — {{ total_count }} seriálů ke zhlédnutí.{% when None %}Seriály online zdarma — {{ total_count }} seriálů ke zhlédnutí na ceskarepublika.wiki.{% endmatch %}{% endblock %}
 
-{% block og_title %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} seriály online — ceskarepublika.wiki{% when None %}Seriály online — ceskarepublika.wiki{% endmatch %}{% endblock %}
-{% block og_description %}Seriály online zdarma — {{ total_count }} seriálů ke zhlédnutí.{% endblock %}
+{% block og_title %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online — ceskarepublika.wiki{% when None %}Seriály online — ceskarepublika.wiki{% endmatch %}{% endblock %}
+{% block og_description %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online zdarma. {{ total_count }} seriálů ke zhlédnutí přímo v prohlížeči, bez registrace.{% when None %}Seriály online zdarma — {{ total_count }} seriálů ke zhlédnutí přímo v prohlížeči, bez registrace. České i zahraniční seriály s českým dabingem nebo titulky.{% endmatch %}{% endblock %}
 {% block og_image %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endblock %}
 {% block og_type %}article{% endblock %}
 
@@ -22,17 +22,25 @@
 {% endblock %}
 
 {% block header_left %}
+{% match current_genre %}
+{% when Some with (_g) %}
+<a href="/serialy-online/" class="logo-group logo-link" style="display:flex;align-items:center;gap:0.5rem;">
+    <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+        alt="Logo Seriály online" title="Seriály online" class="header-emblem">
+    <span>Seriály online</span>
+</a>
+{% when None %}
 <div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
-    <a href="/serialy-online/" style="display:flex;align-items:center;text-decoration:none;" alt="Seriály online" title="Seriály online">
-        <img src="/static/img/logo-filmy-a-serialy.svg?v=6" alt="Logo Seriály online" title="Seriály online" class="header-emblem">
-    </a>
-    <h1>{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }}{% when None %}Seriály online{% endmatch %}</h1>
+    <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+        alt="Logo Seriály online" title="Seriály online" class="header-emblem">
+    <h1>Seriály online</h1>
 </div>
+{% endmatch %}
 {% endblock %}
 
 {% block header_search %}
 <div class="search-container" id="header-search-box">
-    <input type="text" id="series-search" class="search-input" placeholder="Hledat seriál..." autocomplete="off" {% match search_query %}{% when Some with (q) %}value="{{ q }}"{% when None %}{% endmatch %}>
+    <input type="text" id="series-search" class="search-input" placeholder="Hledat seriál..." autocomplete="off"{% match search_query %}{% when Some with (q) %} value="{{ q }}"{% when None %}{% endmatch %}>
     <button class="search-btn" onclick="doSearch()">Hledat</button>
     <div id="search-results" class="search-dropdown"></div>
 </div>
@@ -42,164 +50,226 @@
 
 {% block content %}
 <main class="series-page">
-<nav class="breadcrumb">
-    <a href="/" alt="Česká republika" title="Česká republika">Česká republika</a>
-    <span>›</span> <a href="/serialy-online/" alt="Seriály online" title="Seriály online">Seriály online</a>
-    {% match current_genre %}
-    {% when Some with (g) %}
-    <span>›</span> <span>{{ g.name_cs }}</span>
-    {% when None %}
-    {% endmatch %}
-</nav>
+    {# Breadcrumb — on subcategory ends at a link to Seriály online (no trailing genre) #}
+    <nav class="breadcrumb">
+        <a href="/">Česká republika</a>
+        <span>›</span>
+        {% match current_genre %}
+        {% when Some with (g) %}
+        <a href="/serialy-online/">Seriály online</a>
+        {% when None %}
+        <span>Seriály online</span>
+        {% endmatch %}
+    </nav>
 
-<div class="films-header">
-    <h2>
+    <div class="films-header">
         {% match search_query %}
-        {% when Some with (q) %}Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span>
+        {% when Some with (q) %}
+        <h2>Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span></h2>
         {% when None %}
             {% match current_genre %}
-            {% when Some with (g) %}{{ g.name_cs }} <span class="count">({{ total_count }})</span>
-            {% when None %}Nejnovější epizody z {{ total_count }} seriálů
+            {% when Some with (g) %}
+            <h1>{{ g.pretty_plural() }}<span class="online-word"> online</span> <span class="count">({{ total_count }})</span></h1>
+            {% when None %}
+            <h2>Nejnovější epizody z {{ total_count }} seriálů<span class="online-word"> online</span></h2>
             {% endmatch %}
         {% endmatch %}
-    </h2>
-    <div class="films-toolbar">
-        <label class="toolbar-group">
-            <span class="toolbar-label">Řazení:</span>
-            <select id="sort-select" onchange="applySortCombined(this.value)" aria-label="Řazení" class="sort-select-combined">
-                <option value="pridano:desc">Naposledy přidané</option>
-                <option value="rok:desc">Od nejnovějších</option>
-                <option value="imdb:desc">Nejlépe hodnocené IMDB</option>
-                <option value="nazev:asc">Podle názvu A–Z</option>
-            </select>
-        </label>
-        <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" aria-label="Přepnout zobrazení mřížka / seznam">
-            <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
-            <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
-        </button>
+        <div class="films-toolbar">
+            <label class="toolbar-group">
+                <span class="toolbar-label">Řazení:</span>
+                <select id="sort-select" onchange="applySortCombined(this.value)" title="Řazení seriálů" class="sort-select-combined">
+                    <optgroup label="Podle přidání">
+                        <option value="pridano:desc">Naposledy přidané</option>
+                        <option value="pridano:asc">Nejdříve přidané</option>
+                    </optgroup>
+                    <optgroup label="Podle roku vydání">
+                        <option value="rok:desc">Od nejnovějších</option>
+                        <option value="rok:asc">Od nejstarších</option>
+                    </optgroup>
+                    <optgroup label="Podle hodnocení IMDB">
+                        <option value="imdb:desc">Nejlépe hodnocené první</option>
+                        <option value="imdb:asc">Nejhůře hodnocené první</option>
+                    </optgroup>
+                    <optgroup label="Podle abecedy">
+                        <option value="nazev:asc">Podle názvu A–Z</option>
+                        <option value="nazev:desc">Podle názvu Z–A</option>
+                    </optgroup>
+                </select>
+            </label>
+            <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout na zobrazení seznamem" aria-label="Zobrazení">
+                <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
+                <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
+            </button>
+            <button class="view-btn" id="btn-filter-toggle" onclick="toggleFilter()" title="{% match current_genre %}{% when Some with (_g) %}Upřesnit nebo zrušit filtr{% when None %}Filtrování{% endmatch %}">
+                <svg width="18" height="18" viewBox="0 0 18 18"><path d="M1 3h16M4 9h10M7 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+            </button>
+        </div>
     </div>
-</div>
 
-<nav class="genre-nav">
-    {% if current_genre.is_none() %}
-    <span class="genre-tag current">Vše</span>
-    {% else %}
-    <a href="/serialy-online/" class="genre-tag" alt="Všechny seriály" title="Všechny seriály">Vše</a>
-    {% endif %}
-    {% for g in genres %}
-    {% match current_genre %}{% when Some with (cg) %}{% if cg.id == g.id %}
-    <span class="genre-tag current">{{ g.name_cs }}</span>
-    {% else %}
-    <a href="/serialy-online/{{ g.slug }}/" class="genre-tag" alt="{{ g.name_cs }} seriály" title="{{ g.name_cs }} seriály">{{ g.name_cs }}</a>
-    {% endif %}{% when None %}
-    <a href="/serialy-online/{{ g.slug }}/" class="genre-tag" alt="{{ g.name_cs }} seriály" title="{{ g.name_cs }} seriály">{{ g.name_cs }}</a>
-    {% endmatch %}
-    {% endfor %}
-</nav>
-
-{# Main grid: episodes (default) or series (search mode) #}
-{% if !episodes.is_empty() %}
-<div class="films-grid" id="films-container">
-    {% for ep in episodes %}
-    <a href="/serialy-online/{{ ep.series_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" title="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}">
-        <div class="film-poster">
-            {% match ep.series_cover_filename %}
-            {% when Some with (c) %}
-            <img src="/serialy-online/{{ ep.series_slug }}.webp" alt="{{ ep.series_title }}" title="{{ ep.series_title }}" loading="lazy" width="200" height="300">
-            {% when None %}
-            <div class="no-poster">{{ ep.series_title }}</div>
-            {% endmatch %}
-            <div class="rating-badges">
-                {% match ep.series_imdb_rating %}
-                {% when Some with (r) %}<span class="rating-badge imdb" title="IMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
-                {% match ep.series_csfd_rating %}
-                {% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}
-            </div>
-            {% if ep.has_subtitles.unwrap_or(false) %}
-            <span class="cc-badge" title="České titulky">CC</span>
-            {% endif %}
-        </div>
-        <div class="film-body">
-            <div class="film-info">
-                <span class="film-title">{{ ep.series_title }}</span>
-                {% match ep.series_original_title %}{% when Some with (ot) %}{% if ot.as_str() != ep.series_title.as_str() %}<span class="film-original">{{ ot }}</span>{% endif %}{% when None %}{% endmatch %}
-                <span class="film-episode-label">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
-            </div>
-            <div class="film-list-extra">
-                <div class="film-ratings">
-                    {% match ep.series_imdb_rating %}{% when Some with (r) %}<span class="badge imdb">IMDB {{ r }}</span>{% when None %}{% endmatch %}
-                    {% match ep.series_csfd_rating %}{% when Some with (r) %}<span class="badge csfd">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
-                    {% match ep.series_first_air_year %}{% when Some with (y) %}<span class="badge year">{{ y }}</span>{% when None %}{% endmatch %}
+    {# Advanced filter panel — hidden by default, auto-opens when landing on subcategory from main listing #}
+    <div class="filter-panel" id="filter-panel" style="display:{% if open_filter %}block{% else %}none{% endif %};"
+         {% match current_genre %}{% when Some with (cg) %}data-current-genre="{{ cg.slug }}"{% when None %}{% endmatch %}>
+        <div class="filter-section">
+            <div class="filter-label-row">
+                {% if self.is_multi_filter_mode() %}
+                <label>Zahrnout žánry:</label>
+                <div class="genre-mode">
+                    <label class="mode-option">
+                        <input type="radio" name="rezim" value="or" checked>
+                        <span>Alespoň jeden</span>
+                    </label>
+                    <label class="mode-option">
+                        <input type="radio" name="rezim" value="and">
+                        <span>Všechny</span>
+                    </label>
+                    <button type="button" class="help-icon" aria-label="Nápověda k režimu žánrů" onclick="this.classList.toggle('show')" onkeydown="if(event.key==='Enter'||event.key===' ')event.stopPropagation()">?<span class="help-popup"><strong>Alespoň jeden:</strong> zobrazí seriály, které mají některý z&nbsp;vybraných žánrů.<br><strong>Všechny:</strong> zobrazí jen seriály, které mají všechny vybrané žánry současně.</span></button>
                 </div>
-                {% match ep.series_description %}{% when Some with (d) %}<p class="film-desc">{{ d }}</p>{% when None %}{% endmatch %}
+                {% else %}
+                <label>Vyberte žánr:</label>
+                {% endif %}
+            </div>
+            <div class="filter-genres" id="filter-genres-include">
+                {% for g in genres %}
+                {% if self.is_multi_filter_mode() %}
+                <label class="filter-chip{% if self.is_current_genre(g) %} current{% endif %}"{% if self.is_current_genre(g) %} aria-current="page"{% endif %}><input type="checkbox" value="{{ g.slug }}" data-filter="include"{% if self.is_current_genre(g) || self.is_selected(g.slug.as_str()) %} checked{% endif %}> {{ g.name_cs }}</label>
+                {% else %}
+                <a class="filter-chip filter-chip-link" href="/serialy-online/{{ g.slug }}/">{{ g.name_cs }}</a>
+                {% endif %}
+                {% endfor %}
             </div>
         </div>
-    </a>
-    {% endfor %}
-</div>
-{% else %}
-<div class="films-grid" id="films-container">
-    {% for s in series %}
-    <a href="/serialy-online/{{ s.slug }}/" class="film-card" alt="{{ s.title }}" title="{{ s.title }}">
-        <div class="film-poster">
-            {% match s.cover_filename %}
-            {% when Some with (cover) %}
-            <img src="/serialy-online/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
-            {% when None %}
-            <div class="no-poster">{{ s.title }}</div>
-            {% endmatch %}
-            <div class="rating-badges">
-                {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
-                {% match s.csfd_rating %}{% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}
+        <div class="filter-section">
+            <div class="filter-label-row">
+                <label>Vyloučit žánry:</label>
+                <button type="button" class="help-icon" aria-label="Nápověda k vyloučení žánrů" onclick="this.classList.toggle('show')" onkeydown="if(event.key==='Enter'||event.key===' ')event.stopPropagation()">?<span class="help-popup"><strong>Vyloučit žánry:</strong> zaškrtnuté žánry nebudou mezi seriály zobrazeny. Například: pokud vyloučíte Horor, nezobrazí se žádné horory.</span></button>
+            </div>
+            <div class="filter-genres" id="filter-genres-exclude">
+                {% for g in genres %}
+                {% match current_genre %}
+                {% when Some with (cg) %}{% if cg.id != g.id %}<label class="filter-chip exclude"><input type="checkbox" value="{{ g.slug }}" data-filter="exclude"> {{ g.name_cs }}</label>{% endif %}
+                {% when None %}<label class="filter-chip exclude"><input type="checkbox" value="{{ g.slug }}" data-filter="exclude"> {{ g.name_cs }}</label>
+                {% endmatch %}
+                {% endfor %}
             </div>
         </div>
-        <div class="film-body">
-            <div class="film-info">
-                <span class="film-title">{{ s.title }}</span>
-                {% match s.original_title %}{% when Some with (ot) %}{% if ot.as_str() != s.title.as_str() %}<span class="film-original">{{ ot }}</span>{% endif %}{% when None %}{% endmatch %}
-                {% match s.first_air_year %}{% when Some with (y) %}<span class="film-year">{{ y }}</span>{% when None %}{% endmatch %}
-            </div>
-            <div class="film-list-extra">
-                <div class="film-ratings">
-                    {% match s.imdb_rating %}{% when Some with (r) %}<span class="badge imdb">IMDB {{ r }}</span>{% when None %}{% endmatch %}
-                    {% match s.csfd_rating %}{% when Some with (r) %}<span class="badge csfd">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
-                </div>
-                {% match s.description %}{% when Some with (d) %}<p class="film-desc">{{ d }}</p>{% when None %}{% endmatch %}
-            </div>
+        <div class="filter-section">
+            <label for="filter-year">Rok vydání:</label>
+            <select id="filter-year">
+                <option value="">Všechny roky</option>
+            </select>
         </div>
-    </a>
-    {% endfor %}
-</div>
-{% endif %}
+        <div class="filter-actions">
+            <button class="btn-apply" onclick="applyFilters()">Použít filtr</button>
+            <button class="btn-reset" onclick="resetFilters()">Zrušit filtry</button>
+        </div>
+    </div>
 
-{% if total_pages > 1 %}
-<nav class="pagination">
-    {% if page > 1 %}
-    <a href="?strana={{ page - 1 }}{{ query_string }}" class="page-link" alt="Předchozí stránka" title="Předchozí stránka">&laquo;</a>
-    {% endif %}
-    {% for p in 1..=total_pages %}
-    {% if p == page %}
-    <span class="page-link current">{{ p }}</span>
+    {# Main grid: episodes (default) or series (search mode) #}
+    {% if !episodes.is_empty() %}
+    <div class="films-grid" id="films-container">
+        {% for ep in episodes %}
+        <a href="/serialy-online/{{ ep.series_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" title="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}">
+            <div class="film-poster">
+                {% match ep.series_cover_filename %}
+                {% when Some with (c) %}
+                <img src="/serialy-online/{{ ep.series_slug }}.webp" alt="{{ ep.series_title }}" title="{{ ep.series_title }}" loading="lazy" width="200" height="300">
+                {% when None %}
+                <div class="no-poster">{{ ep.series_title }}</div>
+                {% endmatch %}
+                <div class="rating-badges">
+                    {% match ep.series_imdb_rating %}
+                    {% when Some with (r) %}<span class="rating-badge imdb" title="IMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
+                    {% match ep.series_csfd_rating %}
+                    {% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}
+                </div>
+                {% if ep.has_subtitles.unwrap_or(false) %}
+                <span class="cc-badge" title="České titulky">CC</span>
+                {% endif %}
+            </div>
+            <div class="film-body">
+                <div class="film-info">
+                    <span class="film-title">{{ ep.series_title }}</span>
+                    {% match ep.series_original_title %}{% when Some with (ot) %}{% if ot.as_str() != ep.series_title.as_str() %}<span class="film-original">{{ ot }}</span>{% endif %}{% when None %}{% endmatch %}
+                    <span class="film-episode-label">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
+                </div>
+                <div class="film-list-extra">
+                    <div class="film-ratings">
+                        {% match ep.series_imdb_rating %}{% when Some with (r) %}<span class="badge imdb">IMDB {{ r }}</span>{% when None %}{% endmatch %}
+                        {% match ep.series_csfd_rating %}{% when Some with (r) %}<span class="badge csfd">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
+                        {% match ep.series_first_air_year %}{% when Some with (y) %}<span class="badge year">{{ y }}</span>{% when None %}{% endmatch %}
+                        {% for sg in self.series_genres(ep.series_id) %}<span class="genre-tag">{{ sg.name_cs }}</span>{% endfor %}
+                    </div>
+                    {% match ep.series_description %}{% when Some with (d) %}<p class="film-desc">{{ d }}</p>{% when None %}{% endmatch %}
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
     {% else %}
-    {% if p <= 2 || p > total_pages - 2 || (p >= page - 2 && p <= page + 2) %}
-    <a href="?strana={{ p }}{{ query_string }}" class="page-link" alt="Strana {{ p }}" title="Strana {{ p }}">{{ p }}</a>
-    {% else %}
-    {% if p == 3 && page > 5 %}<span class="page-dots">…</span>{% endif %}
-    {% if p == total_pages - 2 && page < total_pages - 4 %}<span class="page-dots">…</span>{% endif %}
+    <div class="films-grid" id="films-container">
+        {% for s in series %}
+        <a href="/serialy-online/{{ s.slug }}/" class="film-card" title="{{ s.title }}">
+            <div class="film-poster">
+                {% match s.cover_filename %}
+                {% when Some with (cover) %}
+                <img src="/serialy-online/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
+                {% when None %}
+                <div class="no-poster">{{ s.title }}</div>
+                {% endmatch %}
+                <div class="rating-badges">
+                    {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
+                    {% match s.csfd_rating %}{% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}
+                </div>
+            </div>
+            <div class="film-body">
+                <div class="film-info">
+                    <span class="film-title">{{ s.title }}</span>
+                    {% match s.original_title %}{% when Some with (ot) %}{% if ot.as_str() != s.title.as_str() %}<span class="film-original">{{ ot }}</span>{% endif %}{% when None %}{% endmatch %}
+                    {% match s.first_air_year %}{% when Some with (y) %}<span class="film-year">{{ y }}</span>{% when None %}{% endmatch %}
+                </div>
+                <div class="film-list-extra">
+                    <div class="film-ratings">
+                        {% match s.imdb_rating %}{% when Some with (r) %}<span class="badge imdb">IMDB {{ r }}</span>{% when None %}{% endmatch %}
+                        {% match s.csfd_rating %}{% when Some with (r) %}<span class="badge csfd">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
+                        {% match s.first_air_year %}{% when Some with (y) %}<span class="badge year">{{ y }}</span>{% when None %}{% endmatch %}
+                        {% for sg in self.series_genres(s.id) %}<span class="genre-tag">{{ sg.name_cs }}</span>{% endfor %}
+                    </div>
+                    {% match s.description %}{% when Some with (d) %}<p class="film-desc">{{ d }}</p>{% when None %}{% endmatch %}
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
     {% endif %}
+
+    {% if total_pages > 1 %}
+    <nav class="pagination">
+        {% if page > 1 %}
+        <a href="?strana={{ page - 1 }}{{ query_string }}" class="page-link">&laquo;</a>
+        {% endif %}
+        {% for p in 1..=total_pages %}
+        {% if p == page %}
+        <span class="page-link current">{{ p }}</span>
+        {% else %}
+        {% if p <= 2 || p > total_pages - 2 || (p >= page - 2 && p <= page + 2) %}
+        <a href="?strana={{ p }}{{ query_string }}" class="page-link">{{ p }}</a>
+        {% else %}
+        {% if p == 3 && page > 5 %}<span class="page-dots">…</span>{% endif %}
+        {% if p == total_pages - 2 && page < total_pages - 4 %}<span class="page-dots">…</span>{% endif %}
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="?strana={{ page + 1 }}{{ query_string }}" class="page-link">&raquo;</a>
+        {% endif %}
+    </nav>
     {% endif %}
-    {% endfor %}
-    {% if page < total_pages %}
-    <a href="?strana={{ page + 1 }}{{ query_string }}" class="page-link" alt="Další stránka" title="Další stránka">&raquo;</a>
-    {% endif %}
-</nav>
-{% endif %}
 </main>
 
 <style>
 .series-page { max-width: 1200px; margin: 0 auto; padding: 1rem; }
 
-/* Search dropdown */
+/* --- Search: override base overflow:hidden to allow dropdown --- */
 #header-search-box { position: relative; overflow: visible !important; }
 .search-dropdown { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); z-index: 200; max-height: 420px; overflow-y: auto; }
 .search-dropdown.open { display: block; }
@@ -212,29 +282,84 @@
 .search-item .si-title { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-item .si-meta { font-size: 0.8rem; color: #888; }
 
-/* Header + toolbar */
-.breadcrumb { font-size: 0.85rem; color: #888; margin: 0.5rem 0 1rem; }
-.breadcrumb a { color: #11457E; text-decoration: none; }
+/* --- Header + toolbar --- */
 .films-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; }
-.films-header h2 { margin: 0; font-size: 1.3rem; }
+.films-header h1, .films-header h2 { margin: 0; font-size: 1.3rem; font-weight: 700; }
 .films-header .count { color: #888; font-weight: 400; }
-.films-toolbar { display: flex; align-items: center; gap: 0.4rem; }
-.toolbar-group { display: inline-flex; align-items: center; gap: 0.4rem; }
-.toolbar-label { font-size: 0.82rem; color: #555; font-weight: 500; }
-.sort-select-combined { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; min-width: 200px; }
-.view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; display: flex; align-items: center; transition: background 0.15s; }
+.logo-link { text-decoration: none; color: inherit; cursor: pointer; }
+.logo-link:hover span { text-decoration: underline; }
+.logo-link, .logo-link * { cursor: pointer; }
+@media (max-width: 360px) { .online-word { display: none; } }
+.films-toolbar { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.films-toolbar select { padding: 0.3rem 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; background: white; cursor: pointer; }
+@media (max-width: 520px) {
+    .films-header h1, .films-header h2 { font-size: 1.1rem; }
+    .films-toolbar { gap: 0.3rem; }
+    .toolbar-group { margin-right: 0; gap: 0.25rem; }
+    .sort-select-combined { min-width: 0; padding-left: 0.4rem; padding-right: 0.4rem; max-width: 150px; }
+}
+.view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; transition: background 0.2s, color 0.2s; display: flex; align-items: center; }
 .view-btn:hover { background: #e0e0e0; }
-.view-toggle { background: #f1f5f9; color: #555; border-radius: 6px; padding: 0.4rem 0.7rem; }
+.view-btn.active { background: #D7141A; color: white; }
 
-/* Genre tags */
-.genre-nav { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.2rem; }
-.genre-tag { display: inline-flex; align-items: center; padding: 0.4rem 0.9rem; border-radius: 999px; background: #f1f5f9; color: #11457E; text-decoration: none; font-size: 0.85rem; font-weight: 600; transition: background 0.15s, color 0.15s; cursor: pointer; }
-.genre-tag:hover { background: #11457E; color: white; }
-.genre-tag.current { background: #C5A059; color: white; cursor: default; }
+/* --- Filter panel --- */
+.filter-panel { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 12px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
+.filter-section { margin-bottom: 0.8rem; }
+.filter-section > label { display: block; font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 0.4rem; }
+.filter-genres { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.filter-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.3rem 0.8rem; border-radius: 999px; background: #f1f5f9; border: 1px solid transparent; color: #555; font-size: 0.82rem; cursor: pointer; transition: all 0.15s; user-select: none; text-decoration: none; }
+.filter-chip:hover { background: #e2e8f0; color: #333; }
+.filter-chip:has(input:checked) { background: #C5A059; color: white; border-color: #C5A059; font-weight: 600; }
+.filter-chip input { display: none; }
+.filter-chip-link { color: #11457E; font-weight: 600; }
+a.filter-chip-link:hover { background: #11457E; color: white; }
+.filter-chip.current { outline: 2px solid #11457E; outline-offset: 2px; }
+.filter-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.btn-apply { padding: 0.4rem 1.2rem; background: #D7141A; color: white; border: none; border-radius: 6px; font-size: 0.85rem; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+.btn-apply:hover { background: #11457E; }
+.btn-reset { padding: 0.4rem 1rem; background: #f0f0f0; color: #333; border: none; border-radius: 6px; font-size: 0.85rem; cursor: pointer; }
+.btn-reset:hover { background: #e0e0e0; }
 
-/* Films grid (cards) */
-.films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
-.films-grid .film-card { text-decoration: none; color: inherit; display: block; border-radius: 8px; overflow: hidden; background: white; box-shadow: 0 1px 4px rgba(0,0,0,0.1); transition: transform 0.15s, box-shadow 0.15s; }
+#btn-filter-toggle { position: relative; }
+#btn-filter-toggle .filter-count { position: absolute; top: -5px; right: -5px; background: #D7141A; color: white; font-size: 0.65rem; font-weight: 700; min-width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+
+.filter-label-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.4rem; }
+.filter-label-row > label { margin-bottom: 0 !important; }
+.genre-mode { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; }
+.genre-mode .mode-option { display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 4px; transition: background 0.15s; }
+.genre-mode .mode-option:hover { background: #e8e8e8; }
+.genre-mode .mode-option input { margin: 0; cursor: pointer; }
+.genre-mode .mode-option input:checked + span { font-weight: 600; color: #11457E; }
+.help-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #888; color: white; font-size: 0.75rem; font-weight: 700; cursor: help; user-select: none; border: 0; padding: 0; font-family: inherit; line-height: 1; }
+.help-icon:hover, .help-icon:focus { background: #11457E; outline: none; }
+.help-icon .help-popup { display: none; position: absolute; top: 24px; right: 0; background: #222; color: white; padding: 0.6rem 0.8rem; border-radius: 6px; font-size: 0.75rem; font-weight: 400; width: 280px; max-width: 80vw; line-height: 1.4; z-index: 20; box-shadow: 0 4px 16px rgba(0,0,0,0.3); white-space: normal; text-align: left; }
+.help-icon.show .help-popup, .help-icon:hover .help-popup { display: block; }
+
+/* Combined sort select (field + direction) */
+.sort-select-combined { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; min-width: 200px; }
+.sort-select-combined:focus { outline: 1px solid #11457E; }
+
+.toolbar-group { display: inline-flex; align-items: center; gap: 0.4rem; margin-right: 0.5rem; }
+.toolbar-label { font-size: 0.82rem; color: #555; font-weight: 500; }
+.view-toggle { background: #f1f5f9; color: #555; border: none; border-radius: 6px; padding: 0.4rem 0.7rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; }
+.view-toggle:hover { background: #e2e8f0; }
+
+/* --- Breadcrumb --- */
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 0.8rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+
+/* --- Grid view --- */
+.films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.7rem; }
+@media (min-width: 520px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; } }
+@media (min-width: 768px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); } }
+/* Very narrow screens (e.g. Z Fold outer): single column, don't let cover fill whole screen */
+@media (max-width: 360px) {
+    .films-grid { grid-template-columns: 1fr; gap: 0.6rem; }
+    .films-grid > .film-card { max-width: 240px; margin-left: auto; margin-right: auto; width: 100%; }
+}
+
+.film-card { text-decoration: none; color: inherit; display: block; border-radius: 8px; overflow: hidden; background: white; box-shadow: 0 1px 4px rgba(0,0,0,0.1); transition: transform 0.15s, box-shadow 0.15s; }
 .films-grid .film-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .film-poster { aspect-ratio: 2/3; background: #222; position: relative; }
 .film-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -259,14 +384,33 @@
 .badge.year { background: #e2e8f0; color: #333; }
 .film-desc { font-size: 0.8rem; color: #555; margin: 0.3rem 0 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
-/* List view — rows instead of grid */
-.films-grid.list-view { grid-template-columns: 1fr; }
-.films-grid.list-view .film-card { display: grid; grid-template-columns: 120px 1fr; }
-.films-grid.list-view .film-poster { aspect-ratio: 2/3; max-width: 120px; }
-.films-grid.list-view .film-body { padding: 0.8rem 1rem; }
+/* --- List view --- */
+.films-grid.list-view { grid-template-columns: 1fr; gap: 0.6rem; }
+.films-grid.list-view .film-card { display: flex; gap: 1rem; align-items: flex-start; padding: 0.6rem; background: #fafafa; border-radius: 10px; border: 1px solid #eee; }
+.films-grid.list-view .film-card:hover { transform: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.films-grid.list-view .film-poster { width: 100px; min-width: 100px; flex-shrink: 0; border-radius: 6px; aspect-ratio: 2/3; max-width: 100px; }
+.films-grid.list-view .rating-badges { display: none; }
+.films-grid.list-view .film-body { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 0.2rem 0; }
+.films-grid.list-view .film-info { padding: 0; }
+.films-grid.list-view .film-title { font-size: 1.05rem; font-weight: 600; white-space: normal; }
+.films-grid.list-view .film-original { display: inline; font-size: 0.82rem; color: #888; font-style: italic; margin-left: 0.5rem; }
 .films-grid.list-view .film-list-extra { display: block; }
+.films-grid.list-view .film-ratings { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; margin: 0.4rem 0; }
+.film-ratings .genre-tag { display: none; }
+.films-grid.list-view .film-ratings .genre-tag { display: inline-flex; align-items: center; font-size: 0.75rem; color: #555; background: #eceef2; padding: 0.2rem 0.6rem; border-radius: 999px; line-height: 1.3; }
+@media (max-width: 768px) { .films-grid.list-view .film-ratings .genre-tag { display: none; } }
+.films-grid.list-view .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.78rem; font-weight: 600; }
+.films-grid.list-view .film-desc { font-size: 0.85rem; color: #555; line-height: 1.6; margin: 0.3rem 0 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Mobile list view: move IMDB/ČSFD back onto the poster (like grid), hide text-badge row to give description room. */
+@media (max-width: 520px) {
+    .films-grid.list-view .rating-badges { display: flex; }
+    .films-grid.list-view .film-ratings .badge { display: none; }
+    .films-grid.list-view .film-ratings { display: none; }
+    .films-grid.list-view .film-poster { width: 84px; min-width: 84px; max-width: 84px; }
+    .films-grid.list-view .film-title { font-size: 0.95rem; }
+}
 
-/* Pagination */
+/* --- Pagination --- */
 .pagination { display: flex; justify-content: center; align-items: center; gap: 0.3rem; margin: 2rem 0; flex-wrap: wrap; }
 .page-link { display: inline-flex; align-items: center; justify-content: center; padding: 0.4rem 0.8rem; border-radius: 999px; background: #f1f5f9; color: #11457E; text-decoration: none; font-size: 0.85rem; font-weight: 600; min-width: 2.2rem; transition: background 0.15s, color 0.15s; }
 .page-link:hover { background: #11457E; color: white; }
@@ -275,24 +419,22 @@
 </style>
 
 <script>
-function doSearch() {
-    var q = document.getElementById('series-search').value.trim();
-    if (q.length >= 2) window.location = '/serialy-online/?q=' + encodeURIComponent(q);
-}
-
-/* View toggle (grid/list) */
+/* --- View toggle (single button, switches icon + dynamic tooltip) --- */
 function setView(mode) {
     var c = document.getElementById('films-container');
     var iconGrid = document.querySelector('.view-icon-grid');
     var iconList = document.querySelector('.view-icon-list');
+    var btn = document.getElementById('btn-view-toggle');
     if (mode === 'list') {
         c.classList.add('list-view');
         if (iconGrid) iconGrid.style.display = 'none';
         if (iconList) iconList.style.display = '';
+        if (btn) btn.setAttribute('title', 'Přepnout na zobrazení mřížkou');
     } else {
         c.classList.remove('list-view');
         if (iconGrid) iconGrid.style.display = '';
         if (iconList) iconList.style.display = 'none';
+        if (btn) btn.setAttribute('title', 'Přepnout na zobrazení seznamem');
     }
     localStorage.setItem('seriesView', mode);
 }
@@ -302,21 +444,28 @@ function toggleView() {
 }
 (function(){ var s = localStorage.getItem('seriesView'); if (s === 'list') setView('list'); })();
 
-/* Sort */
+/* --- Sort (combined field + direction) --- */
 function applySortCombined(v) {
-    var field = v.split(':')[0];
+    var parts = v.split(':');
+    var field = parts[0];
+    var dir = parts[1] || 'desc';
     var u = new URL(window.location);
-    if (field === 'pridano') u.searchParams.delete('razeni');
+    if (field === 'pridano' && dir === 'desc') u.searchParams.delete('razeni');
     else u.searchParams.set('razeni', field);
+    if (dir === 'asc') u.searchParams.set('smer', 'asc');
+    else u.searchParams.delete('smer');
     u.searchParams.delete('strana');
     window.location = u.toString();
 }
+
 (function() {
     var urlParams = new URLSearchParams(window.location.search);
     var razeni = urlParams.get('razeni') || 'pridano';
+    var smer = urlParams.get('smer') === 'asc' ? 'asc' : 'desc';
     var sortSel = document.getElementById('sort-select');
     if (sortSel) {
-        var target = razeni === 'nazev' ? 'nazev:asc' : razeni + ':desc';
+        var target = razeni + ':' + smer;
+        if (razeni === 'nazev' && !urlParams.get('smer')) target = 'nazev:asc';
         for (var i = 0; i < sortSel.options.length; i++) {
             if (sortSel.options[i].value === target) {
                 sortSel.selectedIndex = i;
@@ -326,7 +475,215 @@ function applySortCombined(v) {
     }
 })();
 
-/* Autocomplete */
+/* --- Filter panel toggle --- */
+function toggleFilter() {
+    var p = document.getElementById('filter-panel');
+    var b = document.getElementById('btn-filter-toggle');
+    if (p.style.display === 'none') { p.style.display = ''; b.classList.add('active'); }
+    else { p.style.display = 'none'; b.classList.remove('active'); }
+}
+/* Auto-open from Referer on desktop; on mobile (<=520px) always start hidden. */
+(function(){
+    var p = document.getElementById('filter-panel');
+    var b = document.getElementById('btn-filter-toggle');
+    if (!p) return;
+    if (p.style.display !== 'none' && window.innerWidth <= 520) {
+        p.style.display = 'none';
+    }
+    if (b && p.style.display !== 'none') b.classList.add('active');
+})();
+
+/* --- Populate year dropdown --- */
+(function() {
+    var sel = document.getElementById('filter-year');
+    if (!sel) return;
+    var now = new Date().getFullYear();
+    for (var y = now + 1; y >= 1950; y--) {
+        var o = document.createElement('option');
+        o.value = y; o.textContent = y;
+        sel.appendChild(o);
+    }
+})();
+
+/* --- Apply / Reset filters --- */
+function applyFilters() {
+    var incEls = document.querySelectorAll('#filter-genres-include input:checked');
+    var excEls = document.querySelectorAll('#filter-genres-exclude input:checked');
+    var inc = Array.from(incEls).map(function(i){ return i.value; });
+    var exc = Array.from(excEls).map(function(i){ return i.value; });
+    var year = document.getElementById('filter-year').value;
+    var sort = document.getElementById('sort-select').value;
+    var rezimEl = document.querySelector('input[name="rezim"]:checked');
+    var rezim = rezimEl ? rezimEl.value : 'or';
+
+    var panel = document.getElementById('filter-panel');
+    var currentGenre = panel ? panel.getAttribute('data-current-genre') : null;
+    var primary = null;
+    var extras = [];
+    if (currentGenre && inc.includes(currentGenre)) {
+        primary = currentGenre;
+        extras = inc.filter(function(s){ return s !== currentGenre; });
+    } else if (inc.length === 1) {
+        primary = inc[0];
+    } else if (inc.length > 1) {
+        extras = inc.slice();
+    }
+
+    var u;
+    if (primary) {
+        u = new URL('/serialy-online/' + primary + '/', window.location.origin);
+        if (extras.length) u.searchParams.set('zanry', extras.join(','));
+        if (extras.length && rezim === 'and') u.searchParams.set('rezim', 'and');
+    } else {
+        u = new URL('/serialy-online/', window.location.origin);
+        if (extras.length > 1) u.searchParams.set('zanry', extras.join(','));
+        if (extras.length > 1 && rezim === 'and') u.searchParams.set('rezim', 'and');
+    }
+    if (exc.length) u.searchParams.set('bez', exc.join(','));
+    if (year) u.searchParams.set('rok', year);
+    if (sort && sort !== 'pridano:desc') {
+        var parts = sort.split(':');
+        u.searchParams.set('razeni', parts[0]);
+        if (parts[1] === 'asc') u.searchParams.set('smer', 'asc');
+        else u.searchParams.delete('smer');
+    } else {
+        u.searchParams.delete('razeni');
+        u.searchParams.delete('smer');
+    }
+    window.location = u.toString();
+}
+
+function resetFilters() {
+    window.location = '/serialy-online/';
+}
+
+/* --- Filter: prefill + mutual exclusion + badge counter --- */
+(function() {
+    var panel = document.getElementById('filter-panel');
+    if (!panel) return;
+
+    var urlParams = new URLSearchParams(window.location.search);
+    var incParam = urlParams.get('zanry');
+    var excParam = urlParams.get('bez');
+    var yearParam = urlParams.get('rok');
+
+    if (incParam) {
+        incParam.split(',').forEach(function(slug) {
+            var cb = panel.querySelector('#filter-genres-include input[value="' + slug + '"]');
+            if (cb) cb.checked = true;
+        });
+    }
+    var rezimParam = urlParams.get('rezim');
+    if (rezimParam === 'and') {
+        var rb = panel.querySelector('input[name="rezim"][value="and"]');
+        if (rb) rb.checked = true;
+    }
+    if (excParam) {
+        excParam.split(',').forEach(function(slug) {
+            var cb = panel.querySelector('#filter-genres-exclude input[value="' + slug + '"]');
+            if (cb) cb.checked = true;
+        });
+    }
+    if (yearParam) {
+        var yrSel = document.getElementById('filter-year');
+        if (yrSel) yrSel.value = yearParam;
+    }
+
+    function updateFilterBadge() {
+        var checked = panel.querySelectorAll('input[type="checkbox"]:checked').length;
+        var yr = document.getElementById('filter-year');
+        if (yr && yr.value) checked++;
+
+        var btn = document.getElementById('btn-filter-toggle');
+        if (btn) {
+            var badge = btn.querySelector('.filter-count');
+            if (checked > 0) {
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'filter-count';
+                    btn.appendChild(badge);
+                }
+                badge.textContent = checked;
+            } else if (badge) {
+                badge.remove();
+            }
+        }
+    }
+    updateFilterBadge();
+
+    panel.addEventListener('change', function(e) {
+        var cb = e.target;
+        if (cb.type === 'checkbox' && cb.dataset.filter) {
+            var otherSection = cb.dataset.filter === 'include' ? 'exclude' : 'include';
+            if (cb.checked) {
+                var sibling = panel.querySelector(
+                    '#filter-genres-' + otherSection + ' input[value="' + cb.value + '"]'
+                );
+                if (sibling) sibling.checked = false;
+            }
+        }
+        updateFilterBadge();
+    });
+
+    panel.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            applyFilters();
+        }
+    });
+})();
+
+/* --- Nice Czech tooltip + aria-label for genre chips --- */
+(function(){
+    var pretty = {
+        'akcni': 'Akční seriály',
+        'animovany': 'Animované seriály',
+        'dobrodruzny': 'Dobrodružné seriály',
+        'dokumentarni': 'Dokumentární seriály',
+        'drama': 'Dramata',
+        'fantasy': 'Fantasy seriály',
+        'historicky': 'Historické seriály',
+        'horor': 'Horory',
+        'hudebni': 'Hudební seriály',
+        'komedie': 'Komedie',
+        'krimi': 'Kriminální seriály',
+        'mysteriozni': 'Mysteriózní seriály',
+        'rodinny': 'Rodinné seriály',
+        'romanticky': 'Romantické seriály',
+        'sci-fi': 'Sci-Fi seriály',
+        'thriller': 'Thrillery',
+        'tv-film': 'Televizní seriály',
+        'valecny': 'Válečné seriály',
+        'western': 'Westerny'
+    };
+    var panel = document.getElementById('filter-panel');
+    var currentSlug = panel ? panel.getAttribute('data-current-genre') : null;
+    document.querySelectorAll('#filter-genres-include .filter-chip, #filter-genres-exclude .filter-chip').forEach(function(c){
+        var slug = null;
+        if (c.tagName === 'A') {
+            var m = c.getAttribute('href').match(/\/serialy-online\/([^\/]+)/);
+            if (m) slug = m[1];
+        } else if (c.classList.contains('current')) {
+            slug = currentSlug;
+        } else {
+            var input = c.querySelector('input');
+            if (input) slug = input.value;
+        }
+        var label = slug && pretty[slug];
+        if (label) {
+            c.title = label;
+            c.setAttribute('aria-label', label);
+        }
+    });
+})();
+
+/* --- Search: button click → results --- */
+function doSearch() {
+    var q = document.getElementById('series-search').value.trim();
+    if (q.length >= 2) window.location = '/serialy-online/?q=' + encodeURIComponent(q);
+}
+
+/* --- Search autocomplete --- */
 (function() {
     var input = document.getElementById('series-search');
     var dd = document.getElementById('search-results');
