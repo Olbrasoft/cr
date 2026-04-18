@@ -136,7 +136,7 @@
                         <input type="radio" name="rezim" value="and">
                         <span>Všechny</span>
                     </label>
-                    <span class="help-icon" tabindex="0" onclick="this.classList.toggle('show')">?<span class="help-popup"><strong>Alespoň jeden:</strong> zobrazí filmy, které mají některý z&nbsp;vybraných žánrů.<br><strong>Všechny:</strong> zobrazí jen filmy, které mají všechny vybrané žánry současně.</span></span>
+                    <button type="button" class="help-icon" aria-label="Nápověda k režimu žánrů" onclick="this.classList.toggle('show')" onkeydown="if(event.key==='Enter'||event.key===' ')event.stopPropagation()">?<span class="help-popup"><strong>Alespoň jeden:</strong> zobrazí filmy, které mají některý z&nbsp;vybraných žánrů.<br><strong>Všechny:</strong> zobrazí jen filmy, které mají všechny vybrané žánry současně.</span></button>
                 </div>
                 {% else %}
                 <label>Vyberte žánr:</label>
@@ -155,7 +155,7 @@
         <div class="filter-section">
             <div class="filter-label-row">
                 <label>Vyloučit žánry:</label>
-                <span class="help-icon" tabindex="0" onclick="this.classList.toggle('show')">?<span class="help-popup"><strong>Vyloučit žánry:</strong> zaškrtnuté žánry nebudou mezi filmy zobrazeny. Například: pokud vyloučíte Horor, nezobrazí se žádné horory.</span></span>
+                <button type="button" class="help-icon" aria-label="Nápověda k vyloučení žánrů" onclick="this.classList.toggle('show')" onkeydown="if(event.key==='Enter'||event.key===' ')event.stopPropagation()">?<span class="help-popup"><strong>Vyloučit žánry:</strong> zaškrtnuté žánry nebudou mezi filmy zobrazeny. Například: pokud vyloučíte Horor, nezobrazí se žádné horory.</span></button>
             </div>
             <div class="filter-genres" id="filter-genres-exclude">
                 {% for g in genres %}
@@ -320,7 +320,7 @@ a.filter-chip-link:hover { background: #11457E; color: white; }
 .genre-mode .mode-option:hover { background: #e8e8e8; }
 .genre-mode .mode-option input { margin: 0; cursor: pointer; }
 .genre-mode .mode-option input:checked + span { font-weight: 600; color: #11457E; }
-.help-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #888; color: white; font-size: 0.75rem; font-weight: 700; cursor: help; user-select: none; }
+.help-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #888; color: white; font-size: 0.75rem; font-weight: 700; cursor: help; user-select: none; border: 0; padding: 0; font-family: inherit; line-height: 1; }
 .help-icon:hover, .help-icon:focus { background: #11457E; outline: none; }
 .help-icon .help-popup { display: none; position: absolute; top: 24px; right: 0; background: #222; color: white; padding: 0.6rem 0.8rem; border-radius: 6px; font-size: 0.75rem; font-weight: 400; width: 280px; max-width: 80vw; line-height: 1.4; z-index: 20; box-shadow: 0 4px 16px rgba(0,0,0,0.3); white-space: normal; text-align: left; }
 .help-icon.show .help-popup, .help-icon:hover .help-popup { display: block; }
@@ -584,7 +584,15 @@ function applyFilters() {
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
     if (langParam) u.searchParams.set('jazyk', langParam);
-    if (sort && sort !== 'pridano:desc') u.searchParams.set('razeni', sort.split(':')[0]);
+    if (sort && sort !== 'pridano:desc') {
+        var parts = sort.split(':');
+        u.searchParams.set('razeni', parts[0]);
+        if (parts[1] === 'asc') u.searchParams.set('smer', 'asc');
+        else u.searchParams.delete('smer');
+    } else {
+        u.searchParams.delete('razeni');
+        u.searchParams.delete('smer');
+    }
     window.location = u.toString();
 }
 

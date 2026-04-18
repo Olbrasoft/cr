@@ -172,28 +172,25 @@ impl FilmsQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    fn parse_genre_slugs(input: Option<&String>) -> Vec<String> {
+        // Dedup to keep AND-mode `HAVING COUNT(DISTINCT g.slug) = slugs.len()` correct.
+        let mut slugs: Vec<String> = Vec::new();
+        if let Some(input) = input {
+            for s in input.split(',').map(|g| g.trim()).filter(|g| !g.is_empty()) {
+                if !slugs.iter().any(|x| x == s) {
+                    slugs.push(s.to_string());
+                }
+            }
+        }
+        slugs
+    }
+
     fn include_genres(&self) -> Vec<String> {
-        self.zanry
-            .as_ref()
-            .map(|s| {
-                s.split(',')
-                    .map(|g| g.trim().to_string())
-                    .filter(|g| !g.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        Self::parse_genre_slugs(self.zanry.as_ref())
     }
 
     fn exclude_genres(&self) -> Vec<String> {
-        self.bez
-            .as_ref()
-            .map(|s| {
-                s.split(',')
-                    .map(|g| g.trim().to_string())
-                    .filter(|g| !g.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        Self::parse_genre_slugs(self.bez.as_ref())
     }
 
     fn year_filter(&self) -> Option<i16> {
@@ -235,6 +232,9 @@ impl FilmsListTemplate {
     fn is_current_genre(&self, g: &GenreRow) -> bool {
         self.current_genre.as_ref().is_some_and(|cg| cg.id == g.id)
     }
+    // NOTE: Askama auto-refs arguments in template method calls — `{{ self.film_genres(f.id) }}`
+    // generates a call with `&f.id`. Keep the signature as `&i32` to match; Copilot's
+    // "accept i32 by value" suggestion would break Askama codegen here.
     fn film_genres(&self, film_id: &i32) -> &[FilmGenreNameRow] {
         static EMPTY: Vec<FilmGenreNameRow> = Vec::new();
         self.film_genres_map
