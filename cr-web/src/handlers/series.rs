@@ -41,6 +41,7 @@ pub struct SeriesRow {
 pub struct EpisodeCardRow {
     #[allow(dead_code)] // Primary key; not rendered in series_list template
     pub id: i32,
+    pub series_id: i32,
     pub series_slug: String,
     pub series_title: String,
     pub series_original_title: Option<String>,
@@ -86,6 +87,47 @@ struct GenreRow {
     name_cs: String,
 }
 
+impl GenreRow {
+    /// Pretty Czech plural title for headings and SEO
+    /// (e.g. "Akční seriály", "Dramata", "Horory").
+    fn pretty_plural(&self) -> String {
+        let known: &str = match self.slug.as_str() {
+            "akcni" => "Akční seriály",
+            "animovany" => "Animované seriály",
+            "dobrodruzny" => "Dobrodružné seriály",
+            "dokumentarni" => "Dokumentární seriály",
+            "drama" => "Dramata",
+            "fantasy" => "Fantasy seriály",
+            "historicky" => "Historické seriály",
+            "horor" => "Horory",
+            "hudebni" => "Hudební seriály",
+            "komedie" => "Komedie",
+            "krimi" => "Kriminální seriály",
+            "mysteriozni" => "Mysteriózní seriály",
+            "rodinny" => "Rodinné seriály",
+            "romanticky" => "Romantické seriály",
+            "sci-fi" => "Sci-Fi seriály",
+            "thriller" => "Thrillery",
+            "tv-film" => "Televizní seriály",
+            "valecny" => "Válečné seriály",
+            "western" => "Westerny",
+            _ => "",
+        };
+        if known.is_empty() {
+            format!("{} seriály", self.name_cs)
+        } else {
+            known.to_string()
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct SeriesGenreNameRow {
+    name_cs: String,
+    #[allow(dead_code)]
+    slug: String,
+}
+
 #[derive(FromRow)]
 struct CountRow {
     count: Option<i64>,
@@ -96,6 +138,11 @@ pub struct SeriesQuery {
     strana: Option<i64>,
     razeni: Option<String>,
     q: Option<String>,
+    zanry: Option<String>, // comma-separated include
+    bez: Option<String>,   // comma-separated exclude
+    rok: Option<String>,   // year filter
+    rezim: Option<String>, // "and" / "or"
+    smer: Option<String>,  // "asc" / "desc"
 }
 
 impl SeriesQuery {
@@ -103,17 +150,58 @@ impl SeriesQuery {
         self.strana.unwrap_or(1).max(1)
     }
 
+    fn sort_desc(&self) -> bool {
+        self.smer.as_deref() != Some("asc")
+    }
+
+    fn genre_mode_and(&self) -> bool {
+        self.rezim.as_deref() == Some("and")
+    }
+
     fn order_clause(&self) -> &'static str {
-        match self.razeni.as_deref() {
-            Some("rok") => "s.first_air_year DESC NULLS LAST, s.title",
-            Some("imdb") => "s.imdb_rating DESC NULLS LAST, s.title",
-            Some("nazev") => "s.title ASC",
-            _ => "s.added_at DESC NULLS LAST, s.title",
+        let desc = self.sort_desc();
+        match (self.razeni.as_deref(), desc) {
+            (Some("rok"), true) => "s.first_air_year DESC NULLS LAST, s.title",
+            (Some("rok"), false) => "s.first_air_year ASC NULLS LAST, s.title",
+            (Some("imdb"), true) => "s.imdb_rating DESC NULLS LAST, s.title",
+            (Some("imdb"), false) => "s.imdb_rating ASC NULLS LAST, s.title",
+            (Some("nazev"), true) => "s.title DESC",
+            (Some("nazev"), false) => "s.title ASC",
+            (_, true) => "s.added_at DESC NULLS LAST, s.title",
+            (_, false) => "s.added_at ASC NULLS LAST, s.title",
         }
     }
 
     fn sort_key(&self) -> &str {
         self.razeni.as_deref().unwrap_or("pridano")
+    }
+
+    fn include_genres(&self) -> Vec<String> {
+        self.zanry
+            .as_ref()
+            .map(|s| {
+                s.split(',')
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn exclude_genres(&self) -> Vec<String> {
+        self.bez
+            .as_ref()
+            .map(|s| {
+                s.split(',')
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn year_filter(&self) -> Option<i16> {
+        self.rok.as_ref().and_then(|s| s.trim().parse().ok())
     }
 }
 
@@ -134,6 +222,32 @@ struct SeriesListTemplate {
     sort_key: String,
     query_string: String,
     search_query: Option<String>,
+    open_filter: bool,
+    /// Genre slugs the user is filtering by right now (from `?zanry=` on main page).
+    selected_genre_slugs: Vec<String>,
+    /// Genres per series, keyed by series id — rendered as chips in desktop list view.
+    series_genres_map: std::collections::HashMap<i32, Vec<SeriesGenreNameRow>>,
+}
+
+impl SeriesListTemplate {
+    fn is_selected(&self, slug: &str) -> bool {
+        self.selected_genre_slugs.iter().any(|s| s == slug)
+    }
+    fn is_multi_filter_mode(&self) -> bool {
+        self.current_genre.is_some() || !self.selected_genre_slugs.is_empty()
+    }
+    fn is_current_genre(&self, g: &GenreRow) -> bool {
+        self.current_genre
+            .as_ref()
+            .is_some_and(|cg| cg.id == g.id)
+    }
+    fn series_genres(&self, series_id: &i32) -> &[SeriesGenreNameRow] {
+        static EMPTY: Vec<SeriesGenreNameRow> = Vec::new();
+        self.series_genres_map
+            .get(series_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(EMPTY.as_slice())
+    }
 }
 
 #[derive(Template)]
@@ -197,6 +311,10 @@ pub async fn series_list(
         }
     });
 
+    let include = params.include_genres();
+    let exclude = params.exclude_genres();
+    let year_f = params.year_filter();
+
     // Search mode: show series results (by title). No search: show latest-
     // episode-per-series grid (bombuj.si style).
     let (total_count, series, episodes) = if let Some(ref pattern) = search_q {
@@ -222,15 +340,46 @@ pub async fn series_list(
             .fetch_all(&state.db)
             .await?;
         (count_row.count.unwrap_or(0), rows, Vec::new())
-    } else {
+    } else if include.is_empty() && exclude.is_empty() && year_f.is_none() {
+        // Default home listing (no filters): latest episode per series
         let count_row = sqlx::query_as::<_, CountRow>(
             "SELECT count(DISTINCT e.series_id) as count FROM episodes e",
         )
         .fetch_one(&state.db)
         .await?;
 
-        let episodes = fetch_latest_episode_cards(&state, None, SERIES_PER_PAGE, offset).await?;
+        let episodes = fetch_latest_episode_cards(
+            &state,
+            &[],
+            false,
+            &[],
+            None,
+            SERIES_PER_PAGE,
+            offset,
+        )
+        .await?;
         (count_row.count.unwrap_or(0), Vec::new(), episodes)
+    } else {
+        // Filters active on the all-series page
+        let count_row = count_filtered_series(
+            &state,
+            &include,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+        )
+        .await?;
+        let episodes = fetch_latest_episode_cards(
+            &state,
+            &include,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+            SERIES_PER_PAGE,
+            offset,
+        )
+        .await?;
+        (count_row, Vec::new(), episodes)
     };
 
     let total_pages = (total_count as f64 / SERIES_PER_PAGE as f64).ceil() as i64;
@@ -254,6 +403,10 @@ pub async fn series_list(
         }
     });
 
+    let selected_genre_slugs: Vec<String> = include.clone();
+    let open_filter = !selected_genre_slugs.is_empty();
+    let series_genres_map = load_series_genres_map(&state.db, &series, &episodes).await?;
+
     let tmpl = SeriesListTemplate {
         img: state.image_base_url.clone(),
         episodes,
@@ -266,71 +419,200 @@ pub async fn series_list(
         sort_key: params.sort_key().to_string(),
         query_string,
         search_query,
+        open_filter,
+        selected_genre_slugs,
+        series_genres_map,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
 
-/// Latest-episode-per-series query. If `genre_id` is provided, only series
-/// belonging to that genre are included. Result is already sorted so the
-/// caller needn't reorder.
+/// Latest-episode-per-series query. Supports include/exclude genre slug lists
+/// (OR / AND mode) + optional year filter. `series.id` is carried through so
+/// list-view can look up genre chips per series.
 async fn fetch_latest_episode_cards(
     state: &AppState,
-    genre_id: Option<i32>,
+    include_slugs: &[String],
+    include_mode_and: bool,
+    exclude_slugs: &[String],
+    year_f: Option<i16>,
     limit: i64,
     offset: i64,
 ) -> WebResult<Vec<EpisodeCardRow>> {
-    let base = "WITH per_series AS ( \
-        SELECT DISTINCT ON (e.series_id) \
-            e.id, e.series_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
-        FROM episodes e \
-        {GENRE_JOIN} \
-        {GENRE_WHERE} \
-        ORDER BY e.series_id, e.created_at DESC \
-     ) \
-     SELECT ps.id, \
-        s.slug AS series_slug, \
-        s.title AS series_title, \
-        s.original_title AS series_original_title, \
-        s.cover_filename AS series_cover_filename, \
-        s.first_air_year AS series_first_air_year, \
-        s.imdb_rating AS series_imdb_rating, \
-        s.csfd_rating AS series_csfd_rating, \
-        s.description AS series_description, \
-        ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
-        (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
-        (SELECT e2.episode_name FROM episodes e2 WHERE e2.id = ps.id) AS episode_name \
-     FROM per_series ps \
-     JOIN series s ON s.id = ps.series_id \
-     ORDER BY ps.created_at DESC NULLS LAST \
-     LIMIT $1 OFFSET $2";
-
-    let (genre_join, genre_where) = if genre_id.is_some() {
-        (
-            "JOIN series_genres sg ON sg.series_id = e.series_id",
-            "WHERE sg.genre_id = $3",
-        )
+    let mut where_parts: Vec<String> = Vec::new();
+    let mut bind_idx: i32 = 3; // $1 = limit, $2 = offset
+    if !include_slugs.is_empty() {
+        if include_mode_and {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY sg.series_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include_slugs.len()
+            ));
+        } else {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude_slugs.is_empty() {
+        where_parts.push(format!(
+            "s.id NOT IN (SELECT sg2.series_id FROM series_genres sg2 \
+             JOIN genres g2 ON g2.id = sg2.genre_id \
+             WHERE g2.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("s.first_air_year = ${bind_idx}"));
+    }
+    let series_filter = if where_parts.is_empty() {
+        String::new()
     } else {
-        ("", "")
+        format!("AND {}", where_parts.join(" AND "))
     };
-    let sql = base
-        .replace("{GENRE_JOIN}", genre_join)
-        .replace("{GENRE_WHERE}", genre_where);
 
-    let rows = if let Some(gid) = genre_id {
-        sqlx::query_as::<_, EpisodeCardRow>(&sql)
-            .bind(limit)
-            .bind(offset)
-            .bind(gid)
-            .fetch_all(&state.db)
-            .await?
-    } else {
-        sqlx::query_as::<_, EpisodeCardRow>(&sql)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await?
-    };
-    Ok(rows)
+    let sql = format!(
+        "WITH per_series AS ( \
+            SELECT DISTINCT ON (e.series_id) \
+                e.id, e.series_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
+            FROM episodes e \
+            JOIN series s ON s.id = e.series_id \
+            WHERE 1=1 {series_filter} \
+            ORDER BY e.series_id, e.created_at DESC \
+         ) \
+         SELECT ps.id, \
+            s.id AS series_id, \
+            s.slug AS series_slug, \
+            s.title AS series_title, \
+            s.original_title AS series_original_title, \
+            s.cover_filename AS series_cover_filename, \
+            s.first_air_year AS series_first_air_year, \
+            s.imdb_rating AS series_imdb_rating, \
+            s.csfd_rating AS series_csfd_rating, \
+            s.description AS series_description, \
+            ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
+            (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
+            (SELECT e2.episode_name FROM episodes e2 WHERE e2.id = ps.id) AS episode_name \
+         FROM per_series ps \
+         JOIN series s ON s.id = ps.series_id \
+         ORDER BY ps.created_at DESC NULLS LAST \
+         LIMIT $1 OFFSET $2"
+    );
+
+    let mut q = sqlx::query_as::<_, EpisodeCardRow>(&sql)
+        .bind(limit)
+        .bind(offset);
+    if !include_slugs.is_empty() {
+        q = q.bind(include_slugs.to_vec());
+    }
+    if !exclude_slugs.is_empty() {
+        q = q.bind(exclude_slugs.to_vec());
+    }
+    if let Some(yr) = year_f {
+        q = q.bind(yr);
+    }
+    Ok(q.fetch_all(&state.db).await?)
+}
+
+/// Count series matching include/exclude/year filters (for pagination).
+async fn count_filtered_series(
+    state: &AppState,
+    include_slugs: &[String],
+    include_mode_and: bool,
+    exclude_slugs: &[String],
+    year_f: Option<i16>,
+) -> WebResult<i64> {
+    let mut where_parts: Vec<String> = vec!["EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)".to_string()];
+    let mut bind_idx: i32 = 1;
+    if !include_slugs.is_empty() {
+        if include_mode_and {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY sg.series_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include_slugs.len()
+            ));
+        } else {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude_slugs.is_empty() {
+        where_parts.push(format!(
+            "s.id NOT IN (SELECT sg2.series_id FROM series_genres sg2 \
+             JOIN genres g2 ON g2.id = sg2.genre_id \
+             WHERE g2.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("s.first_air_year = ${bind_idx}"));
+    }
+    let sql = format!(
+        "SELECT count(*) as count FROM series s WHERE {}",
+        where_parts.join(" AND ")
+    );
+    let mut q = sqlx::query_as::<_, CountRow>(&sql);
+    if !include_slugs.is_empty() {
+        q = q.bind(include_slugs.to_vec());
+    }
+    if !exclude_slugs.is_empty() {
+        q = q.bind(exclude_slugs.to_vec());
+    }
+    if let Some(yr) = year_f {
+        q = q.bind(yr);
+    }
+    let row = q.fetch_one(&state.db).await?;
+    Ok(row.count.unwrap_or(0))
+}
+
+#[derive(FromRow)]
+struct SeriesGenreJoinRow {
+    series_id: i32,
+    name_cs: String,
+    slug: String,
+}
+
+/// Load genres for all displayed series (from search results + episode cards).
+async fn load_series_genres_map(
+    db: &sqlx::PgPool,
+    series: &[SeriesRow],
+    episodes: &[EpisodeCardRow],
+) -> WebResult<std::collections::HashMap<i32, Vec<SeriesGenreNameRow>>> {
+    let mut ids: Vec<i32> = series.iter().map(|s| s.id).collect();
+    ids.extend(episodes.iter().map(|e| e.series_id));
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, SeriesGenreJoinRow>(
+        "SELECT sg.series_id, g.name_cs, g.slug \
+         FROM series_genres sg JOIN genres g ON g.id = sg.genre_id \
+         WHERE sg.series_id = ANY($1) \
+         ORDER BY sg.series_id, g.name_cs",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    let mut map: std::collections::HashMap<i32, Vec<SeriesGenreNameRow>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        map.entry(r.series_id).or_default().push(SeriesGenreNameRow {
+            name_cs: r.name_cs,
+            slug: r.slug,
+        });
+    }
+    Ok(map)
 }
 
 /// Resolve /serialy-online/{slug}/ — genre or series detail
@@ -338,6 +620,7 @@ pub async fn series_resolve(
     State(state): State<AppState>,
     Path(slug_raw): Path<String>,
     axum::extract::Query(params): axum::extract::Query<SeriesQuery>,
+    headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
     let state_clone = state.clone();
     // WebP cover
@@ -353,7 +636,20 @@ pub async fn series_resolve(
             .await?;
 
     if let Some(genre) = genre {
-        return series_by_genre(state, genre, params).await;
+        let from_series_home = headers
+            .get(axum::http::header::REFERER)
+            .and_then(|h| h.to_str().ok())
+            .map(|r| {
+                if let Some(path) = r.splitn(2, "://").nth(1).and_then(|s| s.split_once('/')) {
+                    let p = format!("/{}", path.1);
+                    let clean = p.split('?').next().unwrap_or(&p);
+                    clean == "/serialy-online/" || clean == "/serialy-online"
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        return series_by_genre(state, genre, params, from_series_home).await;
     }
 
     // Series detail
@@ -679,22 +975,42 @@ async fn series_by_genre(
     state: AppState,
     genre: GenreRow,
     params: SeriesQuery,
+    open_filter: bool,
 ) -> WebResult<Response> {
     let page = params.page();
     let offset = (page - 1) * SERIES_PER_PAGE;
+    let exclude = params.exclude_genres();
+    let year_f = params.year_filter();
+    let zanry_extras = params.include_genres();
 
-    let count_row = sqlx::query_as::<_, CountRow>(
-        "SELECT count(DISTINCT e.series_id) as count FROM episodes e \
-         JOIN series_genres sg ON sg.series_id = e.series_id WHERE sg.genre_id = $1",
+    // Merge path genre with ?zanry= extras into one include list
+    let mut include_slugs: Vec<String> = vec![genre.slug.clone()];
+    for s in zanry_extras.iter() {
+        if !include_slugs.contains(s) {
+            include_slugs.push(s.clone());
+        }
+    }
+
+    let total_count = count_filtered_series(
+        &state,
+        &include_slugs,
+        params.genre_mode_and(),
+        &exclude,
+        year_f,
     )
-    .bind(genre.id)
-    .fetch_one(&state.db)
     .await?;
-    let total_count = count_row.count.unwrap_or(0);
     let total_pages = (total_count as f64 / SERIES_PER_PAGE as f64).ceil() as i64;
 
-    let episodes =
-        fetch_latest_episode_cards(&state, Some(genre.id), SERIES_PER_PAGE, offset).await?;
+    let episodes = fetch_latest_episode_cards(
+        &state,
+        &include_slugs,
+        params.genre_mode_and(),
+        &exclude,
+        year_f,
+        SERIES_PER_PAGE,
+        offset,
+    )
+    .await?;
 
     let all_genres = sqlx::query_as::<_, GenreRow>(
         "SELECT g.id, g.slug, g.name_cs FROM genres g \
@@ -703,6 +1019,9 @@ async fn series_by_genre(
     )
     .fetch_all(&state.db)
     .await?;
+
+    let query_string = build_series_query_string(&params);
+    let series_genres_map = load_series_genres_map(&state.db, &[], &episodes).await?;
 
     let tmpl = SeriesListTemplate {
         img: state.image_base_url.clone(),
@@ -714,8 +1033,11 @@ async fn series_by_genre(
         total_count,
         current_genre: Some(genre),
         sort_key: params.sort_key().to_string(),
-        query_string: String::new(),
+        query_string,
         search_query: None,
+        open_filter: open_filter || !zanry_extras.is_empty(),
+        selected_genre_slugs: zanry_extras,
+        series_genres_map,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -1033,6 +1355,27 @@ fn build_series_query_string(params: &SeriesQuery) -> String {
         if !t.is_empty() {
             parts.push(("q", t.to_string()));
         }
+    }
+    if let Some(ref z) = params.zanry
+        && !z.is_empty()
+    {
+        parts.push(("zanry", z.clone()));
+    }
+    if params.rezim.as_deref() == Some("and") {
+        parts.push(("rezim", "and".to_string()));
+    }
+    if params.smer.as_deref() == Some("asc") {
+        parts.push(("smer", "asc".to_string()));
+    }
+    if let Some(ref b) = params.bez
+        && !b.is_empty()
+    {
+        parts.push(("bez", b.clone()));
+    }
+    if let Some(ref r) = params.rok
+        && !r.is_empty()
+    {
+        parts.push(("rok", r.clone()));
     }
     super::build_pagination_qs(&parts)
 }

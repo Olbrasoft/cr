@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} filmy online{% when None %}Filmy online{% endmatch %}{% endblock %}
+{% block title %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online{% when None %}Filmy online{% endmatch %}{% endblock %}
 
-{% block meta_description %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} filmy online zdarma — {{ total_count }} filmů ke zhlédnutí.{% when None %}Filmy online zdarma — {{ total_count }} filmů ke zhlédnutí na ceskarepublika.wiki.{% endmatch %}{% endblock %}
+{% block meta_description %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online zdarma — {{ total_count }} filmů ke zhlédnutí.{% when None %}Filmy online zdarma — {{ total_count }} filmů ke zhlédnutí na ceskarepublika.wiki.{% endmatch %}{% endblock %}
 
-{% block og_title %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} filmy online — ceskarepublika.wiki{% when None %}Filmy online — ceskarepublika.wiki{% endmatch %}{% endblock %}
-{% block og_description %}{% match current_genre %}{% when Some with (g) %}{{ g.name_cs }} filmy online zdarma. {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace.{% when None %}Filmy online zdarma — {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace. České i zahraniční filmy s českým dabingem nebo titulky.{% endmatch %}{% endblock %}
+{% block og_title %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online — ceskarepublika.wiki{% when None %}Filmy online — ceskarepublika.wiki{% endmatch %}{% endblock %}
+{% block og_description %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online zdarma. {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace.{% when None %}Filmy online zdarma — {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace. České i zahraniční filmy s českým dabingem nebo titulky.{% endmatch %}{% endblock %}
 {% block og_image %}https://ceskarepublika.wiki/static/img/og-filmy-online-v1.png{% endblock %}
 {% block og_type %}article{% endblock %}
 
@@ -22,11 +22,20 @@
 {% endblock %}
 
 {% block header_left %}
+{% match current_genre %}
+{% when Some with (_g) %}
+<a href="/filmy-online/" class="logo-group logo-link" style="display:flex;align-items:center;gap:0.5rem;">
+    <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+        alt="Logo Filmy online" title="Filmy online" class="header-emblem">
+    <span>Filmy online</span>
+</a>
+{% when None %}
 <div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
     <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
         alt="Logo Filmy online" title="Filmy online" class="header-emblem">
     <h1>Filmy online</h1>
 </div>
+{% endmatch %}
 {% endblock %}
 
 {# Search in header #}
@@ -48,7 +57,7 @@
         <span>›</span>
         {% match current_genre %}
         {% when Some with (g) %}
-        <a href="/filmy-online/">Filmy online</a> <span>›</span> <span>{{ g.name_cs }}</span>
+        <a href="/filmy-online/">Filmy online</a>
         {% when None %}
         <span>Filmy online</span>
         {% endmatch %}
@@ -60,14 +69,12 @@
         {% when Some with (q) %}
         <h2>Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span></h2>
         {% when None %}
-        <h2>
             {% match current_genre %}
             {% when Some with (g) %}
-                {{ g.name_cs }} <span class="count">({{ total_count }})</span>
+            <h1>{{ g.pretty_plural() }}<span class="online-word"> online</span> <span class="count">({{ total_count }})</span></h1>
             {% when None %}
-                Vyberte si z {{ total_count }} filmů, které si můžete pustit online
+            <h2>Vyberte si z {{ total_count }} filmů<span class="online-word"> online</span></h2>
             {% endmatch %}
-        </h2>
         {% endmatch %}
         <div class="films-toolbar">
             <label class="toolbar-group">
@@ -103,22 +110,23 @@
                     <option value="sub">Jen s titulky</option>
                 </select>
             </label>
-            <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout zobrazení mřížka / seznam" aria-label="Zobrazení">
+            <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout na zobrazení seznamem" aria-label="Zobrazení">
                 <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
                 <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
             </button>
-            <button class="view-btn" id="btn-filter-toggle" onclick="toggleFilter()" title="Filtrování">
+            <button class="view-btn" id="btn-filter-toggle" onclick="toggleFilter()" title="{% match current_genre %}{% when Some with (_g) %}Upřesnit nebo zrušit filtr{% when None %}Filtrování{% endmatch %}">
                 <svg width="18" height="18" viewBox="0 0 18 18"><path d="M1 3h16M4 9h10M7 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
             </button>
         </div>
     </div>
 
-    {# Advanced filter panel — hidden by default #}
-    <div class="filter-panel" id="filter-panel" style="display:none;"
+    {# Advanced filter panel — hidden by default, open when arriving from main listing #}
+    <div class="filter-panel" id="filter-panel" style="display:{% if open_filter %}block{% else %}none{% endif %};"
          {% match current_genre %}{% when Some with (cg) %}data-current-genre="{{ cg.slug }}"{% when None %}{% endmatch %}>
         <div class="filter-section">
             <div class="filter-label-row">
-                <label>Zahrnout žánry (zaškrtněte, které chcete):</label>
+                {% if self.is_multi_filter_mode() %}
+                <label>Zahrnout žánry:</label>
                 <div class="genre-mode">
                     <label class="mode-option">
                         <input type="radio" name="rezim" value="or" checked>
@@ -130,13 +138,17 @@
                     </label>
                     <span class="help-icon" tabindex="0" onclick="this.classList.toggle('show')">?<span class="help-popup"><strong>Alespoň jeden:</strong> zobrazí filmy, které mají některý z&nbsp;vybraných žánrů.<br><strong>Všechny:</strong> zobrazí jen filmy, které mají všechny vybrané žánry současně.</span></span>
                 </div>
+                {% else %}
+                <label>Vyberte žánr:</label>
+                {% endif %}
             </div>
             <div class="filter-genres" id="filter-genres-include">
                 {% for g in genres %}
-                {% match current_genre %}
-                {% when Some with (cg) %}{% if cg.id != g.id %}<label class="filter-chip"><input type="checkbox" value="{{ g.slug }}" data-filter="include"> {{ g.name_cs }}</label>{% endif %}
-                {% when None %}<label class="filter-chip"><input type="checkbox" value="{{ g.slug }}" data-filter="include"> {{ g.name_cs }}</label>
-                {% endmatch %}
+                {% if self.is_multi_filter_mode() %}
+                <label class="filter-chip{% if self.is_current_genre(g) %} current{% endif %}"{% if self.is_current_genre(g) %} aria-current="page"{% endif %}><input type="checkbox" value="{{ g.slug }}" data-filter="include"{% if self.is_current_genre(g) || self.is_selected(g.slug.as_str()) %} checked{% endif %}> {{ g.name_cs }}</label>
+                {% else %}
+                <a class="filter-chip filter-chip-link" href="/filmy-online/{{ g.slug }}/">{{ g.name_cs }}</a>
+                {% endif %}
                 {% endfor %}
             </div>
         </div>
@@ -155,16 +167,6 @@
             </div>
         </div>
         <div class="filter-section">
-            <div class="filter-label-row">
-                <label>Zvuková verze:</label>
-                <span class="help-icon" tabindex="0" onclick="this.classList.toggle('show')">?<span class="help-popup"><strong>Dabovaný (CZ/SK):</strong> film má český nebo slovenský dabing.<br><strong>S českými titulky:</strong> film je v původním jazyce s českými titulky.<br>Pokud nic nevyberete, zobrazí se všechny verze.</span></span>
-            </div>
-            <div class="filter-genres" id="filter-langs">
-                <label class="filter-chip lang"><input type="checkbox" value="dub" data-filter="lang"> Dabovaný (CZ/SK)</label>
-                <label class="filter-chip lang"><input type="checkbox" value="sub" data-filter="lang"> S českými titulky</label>
-            </div>
-        </div>
-        <div class="filter-section">
             <label for="filter-year">Rok vydání:</label>
             <select id="filter-year">
                 <option value="">Všechny roky</option>
@@ -175,24 +177,6 @@
             <button class="btn-reset" onclick="resetFilters()">Zrušit filtry</button>
         </div>
     </div>
-
-    {# Quick genre tags #}
-    <nav class="genre-nav">
-        {% if current_genre.is_none() %}
-        <span class="genre-tag current">Vše</span>
-        {% else %}
-        <a href="/filmy-online/" class="genre-tag">Vše</a>
-        {% endif %}
-        {% for g in genres %}
-        {% match current_genre %}{% when Some with (cg) %}{% if cg.id == g.id %}
-        <span class="genre-tag current">{{ g.name_cs }}</span>
-        {% else %}
-        <a href="/filmy-online/{{ g.slug }}/" class="genre-tag">{{ g.name_cs }}</a>
-        {% endif %}{% when None %}
-        <a href="/filmy-online/{{ g.slug }}/" class="genre-tag">{{ g.name_cs }}</a>
-        {% endmatch %}
-        {% endfor %}
-    </nav>
 
     {# Films grid/list #}
     <div class="films-grid" id="films-container">
@@ -217,6 +201,11 @@
                     {% when None %}
                     {% endmatch %}
                 </div>
+                {% match f.runtime_min %}
+                {% when Some with (m) %}
+                <span class="runtime-badge" title="Délka filmu">{{ m }} min</span>
+                {% when None %}
+                {% endmatch %}
             </div>
             <div class="film-body">
                 <div class="film-info">
@@ -229,6 +218,7 @@
                         {% match f.imdb_rating %}{% when Some with (r) %}<span class="badge imdb">IMDB {{ r }}</span>{% when None %}{% endmatch %}
                         {% match f.csfd_rating %}{% when Some with (r) %}<span class="badge csfd">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
                         {% match f.runtime_min %}{% when Some with (m) %}<span class="badge runtime">{{ m }} min</span>{% when None %}{% endmatch %}
+                        {% for fg in self.film_genres(f.id) %}<span class="genre-tag">{{ fg.name_cs }}</span>{% endfor %}
                     </div>
                     {% match f.description %}{% when Some with (d) %}<p class="film-desc">{{ d }}</p>{% when None %}{% endmatch %}
                 </div>
@@ -279,10 +269,21 @@
 
 /* --- Header + toolbar --- */
 .films-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; }
-.films-header h2 { margin: 0; font-size: 1.3rem; }
+.films-header h1, .films-header h2 { margin: 0; font-size: 1.3rem; font-weight: 700; }
 .films-header .count { color: #888; font-weight: 400; }
-.films-toolbar { display: flex; align-items: center; gap: 0.4rem; }
+.logo-link { text-decoration: none; color: inherit; cursor: pointer; }
+.logo-link:hover span { text-decoration: underline; }
+.logo-link, .logo-link * { cursor: pointer; }
+@media (max-width: 360px) { .online-word { display: none; } }
+.films-toolbar { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .films-toolbar select { padding: 0.3rem 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; background: white; cursor: pointer; }
+@media (max-width: 520px) {
+    .films-header h1, .films-header h2 { font-size: 1.1rem; }
+    .films-toolbar { gap: 0.3rem; }
+    .toolbar-group { margin-right: 0; gap: 0.25rem; }
+    .sort-select-combined { min-width: 0; padding-left: 0.4rem; padding-right: 0.4rem; max-width: 150px; }
+    .quick-audio-select { padding-left: 0.4rem; padding-right: 0.4rem; max-width: 80px; }
+}
 .view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; transition: background 0.2s, color 0.2s; display: flex; align-items: center; }
 .view-btn:hover { background: #e0e0e0; }
 .view-btn.active { background: #D7141A; color: white; }
@@ -293,10 +294,13 @@
 .filter-section > label { display: block; font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 0.4rem; }
 .filter-genres { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 /* Unified chip design — gray default, gold when selected (same as active category pill) */
-.filter-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.3rem 0.8rem; border-radius: 999px; background: #f1f5f9; border: 1px solid transparent; color: #555; font-size: 0.82rem; cursor: pointer; transition: all 0.15s; user-select: none; }
+.filter-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.3rem 0.8rem; border-radius: 999px; background: #f1f5f9; border: 1px solid transparent; color: #555; font-size: 0.82rem; cursor: pointer; transition: all 0.15s; user-select: none; text-decoration: none; }
 .filter-chip:hover { background: #e2e8f0; color: #333; }
 .filter-chip:has(input:checked) { background: #C5A059; color: white; border-color: #C5A059; font-weight: 600; }
 .filter-chip input { display: none; }
+.filter-chip-link { color: #11457E; font-weight: 600; }
+a.filter-chip-link:hover { background: #11457E; color: white; }
+.filter-chip.current { outline: 2px solid #11457E; outline-offset: 2px; }
 .filter-row { display: flex; gap: 1rem; flex-wrap: wrap; }
 .filter-row .filter-section { flex: 1; min-width: 150px; }
 .filter-row select { width: 100%; padding: 0.4rem 0.6rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; }
@@ -352,8 +356,14 @@
 .breadcrumb a:hover { text-decoration: underline; }
 
 /* --- Grid view --- */
-.films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; }
+.films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.7rem; }
+@media (min-width: 520px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; } }
 @media (min-width: 768px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); } }
+/* Very narrow screens (e.g. Z Fold outer): single column, but don't let cover fill the whole screen */
+@media (max-width: 360px) {
+    .films-grid { grid-template-columns: 1fr; gap: 0.6rem; }
+    .films-grid > .film-card { max-width: 240px; margin-left: auto; margin-right: auto; width: 100%; }
+}
 
 .film-card { text-decoration: none; color: inherit; border-radius: 8px; overflow: hidden; transition: transform 0.15s, box-shadow 0.15s; }
 .film-card:hover { transform: translateY(-3px); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
@@ -366,6 +376,7 @@
 .rating-badge { font-weight: 700; font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; text-align: center; line-height: 1.3; }
 .rating-badge.imdb { background: #f5c518; color: #000; }
 .rating-badge.csfd { background: #ba0305; color: #fff; }
+.runtime-badge { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,0.75); color: #fff; font-weight: 600; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; line-height: 1.2; }
 
 .film-info { padding: 0.35rem 0; }
 .film-title { display: block; font-size: 0.88rem; font-weight: 500; line-height: 1.3; }
@@ -382,18 +393,32 @@
 .films-grid.list-view .film-card:hover { transform: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .films-grid.list-view .film-poster { width: 100px; min-width: 100px; flex-shrink: 0; border-radius: 6px; }
 .films-grid.list-view .rating-badges { display: none; }
+.films-grid.list-view .runtime-badge { display: none; }
 .films-grid.list-view .film-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .films-grid.list-view .film-info { padding: 0; }
 .films-grid.list-view .film-title { font-size: 1.05rem; font-weight: 600; }
 .films-grid.list-view .film-original { display: inline; font-size: 0.82rem; color: #888; font-style: italic; margin-left: 0.5rem; }
 .films-grid.list-view .film-year { display: inline; margin-left: 0.4rem; }
 .films-grid.list-view .film-list-extra { display: block; }
-.films-grid.list-view .film-ratings { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.films-grid.list-view .film-ratings { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; margin: 0.4rem 0; }
+.film-ratings .genre-tag { display: none; }
+.films-grid.list-view .film-ratings .genre-tag { display: inline-flex; align-items: center; font-size: 0.75rem; color: #555; background: #eceef2; padding: 0.2rem 0.6rem; border-radius: 999px; line-height: 1.3; }
+@media (max-width: 768px) { .films-grid.list-view .film-ratings .genre-tag { display: none; } }
 .films-grid.list-view .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.78rem; font-weight: 600; }
 .films-grid.list-view .badge.imdb { background: #f5c518; color: #000; }
 .films-grid.list-view .badge.csfd { background: #ba0305; color: #fff; }
 .films-grid.list-view .badge.runtime { background: #eee; color: #333; }
 .films-grid.list-view .film-desc { font-size: 0.85rem; color: #555; line-height: 1.6; margin: 0.3rem 0 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Mobile list view: move IMDB/ČSFD/runtime back onto the poster (like grid), hide text-badge row so the description has room. */
+@media (max-width: 520px) {
+    .films-grid.list-view .rating-badges { display: flex; }
+    .films-grid.list-view .runtime-badge { display: block; }
+    .films-grid.list-view .film-ratings .badge { display: none; }
+    .films-grid.list-view .film-ratings { display: none; }
+    .films-grid.list-view .film-poster { width: 84px; min-width: 84px; }
+    .films-grid.list-view .film-title { font-size: 0.95rem; }
+    .films-grid.list-view .runtime-badge { font-size: 0.65rem; padding: 1px 4px; }
+}
 
 /* --- Pagination --- */
 .pagination { display: flex; justify-content: center; align-items: center; gap: 0.3rem; margin: 2rem 0; flex-wrap: wrap; }
@@ -409,16 +434,19 @@ function setView(mode) {
     const c = document.getElementById('films-container');
     const iconGrid = document.querySelector('.view-icon-grid');
     const iconList = document.querySelector('.view-icon-list');
+    const btn = document.getElementById('btn-view-toggle');
     if (mode === 'list') {
         c.classList.add('list-view');
         // In list view, show the "switch to grid" icon (grid squares)
         if (iconGrid) iconGrid.style.display = 'none';
         if (iconList) iconList.style.display = '';
+        if (btn) btn.setAttribute('title', 'Přepnout na zobrazení mřížkou');
     } else {
         c.classList.remove('list-view');
         // In grid view, show the "switch to list" icon (hamburger)
         if (iconGrid) iconGrid.style.display = '';
         if (iconList) iconList.style.display = 'none';
+        if (btn) btn.setAttribute('title', 'Přepnout na zobrazení seznamem');
     }
     localStorage.setItem('filmsView', mode);
 }
@@ -449,11 +477,9 @@ function applySort() { applySortCombined(document.getElementById('sort-select').
 
 function applyQuickAudio(v) {
     var u = new URL(window.location);
-    if (v === 'dub' || !v) {
-        // Default is dubbed - remove param
+    if (!v || v === 'vse') {
         u.searchParams.delete('jazyk');
     } else {
-        // "vse" or "sub" - set explicitly
         u.searchParams.set('jazyk', v);
     }
     u.searchParams.delete('strana');
@@ -477,22 +503,13 @@ function applyQuickAudio(v) {
             }
         }
     }
-    // Default is "dub" (dubbed only). Only change select if user set non-default.
     var jazyk = urlParams.get('jazyk');
     var qa = document.getElementById('quick-audio');
     if (qa) {
-        if (jazyk === 'vse' || jazyk === 'sub') {
+        if (jazyk === 'dub' || jazyk === 'sub') {
             qa.value = jazyk;
         } else {
-            qa.value = 'dub';  // default
-        }
-    }
-    // Also prefill detailed filter lang checkboxes to match default
-    if (!jazyk || jazyk === 'dub') {
-        var filterPanel = document.getElementById('filter-panel');
-        if (filterPanel) {
-            var dubCb = filterPanel.querySelector('#filter-langs input[value="dub"]');
-            if (dubCb) dubCb.checked = true;
+            qa.value = 'vse';
         }
     }
 })();
@@ -504,6 +521,16 @@ function toggleFilter() {
     if (p.style.display === 'none') { p.style.display = ''; b.classList.add('active'); }
     else { p.style.display = 'none'; b.classList.remove('active'); }
 }
+/* Auto-open from Referer applies on desktop only; on mobile (<=520px) always start hidden. */
+(function(){
+    var p = document.getElementById('filter-panel');
+    var b = document.getElementById('btn-filter-toggle');
+    if (!p) return;
+    if (p.style.display !== 'none' && window.innerWidth <= 520) {
+        p.style.display = 'none';
+    }
+    if (b && p.style.display !== 'none') b.classList.add('active');
+})();
 
 /* --- Populate year dropdown --- */
 (function() {
@@ -520,67 +547,50 @@ function toggleFilter() {
 function applyFilters() {
     var incEls = document.querySelectorAll('#filter-genres-include input:checked');
     var excEls = document.querySelectorAll('#filter-genres-exclude input:checked');
-    var langEls = document.querySelectorAll('#filter-langs input:checked');
     var inc = Array.from(incEls).map(i => i.value);
     var exc = Array.from(excEls).map(i => i.value);
-    var langs = Array.from(langEls).map(i => i.value);
     var year = document.getElementById('filter-year').value;
     var sort = document.getElementById('sort-select').value;
+    var jazyk = document.getElementById('quick-audio') ? document.getElementById('quick-audio').value : 'vse';
     var rezimEl = document.querySelector('input[name="rezim"]:checked');
     var rezim = rezimEl ? rezimEl.value : 'or';
-    var sortDir = document.getElementById('sort-dir-btn');
-    var dir = sortDir && sortDir.classList.contains('asc') ? 'asc' : 'desc';
 
-    // If we're on a genre subpage, include that genre implicitly
+    var langParam = (jazyk === 'dub' || jazyk === 'sub') ? jazyk : null;
+
+    // Decide primary genre (kept in URL path) vs. extras (go to ?zanry=)
     var panel = document.getElementById('filter-panel');
     var currentGenre = panel ? panel.getAttribute('data-current-genre') : null;
-    if (currentGenre && !inc.includes(currentGenre)) {
-        inc.unshift(currentGenre);
+    var primary = null;
+    var extras = [];
+    if (currentGenre && inc.includes(currentGenre)) {
+        primary = currentGenre;
+        extras = inc.filter(function(s){ return s !== currentGenre; });
+    } else if (inc.length === 1) {
+        primary = inc[0];
+    } else if (inc.length > 1) {
+        extras = inc.slice();
     }
 
-    var path = window.location.pathname;
-    // If user selected multiple include genres, go to /filmy-online/ with zanry= filter
-    // If only one include genre, go to its subpage /filmy-online/{slug}/
-    // Convert langs to backend format
-    // If user has both dub and sub checked → "vse", none → default (dub only), dub only → nothing, sub only → "sub"
-    var langParam = null;
-    if (langs.length === 0) {
-        langParam = 'vse';  // user explicitly deselected = show all
-    } else if (langs.length === 1 && langs[0] === 'dub') {
-        langParam = null;  // default
-    } else if (langs.length === 1) {
-        langParam = langs[0];  // sub
+    var u;
+    if (primary) {
+        u = new URL('/filmy-online/' + primary + '/', window.location.origin);
+        if (extras.length) u.searchParams.set('zanry', extras.join(','));
+        if (extras.length && rezim === 'and') u.searchParams.set('rezim', 'and');
     } else {
-        langParam = 'vse';  // both = all
+        u = new URL('/filmy-online/', window.location.origin);
+        if (extras.length > 1) u.searchParams.set('zanry', extras.join(','));
+        if (extras.length > 1 && rezim === 'and') u.searchParams.set('rezim', 'and');
     }
-
-    if (inc.length === 1) {
-        path = '/filmy-online/' + inc[0] + '/';
-        var u = new URL(path, window.location.origin);
-        if (exc.length) u.searchParams.set('bez', exc.join(','));
-        if (year) u.searchParams.set('rok', year);
-        if (langParam) u.searchParams.set('jazyk', langParam);
-        if (sort && sort !== 'pridano') u.searchParams.set('razeni', sort);
-        if (dir === 'asc') u.searchParams.set('smer', 'asc');
-        window.location = u.toString();
-        return;
-    }
-
-    // Multi-include or no include → listing page with filter
-    var u = new URL('/filmy-online/', window.location.origin);
-    if (inc.length > 1) u.searchParams.set('zanry', inc.join(','));
-    if (inc.length > 1 && rezim === 'and') u.searchParams.set('rezim', 'and');
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
     if (langParam) u.searchParams.set('jazyk', langParam);
-    if (sort && sort !== 'pridano') u.searchParams.set('razeni', sort);
-    if (dir === 'asc') u.searchParams.set('smer', 'asc');
+    if (sort && sort !== 'pridano:desc') u.searchParams.set('razeni', sort.split(':')[0]);
     window.location = u.toString();
 }
 
 function resetFilters() {
-    // Reset to current page (remove all query params)
-    window.location = window.location.pathname;
+    // Always return to the all-films listing (drop category + every query param)
+    window.location = '/filmy-online/';
 }
 
 /* --- Filter: prefill from URL + mutual exclusion + badge counter --- */
@@ -593,7 +603,6 @@ function resetFilters() {
     var incParam = urlParams.get('zanry');
     var excParam = urlParams.get('bez');
     var yearParam = urlParams.get('rok');
-    var langParam = urlParams.get('jazyk');
 
     if (incParam) {
         incParam.split(',').forEach(function(slug) {
@@ -616,20 +625,11 @@ function resetFilters() {
         var yrSel = document.getElementById('filter-year');
         if (yrSel) yrSel.value = yearParam;
     }
-    if (langParam) {
-        langParam.split(',').forEach(function(l) {
-            var cb = panel.querySelector('#filter-langs input[value="' + l + '"]');
-            if (cb) cb.checked = true;
-        });
-    }
-
     // Update filter toggle button with count of active filters
     function updateFilterBadge() {
         var checked = panel.querySelectorAll('input[type="checkbox"]:checked').length;
         var yr = document.getElementById('filter-year');
-        var lg = document.getElementById('filter-lang');
         if (yr && yr.value) checked++;
-        if (lg && lg.value) checked++;
 
         var btn = document.getElementById('btn-filter-toggle');
         if (btn) {
@@ -670,6 +670,50 @@ function resetFilters() {
         if (e.key === 'Enter') {
             e.preventDefault();
             applyFilters();
+        }
+    });
+})();
+
+/* --- Nice Czech tooltip + aria-label for genre chips --- */
+(function(){
+    var pretty = {
+        'akcni': 'Akční filmy',
+        'animovany': 'Animované filmy',
+        'dobrodruzny': 'Dobrodružné filmy',
+        'dokumentarni': 'Dokumentární filmy',
+        'drama': 'Dramata',
+        'fantasy': 'Fantasy filmy',
+        'historicky': 'Historické filmy',
+        'horor': 'Horory',
+        'hudebni': 'Hudební filmy',
+        'komedie': 'Komedie',
+        'krimi': 'Kriminální filmy',
+        'mysteriozni': 'Mysteriózní filmy',
+        'rodinny': 'Rodinné filmy',
+        'romanticky': 'Romantické filmy',
+        'sci-fi': 'Sci-Fi filmy',
+        'thriller': 'Thrillery',
+        'tv-film': 'Televizní filmy',
+        'valecny': 'Válečné filmy',
+        'western': 'Westerny'
+    };
+    var panel = document.getElementById('filter-panel');
+    var currentSlug = panel ? panel.getAttribute('data-current-genre') : null;
+    document.querySelectorAll('#filter-genres-include .filter-chip, #filter-genres-exclude .filter-chip').forEach(function(c){
+        var slug = null;
+        if (c.tagName === 'A') {
+            var m = c.getAttribute('href').match(/\/filmy-online\/([^\/]+)/);
+            if (m) slug = m[1];
+        } else if (c.classList.contains('current')) {
+            slug = currentSlug;
+        } else {
+            var input = c.querySelector('input');
+            if (input) slug = input.value;
+        }
+        var label = slug && pretty[slug];
+        if (label) {
+            c.title = label;
+            c.setAttribute('aria-label', label);
         }
     });
 })();
