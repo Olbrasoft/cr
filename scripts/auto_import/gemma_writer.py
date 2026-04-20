@@ -132,3 +132,30 @@ def generate_unique_cs(
     builder = _build_prompt_series if is_series else _build_prompt_film
     prompt = builder(title, year, sources)
     return _call(prompt, keys[0])
+
+
+# ---------------------------------------------------------------------------
+# Public API for external batch jobs
+# ---------------------------------------------------------------------------
+# Batch scripts that drive their own key rotation + retry policy (e.g.
+# scripts/generate-film-descriptions-prehrajto.py) need direct access to
+# the prompt builder, the key loader, and a one-shot Gemini call. Expose
+# stable non-underscore aliases so those callers don't depend on what the
+# internal API happens to be named today.
+
+build_prompt_film = _build_prompt_film
+build_prompt_series = _build_prompt_series
+load_keys = _load_keys
+
+
+def call_gemma(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT) -> str | None:
+    """Single Gemini call with a caller-supplied key.
+
+    Returns the generated text, or None on:
+      * HTTP 429 (after sleeping `RATE_LIMIT_PAUSE` seconds)
+      * safety-filter refusal (no candidates returned)
+      * HTTP != 200
+      * network / JSON errors
+
+    The caller decides whether to retry — this function does not loop."""
+    return _call(prompt, key, timeout)
