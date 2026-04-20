@@ -6,7 +6,7 @@
 
 {% block og_title %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — film online{% endblock %}
 {% block og_description %}{% match film.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — sledujte online zdarma na ceskarepublika.wiki{% endmatch %}{% endblock %}
-{% block og_image %}{% match film.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/filmy-online/{{ film.slug }}-large.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-online-v1.png{% endmatch %}{% endblock %}
+{% block og_image %}{% match film.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/filmy-online/{{ film.slug }}-large.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
 {% block og_type %}video.movie{% endblock %}
 
 {# Portrait poster dimensions (780×1170, 2:3 aspect) trigger Discord's
