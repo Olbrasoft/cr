@@ -9,10 +9,10 @@ en-US `.overview`). This script runs them through Gemma 4 (Gemini API) to
 produce unique 150–400 char Czech paraphrases for SEO — avoiding duplicate
 TMDB content across multiple Czech film sites.
 
-Reuses the 4-key rotation + prompt builder from `generate-film-descriptions.py`
-so we don't diverge on prompt tuning, and writes to `generated_description`
-only (NOT also to `description` — the film-detail template already prefers
-`generated_description` when set).
+Reuses `scripts/auto_import/gemma_writer.py` for prompt + API logic so the
+Gemini call surface stays in one place. That module's `_load_keys()` accepts
+either a single `GEMINI_API_KEY` (production cron) or parallel dev keys
+`GEMINI_API_KEY_1..4` (this script fans out across all of them).
 
 Usage:
     python3 scripts/generate-film-descriptions-prehrajto.py --dry-run --limit 5
@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import sys
 import time
@@ -32,19 +31,24 @@ from pathlib import Path
 
 import psycopg2
 
-# Reuse GEMINI_KEYS, build_prompt, call_gemma, PAUSE_BETWEEN_BATCHES from the
-# existing batch script. Import via importlib because the filename has hyphens
-# and isn't a valid module name for a plain `import`.
-_HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location(
-    "gen", _HERE / "generate-film-descriptions.py"
+# auto_import is a proper package at scripts/auto_import. Import gemma_writer
+# for prompt + Gemini API logic (no duplication vs other Gemma consumers in
+# the codebase). The underscore-prefixed names are treated as internal API
+# by callers within the same project; external users should go through the
+# `generate_unique_cs(...)` facade instead.
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from scripts.auto_import.gemma_writer import (  # noqa: E402
+    _build_prompt_film,
+    _call,
+    _load_keys,
 )
-gen = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gen)
 
-DB_URL = os.environ.get(
-    "DATABASE_URL", "postgres://cr_dev_user:cr_dev_2026@localhost/cr_dev"
-)
+# Pause between batches gives Gemini's per-key rate limiter time to reset.
+# Matches the cadence in other bulk Gemma jobs in this repo.
+PAUSE_BETWEEN_BATCHES = 3
 
 
 COHORT_WHERE = (
@@ -70,18 +74,31 @@ def fetch_cohort(conn, limit: int) -> list[tuple[int, str, int, str]]:
     return cur.fetchall()
 
 
-def process_batch(batch, conn, dry_run: bool) -> tuple[int, int]:
+def generate_one(title: str, year: int, desc: str,
+                 key: str) -> tuple[str | None, int, str | None]:
+    """Thin wrapper around gemma_writer._call — returns (text, ms, err)."""
+    prompt = _build_prompt_film(title, year, [("TMDB", desc)])
+    start = time.time()
+    try:
+        text = _call(prompt, key)
+    except Exception as e:  # noqa: BLE001 — per-film isolation, logged upstream
+        return None, int((time.time() - start) * 1000), str(e)
+    duration_ms = int((time.time() - start) * 1000)
+    if not text:
+        return None, duration_ms, "No text (safety filter / rate limit / HTTP error)"
+    return text, duration_ms, None
+
+
+def process_batch(batch, keys, conn, dry_run: bool) -> tuple[int, int]:
     """Fire one Gemma call per row on its own worker key. Returns (ok, fail)."""
     ok = 0
     fail = 0
     cur = conn.cursor()
-    keys = gen.GEMINI_KEYS
     with ThreadPoolExecutor(max_workers=len(keys)) as ex:
         futures = {}
         for i, (fid, title, year, desc) in enumerate(batch):
-            sources = [("TMDB", desc)]
-            prompt = gen.build_prompt(title, year, sources)
-            futures[ex.submit(gen.call_gemma, prompt, i)] = (fid, title, year)
+            key = keys[i % len(keys)]
+            futures[ex.submit(generate_one, title, year, desc, key)] = (fid, title, year)
 
         for fut in as_completed(futures):
             fid, title, year = futures[fut]
@@ -117,11 +134,18 @@ def main() -> int:
                     help="Don't write to DB — print generated text instead")
     args = ap.parse_args()
 
-    if not gen.GEMINI_KEYS:
-        print("ERROR: No GEMINI_API_KEY_* set in .env", file=sys.stderr)
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if not db_url:
+        print("ERROR: DATABASE_URL env var required", file=sys.stderr)
         return 2
 
-    conn = psycopg2.connect(DB_URL)
+    keys = _load_keys()
+    if not keys:
+        print("ERROR: No Gemini API key configured; set GEMINI_API_KEY or "
+              "GEMINI_API_KEY_1..4 in .env", file=sys.stderr)
+        return 2
+
+    conn = psycopg2.connect(db_url)
     try:
         rows = fetch_cohort(conn, args.limit)
         total = len(rows)
@@ -131,12 +155,11 @@ def main() -> int:
                   "`generated_description`.")
             return 0
 
-        keys = gen.GEMINI_KEYS
         est_batches = (total + len(keys) - 1) // len(keys)
-        est_sec = est_batches * gen.PAUSE_BETWEEN_BATCHES
+        est_sec = est_batches * PAUSE_BETWEEN_BATCHES
         print(f"Cohort size: {total}")
         print(f"API keys: {len(keys)}")
-        print(f"Batch size: {len(keys)}, pause: {gen.PAUSE_BETWEEN_BATCHES}s")
+        print(f"Batch size: {len(keys)}, pause: {PAUSE_BETWEEN_BATCHES}s")
         print(f"Estimated floor time: {est_sec // 3600}h "
               f"{(est_sec % 3600) // 60}m (excluding per-call latency)")
 
@@ -145,7 +168,7 @@ def main() -> int:
         start = time.time()
         for batch_start in range(0, total, len(keys)):
             batch = rows[batch_start:batch_start + len(keys)]
-            ok, fail = process_batch(batch, conn, args.dry_run)
+            ok, fail = process_batch(batch, keys, conn, args.dry_run)
             ok_total += ok
             fail_total += fail
 
@@ -159,7 +182,7 @@ def main() -> int:
                     flush=True,
                 )
             if batch_start + len(keys) < total:
-                time.sleep(gen.PAUSE_BETWEEN_BATCHES)
+                time.sleep(PAUSE_BETWEEN_BATCHES)
 
         elapsed = time.time() - start
         print(f"\nDone in {elapsed:.0f}s ({elapsed / 60:.1f}m). "
