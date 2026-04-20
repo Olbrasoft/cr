@@ -29,6 +29,7 @@ use tokio::sync::Semaphore;
 use crate::state::{AppState, CachedStreamUrl};
 
 use super::cz_proxy::cz_proxy_config;
+use super::thumbnail::is_allowed_stream_url;
 
 /// Outbound concurrency cap against prehraj.to (via the CZ proxy). Three
 /// concurrent scrapes keep peak load modest while still letting unrelated
@@ -36,11 +37,12 @@ use super::cz_proxy::cz_proxy_config;
 /// paths — defined here to live close to its first user.
 static PREHRAJTO_SCRAPE_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 
-/// How many dead-upload fallbacks to walk before giving up. Three is a
-/// pragmatic ceiling: if the top three alive uploads for a film all 404 on
-/// the CDN, re-running the sitemap sync is the right fix, not endless
-/// fallback hops at request time.
-const MAX_FALLBACK_HOPS: usize = 3;
+/// Maximum number of resolve attempts per request — the initial upload
+/// plus up to N-1 dead-upload fallbacks. Three is a pragmatic ceiling:
+/// if the top three alive uploads for a film all 404 on the CDN,
+/// re-running the sitemap sync is the right fix, not endless fallback
+/// hops at request time.
+const MAX_RESOLVE_ATTEMPTS: usize = 3;
 
 /// Safety margin subtracted from the token's reported `expires=` timestamp
 /// before caching. Prevents serving a URL that will 403 between cache
@@ -89,8 +91,12 @@ fn token_expiry_instant(url: &str) -> Option<Instant> {
     Some(Instant::now() + remaining)
 }
 
+/// `entry.expires_at` already has [`TOKEN_SAFETY_MARGIN`] subtracted when
+/// inserted (see scrape-success branch in `do_scrape`), so the freshness
+/// check is a plain comparison against `now` — applying the margin again
+/// here would make cached entries go stale ~60 s early.
 fn is_fresh_enough(entry: &CachedStreamUrl, now: Instant) -> bool {
-    entry.expires_at.saturating_duration_since(now) > TOKEN_SAFETY_MARGIN
+    entry.expires_at > now
 }
 
 async fn cached_fresh(state: &AppState, upload_id: &str) -> Option<String> {
@@ -114,8 +120,11 @@ async fn per_key_lock(state: &AppState, upload_id: &str) -> Arc<tokio::sync::Mut
 
 /// One scrape pass against the CZ proxy. Returns:
 /// - `Ok(Some(url))` on success (real tokenized CDN URL),
-/// - `Ok(None)` when the upload is dead (404 / missing `contentUrl`),
-/// - `Err(msg)` on infrastructure failure (proxy unreachable, parse error).
+/// - `Ok(None)` when the proxy explicitly reports the upload has no
+///   `contentUrl` (prehraj.to 404 / deleted — the "upload is dead" signal),
+/// - `Err(msg)` on infrastructure failure (non-2xx proxy response, proxy
+///   unreachable, parse error, bad key). Kept as `Err` so callers do not
+///   mistakenly flip `is_alive=FALSE` during a transient proxy outage.
 async fn scrape_content_url(state: &AppState, detail_url: &str) -> Result<Option<String>, String> {
     let Some((proxy_url, proxy_key)) = cz_proxy_config(&state.config) else {
         return Err("proxy-not-configured".to_string());
@@ -137,10 +146,12 @@ async fn scrape_content_url(state: &AppState, detail_url: &str) -> Result<Option
         .send()
         .await
         .map_err(|e| format!("proxy-error: {e}"))?;
-    if !resp.status().is_success() {
-        return Ok(None);
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("proxy-http-{}", status.as_u16()));
     }
     let data: ProxyVideoResponse = resp.json().await.map_err(|e| format!("proxy-parse: {e}"))?;
+    // `success: false` is the proxy's "prehraj.to says gone" signal.
     if data.success != Some(true) {
         return Ok(None);
     }
@@ -156,20 +167,18 @@ enum TryResolveOutcome {
 }
 
 async fn try_resolve_one(state: &AppState, upload_id: &str) -> TryResolveOutcome {
+    // Fast path: fresh cached URL — no DB, no lock.
     if let Some(url) = cached_fresh(state, upload_id).await {
         tracing::debug!(upload_id, result = "cache-hit", "resolved");
         return TryResolveOutcome::Resolved(url);
     }
 
-    let lock = per_key_lock(state, upload_id).await;
-    let _guard = lock.lock().await;
-
-    if let Some(url) = cached_fresh(state, upload_id).await {
-        tracing::debug!(upload_id, result = "cache-hit-after-wait", "resolved");
-        return TryResolveOutcome::Resolved(url);
-    }
-
-    let row: Option<UploadRow> = match sqlx::query_as::<_, UploadRow>(
+    // DB lookup first. The per-key in-flight map is an unbounded
+    // HashMap<String, Arc<Mutex>>; inserting an entry for every
+    // valid-looking hex id a client throws at us would be a memory-growth
+    // vector. Confirming the upload exists (and is alive) before reserving
+    // a lock slot bounds the map to real rows in `film_prehrajto_uploads`.
+    let row = match sqlx::query_as::<_, UploadRow>(
         "SELECT film_id, url FROM film_prehrajto_uploads \
          WHERE upload_id = $1 AND is_alive = TRUE",
     )
@@ -177,7 +186,11 @@ async fn try_resolve_one(state: &AppState, upload_id: &str) -> TryResolveOutcome
     .fetch_optional(&state.db)
     .await
     {
-        Ok(r) => r,
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            tracing::warn!(upload_id, result = "not-found", "no alive row in DB");
+            return TryResolveOutcome::HardError(no_sources_response());
+        }
         Err(e) => {
             tracing::error!(upload_id, error = ?e, "db lookup failed");
             return TryResolveOutcome::HardError(
@@ -186,14 +199,43 @@ async fn try_resolve_one(state: &AppState, upload_id: &str) -> TryResolveOutcome
         }
     };
 
-    let Some(row) = row else {
-        tracing::warn!(upload_id, result = "not-found", "no alive row in DB");
-        return TryResolveOutcome::HardError(no_sources_response());
+    // Per-key exclusion so only one scrape per upload_id runs concurrently.
+    let lock = per_key_lock(state, upload_id).await;
+    let outcome = {
+        let _guard = lock.lock().await;
+        if let Some(url) = cached_fresh(state, upload_id).await {
+            tracing::debug!(upload_id, result = "cache-hit-after-wait", "resolved");
+            TryResolveOutcome::Resolved(url)
+        } else {
+            do_scrape(state, upload_id, &row).await
+        }
     };
 
+    // Evict the in-flight entry once we're the last task holding it so the
+    // map doesn't accumulate one entry per ever-requested upload over the
+    // process lifetime.
+    release_per_key_lock(state, upload_id, lock).await;
+
+    outcome
+}
+
+async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryResolveOutcome {
     let scrape_started = Instant::now();
     match scrape_content_url(state, &row.url).await {
         Ok(Some(video_url)) => {
+            // Belt-and-suspenders: the CZ proxy is a trusted component,
+            // but a compromise or upstream change should not turn this
+            // endpoint into an open redirect. Refuse anything off the
+            // CDN allow-list (`premiumcdn.net`).
+            if !is_allowed_stream_url(&video_url) {
+                tracing::error!(
+                    upload_id,
+                    "resolved URL not on CDN allow-list — refusing to redirect"
+                );
+                return TryResolveOutcome::HardError(
+                    (StatusCode::BAD_GATEWAY, "resolved URL rejected").into_response(),
+                );
+            }
             let latency_ms = scrape_started.elapsed().as_millis();
             let deadline = token_expiry_instant(&video_url)
                 .unwrap_or_else(|| Instant::now() + DEFAULT_TOKEN_LIFETIME);
@@ -239,11 +281,36 @@ async fn try_resolve_one(state: &AppState, upload_id: &str) -> TryResolveOutcome
             }
         }
         Err(e) => {
+            // Never surface `e` to the client: it contains the full
+            // proxy URL (including the shared `key=` secret). Log the
+            // detail, return a generic status+message.
             tracing::error!(upload_id, error = %e, "scrape failed");
-            TryResolveOutcome::HardError(
-                (StatusCode::BAD_GATEWAY, format!("scrape: {e}")).into_response(),
-            )
+            let (status, message) = if e == "proxy-not-configured" {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "scrape proxy not configured",
+                )
+            } else {
+                (StatusCode::BAD_GATEWAY, "scrape failed")
+            };
+            TryResolveOutcome::HardError((status, message).into_response())
         }
+    }
+}
+
+/// Drop the map entry for `upload_id` when no other task is still using
+/// the same `Arc<Mutex>`. We hold the map lock during the check, so no
+/// new clones can appear; existing clones can only be dropped during the
+/// check, which makes the count monotone-decreasing — so `<= 2` (our
+/// local + the map entry) is a safe upper bound for "no other holders".
+async fn release_per_key_lock(
+    state: &AppState,
+    upload_id: &str,
+    lock: Arc<tokio::sync::Mutex<()>>,
+) {
+    let mut map = state.prehrajto_in_flight.lock().await;
+    if Arc::strong_count(&lock) <= 2 {
+        map.remove(upload_id);
     }
 }
 
@@ -300,7 +367,7 @@ async fn resolve_with_fallback(state: &AppState, initial: String) -> Result<Stri
     let mut tried: HashSet<String> = HashSet::new();
     let mut current = initial;
 
-    for _ in 0..MAX_FALLBACK_HOPS {
+    for _ in 0..MAX_RESOLVE_ATTEMPTS {
         if !tried.insert(current.clone()) {
             break;
         }
@@ -386,21 +453,24 @@ mod tests {
     }
 
     #[test]
-    fn freshness_predicate_honors_safety_margin() {
+    fn freshness_predicate_uses_adjusted_expiry() {
+        // `expires_at` is already stored with TOKEN_SAFETY_MARGIN subtracted,
+        // so the check is a plain `> now` — applying the margin again here
+        // would make cache entries go stale ~60 s early.
         let now = Instant::now();
         let entry_fresh = CachedStreamUrl {
             url: "https://cdn/x".to_string(),
-            expires_at: now + TOKEN_SAFETY_MARGIN + Duration::from_secs(10),
+            expires_at: now + Duration::from_secs(10),
         };
         assert!(is_fresh_enough(&entry_fresh, now));
 
-        let entry_at_margin = CachedStreamUrl {
+        let entry_at_now = CachedStreamUrl {
             url: "https://cdn/x".to_string(),
-            expires_at: now + TOKEN_SAFETY_MARGIN,
+            expires_at: now,
         };
         assert!(
-            !is_fresh_enough(&entry_at_margin, now),
-            "exactly at the margin still counts as stale (strict > margin)"
+            !is_fresh_enough(&entry_at_now, now),
+            "expires_at == now counts as stale (strict >)"
         );
 
         let entry_stale = CachedStreamUrl {
