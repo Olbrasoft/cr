@@ -340,6 +340,22 @@ _TMDB_MIN_INTERVAL: float = 0.0
 _TMDB_LAST_CALL_TS: float = 0.0
 _TMDB_LOCK = threading.Lock()
 
+# requests.Session is NOT thread-safe (connection adapter state, cookie jar,
+# headers dict). Phase 1 hits TMDB from a worker pool, so give each thread
+# its own session via threading.local(). Each worker reuses its session across
+# multiple calls, so we keep the connection-pooling benefit that a single
+# Session provides — just not cross-thread.
+_THREAD_LOCAL = threading.local()
+
+
+def _thread_session() -> requests.Session:
+    s = getattr(_THREAD_LOCAL, "session", None)
+    if s is None:
+        s = requests.Session()
+        s.headers.update({"Accept": "application/json"})
+        _THREAD_LOCAL.session = s
+    return s
+
 
 def _tmdb_pace() -> None:
     """Under lock, sleep if needed so consecutive tmdb_get() calls across all
@@ -356,10 +372,12 @@ def _tmdb_pace() -> None:
         _TMDB_LAST_CALL_TS = time.time()
 
 
-def tmdb_get(session: requests.Session, path: str, params: dict,
+def tmdb_get(path: str, params: dict,
              api_key: str, retries: int = 3) -> dict | None:
-    """GET TMDB endpoint with retry on 429 / transient failure."""
+    """GET TMDB endpoint with retry on 429 / transient failure. Uses the
+    current thread's own `requests.Session` for thread-safety."""
     _tmdb_pace()
+    session = _thread_session()
     p = {"api_key": api_key}
     p.update(params)
     url = f"{TMDB_API_BASE}{path}"
@@ -399,16 +417,15 @@ def _cover_worker(poster_path: str, slug: str,
         return None
 
 
-def fetch_tmdb_movie(session: requests.Session, tmdb_id: int,
-                     api_key: str) -> dict | None:
+def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
     """Fetch cs-CZ + en-US /movie/{id} and merge into one dict.
 
     Returns keys: title_cs, title_en, original_title, overview_cs, overview_en,
     year, runtime_min, poster_path, genre_ids, imdb_id. Returns None if both
     language fetches fail (usually a stale tmdb_id).
     """
-    cs = tmdb_get(session, f"/movie/{tmdb_id}", {"language": "cs-CZ"}, api_key)
-    en = tmdb_get(session, f"/movie/{tmdb_id}", {"language": "en-US"}, api_key)
+    cs = tmdb_get(f"/movie/{tmdb_id}", {"language": "cs-CZ"}, api_key)
+    en = tmdb_get(f"/movie/{tmdb_id}", {"language": "en-US"}, api_key)
     if not cs and not en:
         return None
     src_cs = cs or {}
@@ -544,8 +561,8 @@ def main() -> int:
     # ---- Connect, compute NEW cohort (imdb_id not in DB) ----
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
-    session = requests.Session()
-    session.headers.update({"Accept": "application/json"})
+    # Per-thread `requests.Session` is managed by `_thread_session()`; no main-
+    # thread session to create here.
     # Hoisted out of the try block so the finally cleanup can touch them even
     # if we raise before entering the per-film loop.
     dry_run_covers_created: list[Path] = []
@@ -679,9 +696,14 @@ def main() -> int:
         # Prefetching with a thread pool + shared paced `_tmdb_pace()` moves
         # the wall-clock budget onto TMDB's own 50 rps ceiling instead of our
         # serial request/response cycle.
+        #
+        # Filter out IMDBs with zero parseable uploads — Phase 2 would skip
+        # them as `no_uploads` anyway, so fetching their TMDB metadata burns
+        # quota for nothing. In pilot data this typically drops ~10 films of
+        # ~8 784, but for smaller/sparser runs the ratio can be larger.
         per_imdb_tmdb_ids: list[tuple[str, int]] = [
             (imdb, imdb_to_tmdb[imdb]) for imdb in missing_imdbs
-            if imdb_to_tmdb.get(imdb)
+            if imdb_to_tmdb.get(imdb) and imdb_to_uploads.get(imdb)
         ]
         log.info("Phase 1: prefetching TMDB metadata for %d films "
                  "(%d workers, throttle %.0f ms/call) ...",
@@ -694,7 +716,7 @@ def main() -> int:
             thread_name_prefix="tmdb",
         ) as tmdb_pool:
             futures = {
-                tmdb_pool.submit(fetch_tmdb_movie, session, tid, api_key): imdb
+                tmdb_pool.submit(fetch_tmdb_movie, tid, api_key): imdb
                 for imdb, tid in per_imdb_tmdb_ids
             }
             done = 0
@@ -781,22 +803,15 @@ def main() -> int:
             has_sk_dub = any(u["lang_class"] == "SK_DUB" for u in per_upload)
             has_sk_subs = any(u["lang_class"] == "SK_SUB" for u in per_upload)
 
-            # ---- Cover download (async) ----
-            # Async-submit to `cover_pool` so the main thread can move on to
-            # the DB INSERT without waiting on image.tmdb.org. The filename
-            # we *intend* to use is `slug`; if the INSERT later hits a slug
-            # collision and retries, the resulting orphan cover is left on
-            # disk (cheap — a few tens of KB). `cover_filename` is recorded
-            # optimistically on the films row; the file will appear on disk
-            # shortly after the worker returns.
-            cover_filename: str | None = None
-            if movie["poster_path"] and not args.skip_covers:
-                cover_filename = slug  # optimistic — file appears when worker finishes
-                cover_futures.append(cover_pool.submit(
-                    _cover_worker, movie["poster_path"], slug, covers_dir,
-                ))
-            else:
-                no_poster += 1
+            # ---- Decide cover optimistically, but only submit AFTER INSERT ----
+            # `cover_filename` goes into the films row at INSERT time so the
+            # detail page can render `{slug}.webp` as soon as the WebP lands.
+            # The actual HTTP download is deferred until we know the FINAL
+            # slug — if slug-retry kicks in mid-insert, submitting the cover
+            # task too early would write `{old_slug}.webp` while the row
+            # holds `{new_slug}`, leaving a permanent mismatch + orphan file.
+            want_cover = bool(movie["poster_path"]) and not args.skip_covers
+            cover_filename: str | None = None  # set after successful INSERT
 
             # ---- INSERT film (savepoint + retry on slug collision) ----
             # `unique_slug()` is a SELECT-then-INSERT check: if a concurrent
@@ -819,7 +834,7 @@ def main() -> int:
                         "imdb_id": imdb,
                         "tmdb_id": tmdb_id,
                         "runtime_min": runtime_min,
-                        "cover_filename": cover_filename,
+                        "cover_filename": slug if want_cover else None,
                         "has_cz_audio": has_cz_audio,
                         "has_cz_subs": has_cz_subs,
                         "primary_upload": primary_upload_id,
@@ -854,6 +869,18 @@ def main() -> int:
                 continue
             film_id = row[0]
             inserted_films += 1
+
+            # ---- Submit cover download (AFTER INSERT, with final slug) ----
+            # We now know the slug the INSERT actually used (post-retry).
+            # The WebP filename matches the `cover_filename` we persisted, so
+            # no orphan-mismatch can happen.
+            if want_cover:
+                cover_filename = slug
+                cover_futures.append(cover_pool.submit(
+                    _cover_worker, movie["poster_path"], slug, covers_dir,
+                ))
+            else:
+                no_poster += 1
 
             # ---- INSERT uploads ----
             upload_rows = [
@@ -957,20 +984,50 @@ def main() -> int:
         raise
     finally:
         if cover_pool is not None:
-            # cancel_futures=True cuts work that hasn't started; in-flight
-            # downloads finish on their own (they're short-lived).
-            cover_pool.shutdown(wait=False, cancel_futures=True)
-        # Dry-run cover cleanup runs here so any covers downloaded before
-        # an early exit / raised exception still get unlinked.
+            if args.dry_run:
+                # Under --dry-run we MUST drain the pool before scanning for
+                # WebPs to delete — in-flight tasks would otherwise write new
+                # files after our cleanup pass and violate the "no covers
+                # left behind" guarantee. `cancel_futures=True` stops any
+                # work that hasn't started; `wait=True` blocks for anything
+                # already running to finish.
+                cover_pool.shutdown(wait=True, cancel_futures=True)
+            else:
+                # Live mode: orphan covers are cheap and Phase 3 already
+                # awaited the non-cancelled ones. Don't stall teardown on
+                # whatever the pool is still chewing.
+                cover_pool.shutdown(wait=False, cancel_futures=True)
+        # After draining, rescan the covers dir for anything the workers
+        # managed to write that wasn't yet in our recorded list (covers that
+        # started before an exception but hadn't returned their future yet).
         if args.dry_run:
-            for p in dry_run_covers_created:
+            recorded_paths = set(dry_run_covers_created)
+            for p in recorded_paths:
                 try:
                     if p and p.exists():
                         p.unlink()
                 except OSError:
                     pass
+            # Best-effort cleanup of any further files whose future slipped
+            # past our tracking (an exception could have interrupted the
+            # `as_completed` drain before we appended to the list).
+            if cover_futures:
+                for fut in cover_futures:
+                    try:
+                        paths = fut.result(timeout=0)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if not paths:
+                        continue
+                    for p in paths:
+                        if p in recorded_paths:
+                            continue
+                        try:
+                            if p and p.exists():
+                                p.unlink()
+                        except OSError:
+                            pass
         conn.close()
-        session.close()
 
 
 if __name__ == "__main__":
