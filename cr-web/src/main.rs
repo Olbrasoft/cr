@@ -248,6 +248,14 @@ async fn main() -> Result<()> {
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
         )
+        .route(
+            "/sledujteto/search",
+            axum::routing::get(handlers::movies_api::sledujteto_search),
+        )
+        .route(
+            "/sledujteto/resolve",
+            axum::routing::get(handlers::movies_api::sledujteto_resolve),
+        )
         .layer(cors);
 
     let app = Router::new()
@@ -386,6 +394,14 @@ async fn main() -> Result<()> {
         .route(
             "/filmy-a-serialy/",
             axum::routing::get(handlers::filmy_serialy),
+        )
+        .route(
+            "/filmy-a-serialy-1",
+            axum::routing::get(handlers::filmy_serialy_sledujteto),
+        )
+        .route(
+            "/filmy-a-serialy-1/",
+            axum::routing::get(handlers::filmy_serialy_sledujteto),
         )
         .route("/koupani", axum::routing::get(handlers::pools_hub))
         .route("/koupani/", axum::routing::get(handlers::pools_hub))
