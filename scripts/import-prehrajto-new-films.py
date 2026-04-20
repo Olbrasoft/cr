@@ -45,10 +45,12 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import unicodedata
 from collections import defaultdict
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
@@ -331,23 +333,27 @@ def unique_slug(cur, base: str, year: int | None, reserved: set[str]) -> str:
 # ---------------------------------------------------------------------------
 
 # Shared pacing state — every tmdb_get() call honours --tmdb-min-interval-ms,
-# so the effective rate is per HTTP call (not per film, which would double
-# the true rate because fetch_tmdb_movie fires cs-CZ + en-US back-to-back).
+# so the effective rate is per HTTP call. Thread-safe: the prefetch phase runs
+# TMDB calls from a worker pool, so we guard the last-call timestamp with a
+# lock to prevent bursts that would blow past TMDB's 50 rps ceiling.
 _TMDB_MIN_INTERVAL: float = 0.0
 _TMDB_LAST_CALL_TS: float = 0.0
+_TMDB_LOCK = threading.Lock()
 
 
 def _tmdb_pace() -> None:
-    """Sleep if needed so two consecutive tmdb_get() calls are
-    >= _TMDB_MIN_INTERVAL seconds apart. Single-threaded — no lock."""
+    """Under lock, sleep if needed so consecutive tmdb_get() calls across all
+    threads are >= _TMDB_MIN_INTERVAL seconds apart."""
     global _TMDB_LAST_CALL_TS
     if _TMDB_MIN_INTERVAL <= 0:
-        _TMDB_LAST_CALL_TS = time.time()
+        with _TMDB_LOCK:
+            _TMDB_LAST_CALL_TS = time.time()
         return
-    elapsed = time.time() - _TMDB_LAST_CALL_TS
-    if elapsed < _TMDB_MIN_INTERVAL:
-        time.sleep(_TMDB_MIN_INTERVAL - elapsed)
-    _TMDB_LAST_CALL_TS = time.time()
+    with _TMDB_LOCK:
+        elapsed = time.time() - _TMDB_LAST_CALL_TS
+        if elapsed < _TMDB_MIN_INTERVAL:
+            time.sleep(_TMDB_MIN_INTERVAL - elapsed)
+        _TMDB_LAST_CALL_TS = time.time()
 
 
 def tmdb_get(session: requests.Session, path: str, params: dict,
@@ -379,6 +385,18 @@ def tmdb_get(session: requests.Session, path: str, params: dict,
         except ValueError:
             return None
     return None
+
+
+def _cover_worker(poster_path: str, slug: str,
+                  covers_dir: Path) -> tuple | None:
+    """Thread-pool task for downloading a TMDB poster. Returns the WebP
+    paths tuple (small, large) on success, None on failure. Logged
+    failures do not raise — they're tallied from the future's result."""
+    try:
+        return download_cover(poster_path, slug, covers_dir)
+    except Exception as e:  # noqa: BLE001 — isolate per-film failures
+        log.warning("cover download raised for %s: %s", slug, e)
+        return None
 
 
 def fetch_tmdb_movie(session: requests.Session, tmdb_id: int,
@@ -467,10 +485,14 @@ def main() -> int:
                     help="In live mode, commit after every N films (default 500). "
                          "Set 0 to keep a single transaction.")
     ap.add_argument("--tmdb-min-interval-ms", type=int, default=25,
-                    help="Minimum ms between TMDB HTTP calls (default 25 = 40 rps). "
-                         "Applied per call, not per film — each film triggers two "
-                         "calls (cs-CZ + en-US), so 25 ms ≈ 20 films/s. "
-                         "TMDB's own rate limit is ~50 rps.")
+                    help="Minimum ms between TMDB HTTP calls across all workers "
+                         "(default 25 = 40 rps aggregate). TMDB's own limit is "
+                         "~50 rps.")
+    ap.add_argument("--tmdb-workers", type=int, default=6,
+                    help="Parallel threads for TMDB metadata prefetch (default 6). "
+                         "Each film needs 2 calls (cs-CZ + en-US).")
+    ap.add_argument("--cover-workers", type=int, default=6,
+                    help="Parallel threads for cover download (default 6).")
     ap.add_argument("--skip-covers", action="store_true",
                     help="Skip cover download entirely — for DRY-RUN sanity checks "
                          "without hitting image.tmdb.org")
@@ -524,9 +546,10 @@ def main() -> int:
     conn.autocommit = False
     session = requests.Session()
     session.headers.update({"Accept": "application/json"})
-    # Hoisted out of the try block so the finally cleanup can touch it even
+    # Hoisted out of the try block so the finally cleanup can touch them even
     # if we raise before entering the per-film loop.
     dry_run_covers_created: list[Path] = []
+    cover_pool: ThreadPoolExecutor | None = None
     try:
         cur = conn.cursor()
 
@@ -638,17 +661,73 @@ def main() -> int:
         conflict_skips = 0
         slug_retries = 0
         reserved_slugs: set[str] = set()
+        # Cover downloads are fired off to a pool from the main loop; we
+        # collect the futures and drain them at the end so --dry-run can
+        # unlink every WebP that actually made it to disk. Assigned to the
+        # outer-hoisted `cover_pool` so `finally` can shut it down on an
+        # exception path.
+        cover_pool = ThreadPoolExecutor(
+            max_workers=max(1, args.cover_workers),
+            thread_name_prefix="cover",
+        )
+        cover_futures: list = []
 
+        # ---- Phase 1: Parallel TMDB prefetch ----
+        # Each film needs two TMDB calls (cs-CZ + en-US). Before this split,
+        # the per-film loop was single-threaded against TMDB and dominated the
+        # end-to-end runtime (~0.7 s/film wall clock → ~2 h for 8.7 K films).
+        # Prefetching with a thread pool + shared paced `_tmdb_pace()` moves
+        # the wall-clock budget onto TMDB's own 50 rps ceiling instead of our
+        # serial request/response cycle.
+        per_imdb_tmdb_ids: list[tuple[str, int]] = [
+            (imdb, imdb_to_tmdb[imdb]) for imdb in missing_imdbs
+            if imdb_to_tmdb.get(imdb)
+        ]
+        log.info("Phase 1: prefetching TMDB metadata for %d films "
+                 "(%d workers, throttle %.0f ms/call) ...",
+                 len(per_imdb_tmdb_ids), args.tmdb_workers,
+                 _TMDB_MIN_INTERVAL * 1000)
+        tmdb_data: dict[str, dict] = {}
+        t_prefetch = time.time()
+        with ThreadPoolExecutor(
+            max_workers=max(1, args.tmdb_workers),
+            thread_name_prefix="tmdb",
+        ) as tmdb_pool:
+            futures = {
+                tmdb_pool.submit(fetch_tmdb_movie, session, tid, api_key): imdb
+                for imdb, tid in per_imdb_tmdb_ids
+            }
+            done = 0
+            for fut in as_completed(futures):
+                imdb = futures[fut]
+                done += 1
+                try:
+                    movie = fut.result()
+                except Exception as e:
+                    log.warning("tmdb prefetch raised for %s: %s", imdb, e)
+                    movie = None
+                if movie:
+                    tmdb_data[imdb] = movie
+                else:
+                    tmdb_failures += 1
+                if done % 1000 == 0:
+                    rate = done / max(0.001, time.time() - t_prefetch)
+                    log.info("  prefetched %d/%d (rate=%.1f films/s, "
+                             "fails=%d)", done, len(futures), rate, tmdb_failures)
+        log.info("Phase 1 done in %.1fs: %d films metadata cached, %d TMDB failures",
+                 time.time() - t_prefetch, len(tmdb_data), tmdb_failures)
+
+        # ---- Phase 2: main DB loop (serial, consumes cached metadata) ----
+        log.info("Phase 2: DB inserts (serial) + cover downloads async "
+                 "(%d workers) ...", args.cover_workers)
         t1 = time.time()
         for i, imdb in enumerate(missing_imdbs, 1):
+            movie = tmdb_data.get(imdb)
             tmdb_id = imdb_to_tmdb.get(imdb)
             if not tmdb_id:
                 continue
-            # Throttling is handled inside tmdb_get() so both cs-CZ and en-US
-            # calls honour --tmdb-min-interval-ms independently.
-            movie = fetch_tmdb_movie(session, tmdb_id, api_key)
             if not movie:
-                tmdb_failures += 1
+                # prefetch already logged the failure
                 continue
             # Sanity: TMDB's imdb_id should match the pilot CSV's imdb_id.
             if movie["imdb_id"] and movie["imdb_id"] != imdb:
@@ -702,20 +781,21 @@ def main() -> int:
             has_sk_dub = any(u["lang_class"] == "SK_DUB" for u in per_upload)
             has_sk_subs = any(u["lang_class"] == "SK_SUB" for u in per_upload)
 
-            # ---- Cover download (poster_path → WebP). TMDB-only; no SKT
-            # fallback because this cohort has no SKT source by definition. ----
+            # ---- Cover download (async) ----
+            # Async-submit to `cover_pool` so the main thread can move on to
+            # the DB INSERT without waiting on image.tmdb.org. The filename
+            # we *intend* to use is `slug`; if the INSERT later hits a slug
+            # collision and retries, the resulting orphan cover is left on
+            # disk (cheap — a few tens of KB). `cover_filename` is recorded
+            # optimistically on the films row; the file will appear on disk
+            # shortly after the worker returns.
             cover_filename: str | None = None
             if movie["poster_path"] and not args.skip_covers:
-                try:
-                    paths = download_cover(movie["poster_path"], slug, covers_dir)
-                except Exception as e:
-                    log.warning("cover download raised for %s: %s", slug, e)
-                    paths = None
-                if paths:
-                    cover_filename = slug
-                    if args.dry_run:
-                        dry_run_covers_created.extend(paths)
-            if cover_filename is None:
+                cover_filename = slug  # optimistic — file appears when worker finishes
+                cover_futures.append(cover_pool.submit(
+                    _cover_worker, movie["poster_path"], slug, covers_dir,
+                ))
+            else:
                 no_poster += 1
 
             # ---- INSERT film (savepoint + retry on slug collision) ----
@@ -803,11 +883,43 @@ def main() -> int:
                          i, len(missing_imdbs), inserted_films, inserted_uploads,
                          tmdb_failures, rate)
 
-        log.info("Done in %.1fs: inserted %d films, %d uploads",
+        log.info("Phase 2 done in %.1fs: inserted %d films, %d uploads",
                  time.time() - t1, inserted_films, inserted_uploads)
         log.info("  tmdb_failures=%d  no_uploads=%d  no_poster=%d  "
                  "conflict_skips=%d  slug_retries=%d",
                  tmdb_failures, no_uploads, no_poster, conflict_skips, slug_retries)
+
+        # ---- Phase 3: drain cover downloads ----
+        if cover_futures:
+            log.info("Phase 3: waiting for %d cover downloads to finish ...",
+                     len(cover_futures))
+            t_cov = time.time()
+            cover_ok = 0
+            cover_fail = 0
+            for done_n, fut in enumerate(as_completed(cover_futures), 1):
+                try:
+                    paths = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("cover future raised: %s", e)
+                    paths = None
+                if paths:
+                    cover_ok += 1
+                    if args.dry_run:
+                        dry_run_covers_created.extend(paths)
+                else:
+                    cover_fail += 1
+                if done_n % 1000 == 0:
+                    rate = done_n / max(0.001, time.time() - t_cov)
+                    log.info("  covers %d/%d (rate=%.1f/s, ok=%d fail=%d)",
+                             done_n, len(cover_futures), rate,
+                             cover_ok, cover_fail)
+            log.info("Phase 3 done in %.1fs: %d covers ok, %d failed",
+                     time.time() - t_cov, cover_ok, cover_fail)
+            # If a cover future failed, the films row still has cover_filename
+            # set (optimistic). The web handler already falls back to a
+            # placeholder when the WebP is missing, so this is a display
+            # issue, not data corruption.
+        cover_pool.shutdown(wait=True)
 
         # ---- Row-count invariant ----
         # Monotonic growth is the hard invariant (never decrease). Equality
@@ -844,6 +956,10 @@ def main() -> int:
         conn.rollback()
         raise
     finally:
+        if cover_pool is not None:
+            # cancel_futures=True cuts work that hasn't started; in-flight
+            # downloads finish on their own (they're short-lived).
+            cover_pool.shutdown(wait=False, cancel_futures=True)
         # Dry-run cover cleanup runs here so any covers downloaded before
         # an early exit / raised exception still get unlinked.
         if args.dry_run:
