@@ -12,7 +12,10 @@ Safety guarantees (hard-enforced at runtime):
   - never UPDATEs existing films columns other than the prehraj.to rollup ones
   - INSERT ... ON CONFLICT DO UPDATE for uploads (idempotent)
   - row-count invariant: films count before == films count after (abort if not)
-  - --dry-run uses an explicit transaction + ROLLBACK at the end
+  - --dry-run uses a single transaction + ROLLBACK at the end
+  - live run commits in batches (every --commit-every films) to avoid
+    multi-hour transactions; the invariant still fires at the end, but
+    already-committed batches are not reverted when it trips
 
 Usage:
   DATABASE_URL=postgres://... python3 scripts/import-prehrajto-uploads.py \\
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import math
 import os
 import re
@@ -32,6 +36,7 @@ import sys
 import time
 import unicodedata
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 try:
@@ -46,12 +51,12 @@ except ImportError:
 # Sitemap parsing + clustering (vendored from /tmp/prehrajto-pilot/match_tmdb.py)
 # ---------------------------------------------------------------------------
 
-_URL_BLOCK_RE = re.compile(r"<url>(.*?)</url>", re.DOTALL)
 _LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
 _TITLE_RE = re.compile(r"<video:title>([^<]*)</video:title>")
 _DUR_RE = re.compile(r"<video:duration>(\d+)</video:duration>")
 _VIEWS_RE = re.compile(r"<video:view_count>(\d+)</video:view_count>")
 _LIVE_RE = re.compile(r"<video:live>(yes|no)</video:live>")
+_URL_BLOCK_RE = re.compile(r"<url>(.*?)</url>", re.DOTALL)
 _UPLOAD_ID_RE = re.compile(r"/([a-f0-9]{13,16})(?:[/?#]|$)")
 _YEAR_RE = re.compile(r"\b(19[2-9]\d|20[0-3]\d)\b")
 _EPISODE_RE = re.compile(r"\bS\d{1,2}[\s._-]?E\d{1,3}\b", re.IGNORECASE)
@@ -100,27 +105,51 @@ def strip_title(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip(" -_.,/|")
 
 
-def parse_sitemap(path: Path) -> list[dict]:
+def _unescape(s: str) -> str:
+    # Sitemap values can be XML-entity-escaped once or twice; auto_import's
+    # title_parser also double-unescapes. Idempotent on fully-decoded text.
+    return html.unescape(html.unescape(s))
+
+
+def parse_sitemap(path: Path, chunk_size: int = 1 << 20) -> Iterator[dict]:
+    """Stream-parse a sitemap file, yielding one dict per <url> element.
+
+    Uses a chunked regex parser rather than ElementTree.iterparse: some pilot
+    shards contain raw backslashes / stray bytes in descriptions that break
+    strict XML (e.g. video-sitemap-358.xml), and we still want to extract the
+    surrounding valid <url> blocks. Reads `chunk_size` bytes at a time and
+    carries a partial trailing block between chunks, so peak RSS stays bounded
+    regardless of file size.
+    """
+    carry = ""
     with open(path, encoding="utf-8", errors="replace") as f:
-        data = f.read()
-    rows: list[dict] = []
-    for m in _URL_BLOCK_RE.finditer(data):
-        block = m.group(1)
-        loc_m = _LOC_RE.search(block)
-        title_m = _TITLE_RE.search(block)
-        if not loc_m or not title_m:
-            continue
-        dur_m = _DUR_RE.search(block)
-        views_m = _VIEWS_RE.search(block)
-        live_m = _LIVE_RE.search(block)
-        rows.append({
-            "url": loc_m.group(1),
-            "title": title_m.group(1),
-            "duration": int(dur_m.group(1)) if dur_m else 0,
-            "views": int(views_m.group(1)) if views_m else 0,
-            "live": live_m.group(1) if live_m else "no",
-        })
-    return rows
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            data = carry + chunk
+            last_close = data.rfind("</url>")
+            if last_close < 0:
+                carry = data
+                continue
+            complete = data[: last_close + len("</url>")]
+            carry = data[last_close + len("</url>") :]
+            for m in _URL_BLOCK_RE.finditer(complete):
+                block = m.group(1)
+                loc_m = _LOC_RE.search(block)
+                title_m = _TITLE_RE.search(block)
+                if not loc_m or not title_m:
+                    continue
+                dur_m = _DUR_RE.search(block)
+                views_m = _VIEWS_RE.search(block)
+                live_m = _LIVE_RE.search(block)
+                yield {
+                    "url": _unescape(loc_m.group(1)),
+                    "title": _unescape(title_m.group(1)),
+                    "duration": int(dur_m.group(1)) if dur_m else 0,
+                    "views": int(views_m.group(1)) if views_m else 0,
+                    "live": live_m.group(1) if live_m else "no",
+                }
 
 
 def film_shape(row: dict) -> bool:
@@ -237,6 +266,25 @@ def rank(lang_class: str, resolution_hint: str | None, view_count: int) -> float
 # Main
 # ---------------------------------------------------------------------------
 
+def load_matches(path: Path) -> dict[tuple, dict]:
+    """Load MATCHED/LIKELY rows from the pilot matches CSV, keyed by cluster."""
+    matches_by_key: dict[tuple, dict] = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["verdict"] not in ("MATCHED", "LIKELY"):
+                continue
+            if not row["imdb_id"]:
+                continue
+            try:
+                year = int(row["cluster_year"]) if row["cluster_year"] else None
+                dur_bucket = int(row["cluster_duration_min"]) // 3
+            except ValueError:
+                continue
+            key = (row["cluster_core"], year, dur_bucket)
+            matches_by_key[key] = row
+    return matches_by_key
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sitemap-dir", required=True,
@@ -246,7 +294,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true",
                     help="Parse, compute, but ROLLBACK at the end — no changes committed")
     ap.add_argument("--limit", type=int, default=0,
-                    help="Process at most N clusters (0 = all)")
+                    help="Process at most N distinct films (0 = all)")
+    ap.add_argument("--commit-every", type=int, default=500,
+                    help="In live (non-dry-run) mode, commit after every N films "
+                         "(default 500). Set 0 to keep a single transaction.")
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL", "").strip()
@@ -261,40 +312,32 @@ def main() -> int:
         print(f"ERROR: no video-sitemap-*.xml files in {sitemap_dir}", file=sys.stderr)
         return 2
 
-    # ---- Parse all sitemaps ----
+    # ---- Load IMDB matches from pilot CSV first ----
+    # We need the wanted cluster-key set up front so we can discard sitemap rows
+    # outside it as we stream, instead of materialising the full 9M-entry catalog.
+    print(f"Loading matches from {args.matches}...")
+    matches_by_key = load_matches(Path(args.matches))
+    wanted_keys = set(matches_by_key.keys())
+    print(f"  {len(matches_by_key):,} IMDB-matched clusters in CSV")
+
+    # ---- Stream-parse sitemaps, clustering only rows whose key is wanted ----
     print(f"Parsing {len(files)} sitemaps from {sitemap_dir}...")
     t0 = time.time()
-    all_rows: list[dict] = []
-    for p in files:
-        rows = parse_sitemap(p)
-        all_rows.extend(rows)
-    print(f"  {len(all_rows):,} total entries in {time.time()-t0:.1f}s")
-
-    # ---- Filter to film-shape + cluster ----
-    kept = [r for r in all_rows if film_shape(r)]
-    print(f"  {len(kept):,} film-shape entries")
     clusters: dict[tuple, list[dict]] = defaultdict(list)
-    for r in kept:
-        clusters[cluster_key(r)].append(r)
-    print(f"  {len(clusters):,} unique clusters")
-
-    # ---- Load IMDB matches from pilot CSV ----
-    print(f"Loading matches from {args.matches}...")
-    matches_by_key: dict[tuple, dict] = {}
-    with open(args.matches, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            if row["verdict"] not in ("MATCHED", "LIKELY"):
+    total_entries = 0
+    film_shape_count = 0
+    for p in files:
+        for r in parse_sitemap(p):
+            total_entries += 1
+            if not film_shape(r):
                 continue
-            if not row["imdb_id"]:
-                continue
-            try:
-                year = int(row["cluster_year"]) if row["cluster_year"] else None
-                dur_bucket = int(row["cluster_duration_min"]) // 3
-            except ValueError:
-                continue
-            key = (row["cluster_core"], year, dur_bucket)
-            matches_by_key[key] = row
-    print(f"  {len(matches_by_key):,} IMDB-matched clusters in CSV")
+            film_shape_count += 1
+            k = cluster_key(r)
+            if k in wanted_keys:
+                clusters[k].append(r)
+    print(f"  {total_entries:,} total entries scanned in {time.time()-t0:.1f}s")
+    print(f"  {film_shape_count:,} film-shape entries")
+    print(f"  {len(clusters):,} clusters matched wanted set")
 
     # ---- Connect + find films in DB ----
     conn = psycopg2.connect(dsn)
@@ -306,8 +349,9 @@ def main() -> int:
         films_count_before = cur.fetchone()[0]
         print(f"films baseline count: {films_count_before:,}")
 
-        # Pre-fetch imdb_id → film_id for all candidate imdb_ids
-        candidate_imdbs = [m["imdb_id"] for m in matches_by_key.values()]
+        # Pre-fetch imdb_id → film_id for all candidate imdb_ids (deduped —
+        # many cluster keys can share the same IMDb ID).
+        candidate_imdbs = sorted({m["imdb_id"] for m in matches_by_key.values()})
         cur.execute("SELECT imdb_id, id FROM films WHERE imdb_id = ANY(%s)",
                     (candidate_imdbs,))
         imdb_to_film_id = {imdb: fid for imdb, fid in cur.fetchall()}
@@ -361,15 +405,18 @@ def main() -> int:
             is_alive        = TRUE
         """
 
-        # films update — OR into CZ flags (widens sktorrent flags), set SK flags,
-        # set primary_upload_id unconditionally (can be updated on rerun).
+        # films update — rollup flags are assigned directly from the current
+        # run's aggregated uploads for this film, not OR'd onto previous values.
+        # This makes reruns authoritative: if a language marker disappears from
+        # all matching uploads in the sitemap, the flag flips back to false.
+        # (Partial runs — e.g. --limit — only touch films they actually reach.)
         update_film_sql = """
         UPDATE films SET
             prehrajto_primary_upload_id = %(primary)s,
-            prehrajto_has_dub           = prehrajto_has_dub  OR %(has_cz_audio)s,
-            prehrajto_has_subs          = prehrajto_has_subs OR %(has_cz_subs)s,
-            prehrajto_has_sk_dub        = prehrajto_has_sk_dub  OR %(has_sk_dub)s,
-            prehrajto_has_sk_subs       = prehrajto_has_sk_subs OR %(has_sk_subs)s
+            prehrajto_has_dub           = %(has_cz_audio)s,
+            prehrajto_has_subs          = %(has_cz_subs)s,
+            prehrajto_has_sk_dub        = %(has_sk_dub)s,
+            prehrajto_has_sk_subs       = %(has_sk_subs)s
         WHERE id = %(film_id)s
         """
 
@@ -383,6 +430,8 @@ def main() -> int:
             psycopg2.extras.execute_batch(cur, upsert_sql, batch_rows, page_size=200)
             inserted += len(batch_rows)
             batch_rows = []
+
+        commit_every = 0 if args.dry_run else args.commit_every
 
         t1 = time.time()
         total_films = len(film_uploads)
@@ -441,6 +490,10 @@ def main() -> int:
             })
             updated_flags += 1
 
+            if commit_every and i % commit_every == 0:
+                flush()
+                conn.commit()
+
             if i % 2000 == 0:
                 rate = i / (time.time() - t1)
                 print(f"  [{i:>6}/{total_films}]  uploads={inserted}  rate={rate:.0f}/s", flush=True)
@@ -453,12 +506,16 @@ def main() -> int:
             print(f"  ({films_with_no_upload_id} films had zero parseable uploads)")
 
         # ---- Invariant: films count unchanged ----
+        # In live mode with batched commits, earlier batches are already committed;
+        # an invariant violation here can't fully revert them, but it still flags
+        # an anomaly (external DELETE/INSERT on films during the run, or a bug).
         cur.execute("SELECT COUNT(*) FROM films")
         films_count_after = cur.fetchone()[0]
         if films_count_after != films_count_before:
             print(f"FATAL: films count changed {films_count_before} → {films_count_after}",
                   file=sys.stderr)
-            conn.rollback()
+            if args.dry_run or not commit_every:
+                conn.rollback()
             return 3
         print(f"films count invariant OK: {films_count_before:,} == {films_count_after:,}")
 
