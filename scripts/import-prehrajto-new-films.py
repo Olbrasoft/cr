@@ -330,10 +330,30 @@ def unique_slug(cur, base: str, year: int | None, reserved: set[str]) -> str:
 # TMDB helper
 # ---------------------------------------------------------------------------
 
+# Shared pacing state — every tmdb_get() call honours --tmdb-min-interval-ms,
+# so the effective rate is per HTTP call (not per film, which would double
+# the true rate because fetch_tmdb_movie fires cs-CZ + en-US back-to-back).
+_TMDB_MIN_INTERVAL: float = 0.0
+_TMDB_LAST_CALL_TS: float = 0.0
+
+
+def _tmdb_pace() -> None:
+    """Sleep if needed so two consecutive tmdb_get() calls are
+    >= _TMDB_MIN_INTERVAL seconds apart. Single-threaded — no lock."""
+    global _TMDB_LAST_CALL_TS
+    if _TMDB_MIN_INTERVAL <= 0:
+        _TMDB_LAST_CALL_TS = time.time()
+        return
+    elapsed = time.time() - _TMDB_LAST_CALL_TS
+    if elapsed < _TMDB_MIN_INTERVAL:
+        time.sleep(_TMDB_MIN_INTERVAL - elapsed)
+    _TMDB_LAST_CALL_TS = time.time()
+
 
 def tmdb_get(session: requests.Session, path: str, params: dict,
              api_key: str, retries: int = 3) -> dict | None:
     """GET TMDB endpoint with retry on 429 / transient failure."""
+    _tmdb_pace()
     p = {"api_key": api_key}
     p.update(params)
     url = f"{TMDB_API_BASE}{path}"
@@ -447,7 +467,9 @@ def main() -> int:
                     help="In live mode, commit after every N films (default 500). "
                          "Set 0 to keep a single transaction.")
     ap.add_argument("--tmdb-min-interval-ms", type=int, default=25,
-                    help="Minimum ms between TMDB requests (default 25 = 40 rps). "
+                    help="Minimum ms between TMDB HTTP calls (default 25 = 40 rps). "
+                         "Applied per call, not per film — each film triggers two "
+                         "calls (cs-CZ + en-US), so 25 ms ≈ 20 films/s. "
                          "TMDB's own rate limit is ~50 rps.")
     ap.add_argument("--skip-covers", action="store_true",
                     help="Skip cover download entirely — for DRY-RUN sanity checks "
@@ -502,6 +524,9 @@ def main() -> int:
     conn.autocommit = False
     session = requests.Session()
     session.headers.update({"Accept": "application/json"})
+    # Hoisted out of the try block so the finally cleanup can touch it even
+    # if we raise before entering the per-film loop.
+    dry_run_covers_created: list[Path] = []
     try:
         cur = conn.cursor()
 
@@ -603,28 +628,25 @@ def main() -> int:
 
         # ---- Loop over missing IMDBs ----
         commit_every = 0 if args.dry_run else args.commit_every
-        tmdb_min_interval = max(0.0, args.tmdb_min_interval_ms / 1000.0)
-        last_tmdb_call = 0.0
+        global _TMDB_MIN_INTERVAL
+        _TMDB_MIN_INTERVAL = max(0.0, args.tmdb_min_interval_ms / 1000.0)
         inserted_films = 0
         inserted_uploads = 0
         tmdb_failures = 0
         no_uploads = 0
         no_poster = 0
         conflict_skips = 0
+        slug_retries = 0
         reserved_slugs: set[str] = set()
-        dry_run_covers_created: list[Path] = []
 
         t1 = time.time()
         for i, imdb in enumerate(missing_imdbs, 1):
             tmdb_id = imdb_to_tmdb.get(imdb)
             if not tmdb_id:
                 continue
-            # Crude rate-limit: space TMDB calls out.
-            elapsed = time.time() - last_tmdb_call
-            if elapsed < tmdb_min_interval:
-                time.sleep(tmdb_min_interval - elapsed)
+            # Throttling is handled inside tmdb_get() so both cs-CZ and en-US
+            # calls honour --tmdb-min-interval-ms independently.
             movie = fetch_tmdb_movie(session, tmdb_id, api_key)
-            last_tmdb_call = time.time()
             if not movie:
                 tmdb_failures += 1
                 continue
@@ -696,29 +718,58 @@ def main() -> int:
             if cover_filename is None:
                 no_poster += 1
 
-            # ---- INSERT film ----
-            cur.execute(insert_film_sql, {
-                "title": title,
-                "original_title": original_title,
-                "slug": slug,
-                "year": year,
-                "description": description,
-                "imdb_id": imdb,
-                "tmdb_id": tmdb_id,
-                "runtime_min": runtime_min,
-                "cover_filename": cover_filename,
-                "has_cz_audio": has_cz_audio,
-                "has_cz_subs": has_cz_subs,
-                "primary_upload": primary_upload_id,
-                "has_sk_dub": has_sk_dub,
-                "has_sk_subs": has_sk_subs,
-            })
-            row = cur.fetchone()
+            # ---- INSERT film (savepoint + retry on slug collision) ----
+            # `unique_slug()` is a SELECT-then-INSERT check: if a concurrent
+            # writer (e.g. auto-import) claims the same slug between our
+            # availability probe and this INSERT, Postgres raises a UNIQUE
+            # violation on `films_slug_key`. We catch it behind a savepoint,
+            # regenerate a new slug, and retry — bounded so a pathological
+            # case doesn't loop forever.
+            MAX_SLUG_RETRIES = 3
+            row = None
+            for attempt in range(MAX_SLUG_RETRIES + 1):
+                cur.execute("SAVEPOINT film_insert_sp")
+                try:
+                    cur.execute(insert_film_sql, {
+                        "title": title,
+                        "original_title": original_title,
+                        "slug": slug,
+                        "year": year,
+                        "description": description,
+                        "imdb_id": imdb,
+                        "tmdb_id": tmdb_id,
+                        "runtime_min": runtime_min,
+                        "cover_filename": cover_filename,
+                        "has_cz_audio": has_cz_audio,
+                        "has_cz_subs": has_cz_subs,
+                        "primary_upload": primary_upload_id,
+                        "has_sk_dub": has_sk_dub,
+                        "has_sk_subs": has_sk_subs,
+                    })
+                    row = cur.fetchone()
+                    cur.execute("RELEASE SAVEPOINT film_insert_sp")
+                    break
+                except psycopg2.errors.UniqueViolation as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT film_insert_sp")
+                    cur.execute("RELEASE SAVEPOINT film_insert_sp")
+                    constraint = getattr(getattr(e, "diag", None), "constraint_name", None) or ""
+                    if "slug" not in constraint:
+                        # imdb_id conflict (ON CONFLICT DO NOTHING handles it
+                        # as row=None) or some other unique index — re-raise.
+                        raise
+                    if attempt == MAX_SLUG_RETRIES:
+                        log.error("slug retry exhausted for imdb=%s slug=%s",
+                                  imdb, slug)
+                        raise
+                    slug_retries += 1
+                    log.warning("slug '%s' collided (%s); regenerating for imdb=%s",
+                                slug, constraint, imdb)
+                    slug = unique_slug(cur, base_slug, year, reserved_slugs)
+                    reserved_slugs.add(slug)
             if row is None:
                 # ON CONFLICT DO NOTHING — someone else inserted this imdb
-                # between our missing-check SELECT and now (or re-run hit a
-                # row created by earlier iteration of this loop in a prior
-                # crashed run). Skip uploads.
+                # between our missing-check SELECT and now (or a re-run hit a
+                # row created by an earlier crashed run). Skip uploads.
                 conflict_skips += 1
                 continue
             film_id = row[0]
@@ -754,30 +805,30 @@ def main() -> int:
 
         log.info("Done in %.1fs: inserted %d films, %d uploads",
                  time.time() - t1, inserted_films, inserted_uploads)
-        log.info("  tmdb_failures=%d  no_uploads=%d  no_poster=%d  conflict_skips=%d",
-                 tmdb_failures, no_uploads, no_poster, conflict_skips)
+        log.info("  tmdb_failures=%d  no_uploads=%d  no_poster=%d  "
+                 "conflict_skips=%d  slug_retries=%d",
+                 tmdb_failures, no_uploads, no_poster, conflict_skips, slug_retries)
 
-        # ---- Row-count invariant: never decreases ----
+        # ---- Row-count invariant ----
+        # Monotonic growth is the hard invariant (never decrease). Equality
+        # with before+inserted is the "ideal" state; a mismatch can happen
+        # legitimately when a concurrent writer inserts rows between our
+        # baseline COUNT and the final COUNT, so we only warn there — both
+        # in live and dry-run modes.
         cur.execute("SELECT COUNT(*) FROM films")
         films_count_after = cur.fetchone()[0]
         expected_after = films_count_before + inserted_films
-        if args.dry_run:
-            # In dry-run mode the inserts are still visible within the open
-            # transaction; they'll roll back on the final conn.rollback().
-            if films_count_after != expected_after:
-                log.error("INVARIANT (dry-run pre-rollback): count mismatch "
-                          "before=%d after=%d expected=%d",
-                          films_count_before, films_count_after, expected_after)
-                conn.rollback()
-                return 3
-        elif films_count_after < films_count_before:
+        if films_count_after < films_count_before:
             log.error("FATAL: films count DECREASED %d → %d",
                       films_count_before, films_count_after)
             return 3
-        elif films_count_after != expected_after:
-            log.warning("films count after (%d) != before+inserted (%d); "
-                        "probably concurrent import — still monotonic",
-                        films_count_after, expected_after)
+        if films_count_after != expected_after:
+            log.warning(
+                "%sfilms count after (%d) != before+inserted (%d); "
+                "probably concurrent import — still monotonic",
+                "DRY-RUN: " if args.dry_run else "",
+                films_count_after, expected_after,
+            )
         log.info("films count OK: before=%d after=%d (+%d)",
                  films_count_before, films_count_after,
                  films_count_after - films_count_before)
@@ -785,14 +836,6 @@ def main() -> int:
         if args.dry_run:
             log.info("DRY-RUN: ROLLBACK")
             conn.rollback()
-            # Clean up cover files created during the dry run so re-running
-            # a real import from scratch starts with a clean cover dir.
-            for p in dry_run_covers_created:
-                try:
-                    if p and p.exists():
-                        p.unlink()
-                except OSError:
-                    pass
         else:
             conn.commit()
             log.info("COMMIT")
@@ -801,6 +844,15 @@ def main() -> int:
         conn.rollback()
         raise
     finally:
+        # Dry-run cover cleanup runs here so any covers downloaded before
+        # an early exit / raised exception still get unlinked.
+        if args.dry_run:
+            for p in dry_run_covers_created:
+                try:
+                    if p and p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
         conn.close()
         session.close()
 

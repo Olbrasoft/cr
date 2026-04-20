@@ -10,9 +10,13 @@
 --
 -- NULL imdb_id rows (historical, brand-new releases with no IMDB yet) are
 -- allowed multiple times because the index is partial.
-
-DROP INDEX IF EXISTS idx_films_imdb_id;
+--
+-- Create the new unique index BEFORE dropping the old non-unique one, so
+-- that if CREATE fails (unexpected duplicate) the table still has an
+-- imdb_id index and query plans don't regress.
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_films_imdb_id_unique
     ON films (imdb_id)
     WHERE imdb_id IS NOT NULL;
+
+DROP INDEX IF EXISTS idx_films_imdb_id;
