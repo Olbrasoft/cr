@@ -6,14 +6,14 @@
 
 {% block og_title %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online — ceskarepublika.wiki{% when None %}Filmy online — ceskarepublika.wiki{% endmatch %}{% endblock %}
 {% block og_description %}{% match current_genre %}{% when Some with (g) %}{{ g.pretty_plural() }} online zdarma. {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace.{% when None %}Filmy online zdarma — {{ total_count }} filmů ke zhlédnutí přímo v prohlížeči, bez registrace. České i zahraniční filmy s českým dabingem nebo titulky.{% endmatch %}{% endblock %}
-{% block og_image %}https://ceskarepublika.wiki/static/img/og-filmy-online-v1.png{% endblock %}
+{% block og_image %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endblock %}
 {% block og_type %}article{% endblock %}
 
 {% block leaflet %}{% endblock %}
 
 {% block head %}
 <link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
-<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-filmy-online-v1.png">
+<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
