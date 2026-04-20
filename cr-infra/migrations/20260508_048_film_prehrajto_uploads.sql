@@ -18,8 +18,10 @@
 
 CREATE TABLE IF NOT EXISTS film_prehrajto_uploads (
     film_id          INTEGER     NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-    -- 13-hex ID z konce detail URL (prehraj.to/<slug>/<13-hex>). Stabilní
-    -- identifikátor uploadu; první 8 hex = unix timestamp vytvoření.
+    -- Hex ID z konce detail URL (prehraj.to/<slug>/<hex>). Dvě pozorované
+    -- délky: 13 hex (starší uploady) a 16 hex (novější). Stabilní
+    -- identifikátor uploadu; pro 13-hex platí, že první 8 hex = unix
+    -- timestamp vytvoření.
     upload_id        TEXT        NOT NULL,
     -- Kanonická detail URL. Permanentní, token se scrapuje z ní lazy.
     url              TEXT        NOT NULL,
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS film_prehrajto_uploads (
     last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- FALSE znamená "sitemap ho už několik běhů neviděl" nebo "scrape detailu
     -- vrátil 404 / no contentUrl". Primární výběr je přeskakuje.
-    is_alive         BOOLEAN     NOT NULL DEFAULT TRUE,
+    is_alive         BOOLEAN     NOT NULL DEFAULT true,
 
     PRIMARY KEY (film_id, upload_id),
     CONSTRAINT film_prehrajto_uploads_lang_check CHECK (
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS film_prehrajto_uploads (
 );
 
 -- Hlavní čtecí vzor: "všechny alive uploady pro daný film, seřazené" (Další
--- zdroje + výběr primárního). Film_id + is_alive pokrývá WHERE klauzuli.
+-- zdroje + výběr primárního). Jde o parciální index na `film_id` pouze pro
+-- řádky splňující `WHERE is_alive`; `is_alive` není součástí key columns.
 CREATE INDEX IF NOT EXISTS idx_fpu_film_alive
     ON film_prehrajto_uploads (film_id)
     WHERE is_alive;
