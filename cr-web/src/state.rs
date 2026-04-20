@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cr_infra::r2::R2Config;
 use cr_infra::repositories::{
@@ -64,6 +65,26 @@ pub struct AppState {
     /// Bounded TTL cache for SK Torrent per-video source lists. Key is
     /// `sktorrent_video_id`; value is the resolved source list.
     pub sktorrent_cache: BoundedTtlCache<i32, Vec<SktorrentSource>>,
+    /// Resolved prehraj.to CDN URLs, keyed by `upload_id`. Cached value
+    /// carries its own deadline because token lifetimes vary per upload —
+    /// the cache's own TTL is just a conservative upper bound.
+    pub prehrajto_stream_cache: BoundedTtlCache<String, CachedStreamUrl>,
+    /// Per-`upload_id` async locks for in-flight scrape deduplication. On
+    /// cache miss a handler takes the per-key lock, re-checks the cache,
+    /// then scrapes once — concurrent requests for the same upload block
+    /// on the lock and pick up the cached URL after release.
+    pub prehrajto_in_flight: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+/// Cached resolved CDN URL for a single prehraj.to upload.
+///
+/// `expires_at` is the token's own deadline (extracted from the URL's
+/// `expires=` query param) minus a safety margin; reads treat the entry as
+/// stale once `expires_at` is past.
+#[derive(Clone)]
+pub struct CachedStreamUrl {
+    pub url: String,
+    pub expires_at: Instant,
 }
 
 /// In-memory index of GeoJSON features for fast API lookups.
