@@ -120,12 +120,13 @@ async fn per_key_lock(state: &AppState, upload_id: &str) -> Arc<tokio::sync::Mut
 
 /// One scrape pass against the CZ proxy. Returns:
 /// - `Ok(Some(url))` on success (real tokenized CDN URL),
-/// - `Ok(None)` only when the proxy explicitly reports `success: false`
+/// - `Ok(None)` **only** when the proxy explicitly reports `success: false`
 ///   (prehraj.to said "gone" — the upload-is-dead signal),
 /// - `Err(code)` on any other outcome: proxy unreachable, non-2xx HTTP,
-///   JSON parse failure, or ambiguous/missing `success` field. Callers
-///   must not flip `is_alive=FALSE` on `Err`, so keeping a transient
-///   proxy blip or a truncated response out of this branch matters.
+///   JSON parse failure, `success: true` with a missing/empty `videoUrl`,
+///   or ambiguous/missing `success` field. Callers must not flip
+///   `is_alive=FALSE` on `Err`, so keeping a transient proxy blip or a
+///   truncated response out of that branch matters.
 ///
 /// Error codes are **coarse and URL-free**: the proxy URL contains the
 /// shared `key=` secret, so we never embed the raw reqwest Display
@@ -159,8 +160,26 @@ async fn scrape_content_url(state: &AppState, detail_url: &str) -> Result<Option
         .json()
         .await
         .map_err(|e| format!("proxy-parse-{}", classify_reqwest_error(&e)))?;
+    interpret_proxy_response(&data)
+}
+
+/// Pure interpretation of a decoded proxy payload — split out of
+/// [`scrape_content_url`] so the edge cases can be unit-tested without
+/// spinning up an HTTP server.
+///
+/// * `success: true` with a non-empty `video_url` → `Ok(Some(url))` (hit).
+/// * `success: false` → `Ok(None)` — the proxy's "prehraj.to says gone"
+///   signal, the only shape the dead-upload path should react to.
+/// * `success: true` with missing/empty `video_url`, or `success: null`
+///   / missing → `Err("proxy-malformed")`. Both indicate a 2xx payload
+///   that violates the contract, not a deleted upload, so callers must
+///   leave `is_alive` unchanged.
+fn interpret_proxy_response(data: &ProxyVideoResponse) -> Result<Option<String>, String> {
     match data.success {
-        Some(true) => Ok(data.video_url.filter(|u| !u.is_empty())),
+        Some(true) => match data.video_url.as_deref() {
+            Some(u) if !u.is_empty() => Ok(Some(u.to_string())),
+            _ => Err("proxy-malformed".to_string()),
+        },
         Some(false) => Ok(None),
         None => Err("proxy-malformed".to_string()),
     }
@@ -508,5 +527,72 @@ mod tests {
             expires_at: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
         };
         assert!(!is_fresh_enough(&entry_stale, now));
+    }
+
+    // --- `interpret_proxy_response` -----------------------------------
+    // These guard the dead-vs-malformed distinction: only `success: false`
+    // may flip `is_alive=FALSE`; everything else must surface as `Err` so
+    // callers leave the row alone.
+
+    #[test]
+    fn interpret_success_true_with_url_is_hit() {
+        let data = ProxyVideoResponse {
+            success: Some(true),
+            video_url: Some("https://cdn.example/x.mp4?expires=1".to_string()),
+        };
+        assert_eq!(
+            interpret_proxy_response(&data).unwrap(),
+            Some("https://cdn.example/x.mp4?expires=1".to_string())
+        );
+    }
+
+    #[test]
+    fn interpret_success_false_is_dead() {
+        let data = ProxyVideoResponse {
+            success: Some(false),
+            video_url: None,
+        };
+        assert_eq!(interpret_proxy_response(&data).unwrap(), None);
+
+        // Belt-and-suspenders: `success: false` with a stray URL still
+        // means dead — we trust the explicit "gone" signal over the URL.
+        let with_stray = ProxyVideoResponse {
+            success: Some(false),
+            video_url: Some("https://cdn.example/x.mp4".to_string()),
+        };
+        assert_eq!(interpret_proxy_response(&with_stray).unwrap(), None);
+    }
+
+    #[test]
+    fn interpret_success_null_is_malformed() {
+        let data = ProxyVideoResponse {
+            success: None,
+            video_url: Some("https://cdn.example/x.mp4".to_string()),
+        };
+        assert_eq!(
+            interpret_proxy_response(&data).unwrap_err(),
+            "proxy-malformed"
+        );
+    }
+
+    #[test]
+    fn interpret_success_true_without_url_is_malformed() {
+        let missing = ProxyVideoResponse {
+            success: Some(true),
+            video_url: None,
+        };
+        assert_eq!(
+            interpret_proxy_response(&missing).unwrap_err(),
+            "proxy-malformed"
+        );
+
+        let empty = ProxyVideoResponse {
+            success: Some(true),
+            video_url: Some(String::new()),
+        };
+        assert_eq!(
+            interpret_proxy_response(&empty).unwrap_err(),
+            "proxy-malformed"
+        );
     }
 }
