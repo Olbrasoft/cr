@@ -14,7 +14,7 @@
 //!
 //! Parent epic: #518. Depends on schema migration `20260508_048`.
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
@@ -52,6 +52,42 @@ const TOKEN_SAFETY_MARGIN: Duration = Duration::from_secs(60);
 /// Conservative fallback when `expires=` is missing/unparseable — two
 /// hours matches the typical observed prehraj.to token lifetime.
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(2 * 3600);
+
+/// Single source of truth for the "best upload first" ranking. Used by
+/// both the listing endpoint (`/api/films/{id}/prehrajto-sources`) and
+/// the stream endpoint's dead-upload fallback (`next_best_upload`); if
+/// this changes, both paths change together so the first row of the
+/// list is always the same upload the stream endpoint would try next.
+///
+/// The template's `parseResolutionHint` helper mirrors the resolution
+/// buckets here — keep them in sync too.
+const PREHRAJTO_RANK_ORDER_BY: &str = r#"
+    CASE lang_class
+      WHEN 'CZ_DUB'    THEN 6
+      WHEN 'CZ_NATIVE' THEN 5
+      WHEN 'CZ_SUB'    THEN 4
+      WHEN 'SK_DUB'    THEN 3
+      WHEN 'SK_SUB'    THEN 2
+      WHEN 'UNKNOWN'   THEN 1
+      ELSE 0
+    END DESC,
+    CASE LOWER(COALESCE(resolution_hint, ''))
+      WHEN '2160p'  THEN 6
+      WHEN 'bluray' THEN 5
+      WHEN '1080p'  THEN 5
+      WHEN '720p'   THEN 4
+      WHEN 'bdrip'  THEN 4
+      WHEN 'webrip' THEN 4
+      WHEN 'web-dl' THEN 4
+      WHEN 'hdrip'  THEN 3
+      WHEN 'hdtv'   THEN 3
+      WHEN '480p'   THEN 2
+      WHEN 'dvdrip' THEN 2
+      WHEN 'tvrip'  THEN 2
+      ELSE 1
+    END DESC,
+    COALESCE(view_count, 0) DESC
+"#;
 
 /// prehraj.to upload ids are 13-hex (older) or 16-hex (newer); anything
 /// else is definitely not a real upload and we can reject it early.
@@ -396,53 +432,27 @@ async fn release_per_key_lock(
     }
 }
 
+static NEXT_BEST_UPLOAD_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT upload_id FROM film_prehrajto_uploads \
+         WHERE film_id = $1 AND is_alive = TRUE AND upload_id <> ALL($2) \
+         ORDER BY {PREHRAJTO_RANK_ORDER_BY} LIMIT 1"
+    )
+});
+
 async fn next_best_upload(
     state: &AppState,
     film_id: i32,
     tried: &HashSet<String>,
 ) -> Option<String> {
     let tried_vec: Vec<String> = tried.iter().cloned().collect();
-    sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT upload_id FROM film_prehrajto_uploads
-        WHERE film_id = $1
-          AND is_alive = TRUE
-          AND upload_id <> ALL($2)
-        ORDER BY
-          CASE lang_class
-            WHEN 'CZ_DUB'    THEN 6
-            WHEN 'CZ_NATIVE' THEN 5
-            WHEN 'CZ_SUB'    THEN 4
-            WHEN 'SK_DUB'    THEN 3
-            WHEN 'SK_SUB'    THEN 2
-            WHEN 'UNKNOWN'   THEN 1
-            ELSE 0
-          END DESC,
-          CASE LOWER(COALESCE(resolution_hint, ''))
-            WHEN '2160p'  THEN 6
-            WHEN 'bluray' THEN 5
-            WHEN '1080p'  THEN 5
-            WHEN '720p'   THEN 4
-            WHEN 'bdrip'  THEN 4
-            WHEN 'webrip' THEN 4
-            WHEN 'web-dl' THEN 4
-            WHEN 'hdrip'  THEN 3
-            WHEN 'hdtv'   THEN 3
-            WHEN '480p'   THEN 2
-            WHEN 'dvdrip' THEN 2
-            WHEN 'tvrip'  THEN 2
-            ELSE 1
-          END DESC,
-          COALESCE(view_count, 0) DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(film_id)
-    .bind(&tried_vec)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
+    sqlx::query_scalar::<_, String>(&NEXT_BEST_UPLOAD_SQL)
+        .bind(film_id)
+        .bind(&tried_vec)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
 }
 
 async fn resolve_with_fallback(state: &AppState, initial: String) -> Result<String, Response> {
@@ -505,16 +515,26 @@ pub struct PrehrajtoSourceRow {
     pub is_direct: Option<bool>,
 }
 
+static PREHRAJTO_SOURCES_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT upload_id, url, title, duration_sec, resolution_hint, \
+                lang_class, is_direct \
+         FROM film_prehrajto_uploads \
+         WHERE film_id = $1 AND is_alive = TRUE \
+         ORDER BY {PREHRAJTO_RANK_ORDER_BY}"
+    )
+});
+
 /// `GET /api/films/{film_id}/prehrajto-sources` — list of all alive
-/// uploads for a film, ranked the same way the stream endpoint's
-/// fallback picks the primary (lang-class → resolution → views).
+/// uploads for a film, ranked identically to the stream endpoint's
+/// fallback (`next_best_upload`) by reusing [`PREHRAJTO_RANK_ORDER_BY`].
 /// Replaces the legacy live-scrape path for the detail-page "Další
 /// zdroje" block once `PREHRAJTO_SOURCES_FROM_DB=1`.
 pub async fn prehrajto_sources(
     State(state): State<AppState>,
     Path(film_id): Path<i32>,
 ) -> Response {
-    match sqlx::query_as::<_, PrehrajtoSourceRow>(PREHRAJTO_SOURCES_SQL)
+    match sqlx::query_as::<_, PrehrajtoSourceRow>(&PREHRAJTO_SOURCES_SQL)
         .bind(film_id)
         .fetch_all(&state.db)
         .await
@@ -531,42 +551,6 @@ pub async fn prehrajto_sources(
         }
     }
 }
-
-/// Ranking kept in sync with [`next_best_upload`] so the first row of
-/// this list is also the upload the stream endpoint would try first —
-/// same order the pilot importer uses for `prehrajto_primary_upload_id`.
-const PREHRAJTO_SOURCES_SQL: &str = r#"
-    SELECT upload_id, url, title, duration_sec, resolution_hint,
-           lang_class, is_direct
-    FROM film_prehrajto_uploads
-    WHERE film_id = $1 AND is_alive = TRUE
-    ORDER BY
-      CASE lang_class
-        WHEN 'CZ_DUB'    THEN 6
-        WHEN 'CZ_NATIVE' THEN 5
-        WHEN 'CZ_SUB'    THEN 4
-        WHEN 'SK_DUB'    THEN 3
-        WHEN 'SK_SUB'    THEN 2
-        WHEN 'UNKNOWN'   THEN 1
-        ELSE 0
-      END DESC,
-      CASE LOWER(COALESCE(resolution_hint, ''))
-        WHEN '2160p'  THEN 6
-        WHEN 'bluray' THEN 5
-        WHEN '1080p'  THEN 5
-        WHEN '720p'   THEN 4
-        WHEN 'bdrip'  THEN 4
-        WHEN 'webrip' THEN 4
-        WHEN 'web-dl' THEN 4
-        WHEN 'hdrip'  THEN 3
-        WHEN 'hdtv'   THEN 3
-        WHEN '480p'   THEN 2
-        WHEN 'dvdrip' THEN 2
-        WHEN 'tvrip'  THEN 2
-        ELSE 1
-      END DESC,
-      COALESCE(view_count, 0) DESC
-"#;
 
 #[cfg(test)]
 mod tests {

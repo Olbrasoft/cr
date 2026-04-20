@@ -442,7 +442,7 @@ var cachedPrehrajtoPlayed = false;
 
             section.style.display = '';
             var autoPlayed = false;
-            data.sources.forEach(function(src, idx) {
+            data.sources.forEach(function(src) {
                 var movie = {
                     url: src.url,
                     title: src.title,
@@ -461,9 +461,13 @@ var cachedPrehrajtoPlayed = false;
                 // no client-side runtime-diff sort needed.
                 container.appendChild(item);
 
-                // Autoplay the first direct entry if there's no SK Torrent
-                // and no cached prehraj.to hit — mirrors the legacy flow.
-                if (idx === 0 && isDirect && !hasSktorrent && !cachedPrehrajtoPlayed && !autoPlayed) {
+                // Autoplay the first direct entry we encounter, not just
+                // the top-ranked row. If the top row is a proxy upload
+                // (e.g. `is_direct=false` already learned by the stream
+                // endpoint), we still want a later direct row to trigger
+                // playback — mirrors the legacy flow's "first direct
+                // wins" behaviour.
+                if (isDirect && !autoPlayed && !hasSktorrent && !cachedPrehrajtoPlayed) {
                     autoPlayed = true;
                     setTimeout(function() { item.click(); }, 500);
                 }
@@ -597,12 +601,18 @@ var cachedPrehrajtoPlayed = false;
             durLabel = ' · ' + mm + ' min';
         }
 
+        // Build the shell with known-safe HTML (badges, thumb, play
+        // indicator), then inject the uploader-supplied title via
+        // `textContent` so any `<`/`&` in the title cannot become live
+        // markup. Same guard applies to both flows because both reach
+        // here.
         item.innerHTML = thumb
             + '<div class="pt-info">'
-            + '<span class="pt-title">' + movie.title + year + '</span>'
+            + '<span class="pt-title"></span>'
             + '<span class="pt-meta">' + badge + qualityLabel + durLabel + '</span>'
             + '</div>'
             + '<span class="play-indicator">&#9654;</span>';
+        item.querySelector('.pt-title').textContent = movie.title + year;
         return item;
     }
 
