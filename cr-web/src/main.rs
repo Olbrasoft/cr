@@ -248,6 +248,12 @@ async fn main() -> Result<()> {
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
         )
+        // #551 POC surface: both endpoints are public and hit sledujteto.cz
+        // on every call, which is fine for the low-traffic /admin/test-
+        // sledujteto/ diagnostic page but is NOT the shape we want for the
+        // production three-source film pages. The proper handler (with
+        // token expiry caching + in-flight mutex, mirroring prehrajto)
+        // lands in #547 and will replace these.
         .route(
             "/sledujteto/search",
             axum::routing::get(handlers::movies_api::sledujteto_search),
@@ -396,12 +402,12 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::filmy_serialy),
         )
         .route(
-            "/filmy-a-serialy-1",
-            axum::routing::get(handlers::filmy_serialy_sledujteto),
+            "/admin/test-sledujteto",
+            axum::routing::get(handlers::admin_test_sledujteto),
         )
         .route(
-            "/filmy-a-serialy-1/",
-            axum::routing::get(handlers::filmy_serialy_sledujteto),
+            "/admin/test-sledujteto/",
+            axum::routing::get(handlers::admin_test_sledujteto),
         )
         .route("/koupani", axum::routing::get(handlers::pools_hub))
         .route("/koupani/", axum::routing::get(handlers::pools_hub))

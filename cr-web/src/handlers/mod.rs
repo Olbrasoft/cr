@@ -13,11 +13,11 @@ pub mod admin_backups;
 pub mod admin_cache;
 pub mod admin_dashboard;
 pub mod admin_import;
+mod admin_test_sledujteto;
 mod audiobooks;
 mod download_video;
 mod films;
 mod filmy_serialy;
-mod filmy_serialy_sledujteto;
 mod geojson;
 mod landmarks;
 pub mod movies_api;
@@ -30,11 +30,11 @@ mod tv_porady;
 pub mod video_api;
 
 // Re-export all public handlers so main.rs doesn't need changes
+pub use admin_test_sledujteto::admin_test_sledujteto;
 pub use audiobooks::audiobooks;
 pub use download_video::download_video;
 pub use films::{SktorrentSource, films_detail, films_list, films_search, sktorrent_resolve};
 pub use filmy_serialy::filmy_serialy;
-pub use filmy_serialy_sledujteto::filmy_serialy_sledujteto;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
