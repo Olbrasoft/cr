@@ -120,11 +120,16 @@ async fn per_key_lock(state: &AppState, upload_id: &str) -> Arc<tokio::sync::Mut
 
 /// One scrape pass against the CZ proxy. Returns:
 /// - `Ok(Some(url))` on success (real tokenized CDN URL),
-/// - `Ok(None)` when the proxy explicitly reports the upload has no
-///   `contentUrl` (prehraj.to 404 / deleted — the "upload is dead" signal),
-/// - `Err(msg)` on infrastructure failure (non-2xx proxy response, proxy
-///   unreachable, parse error, bad key). Kept as `Err` so callers do not
-///   mistakenly flip `is_alive=FALSE` during a transient proxy outage.
+/// - `Ok(None)` only when the proxy explicitly reports `success: false`
+///   (prehraj.to said "gone" — the upload-is-dead signal),
+/// - `Err(code)` on any other outcome: proxy unreachable, non-2xx HTTP,
+///   JSON parse failure, or ambiguous/missing `success` field. Callers
+///   must not flip `is_alive=FALSE` on `Err`, so keeping a transient
+///   proxy blip or a truncated response out of this branch matters.
+///
+/// Error codes are **coarse and URL-free**: the proxy URL contains the
+/// shared `key=` secret, so we never embed the raw reqwest Display
+/// output (which includes that URL) in the returned message or logs.
 async fn scrape_content_url(state: &AppState, detail_url: &str) -> Result<Option<String>, String> {
     let Some((proxy_url, proxy_key)) = cz_proxy_config(&state.config) else {
         return Err("proxy-not-configured".to_string());
@@ -145,17 +150,40 @@ async fn scrape_content_url(state: &AppState, detail_url: &str) -> Result<Option
         .timeout(Duration::from_secs(25))
         .send()
         .await
-        .map_err(|e| format!("proxy-error: {e}"))?;
+        .map_err(|e| format!("proxy-transport-{}", classify_reqwest_error(&e)))?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("proxy-http-{}", status.as_u16()));
     }
-    let data: ProxyVideoResponse = resp.json().await.map_err(|e| format!("proxy-parse: {e}"))?;
-    // `success: false` is the proxy's "prehraj.to says gone" signal.
-    if data.success != Some(true) {
-        return Ok(None);
+    let data: ProxyVideoResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("proxy-parse-{}", classify_reqwest_error(&e)))?;
+    match data.success {
+        Some(true) => Ok(data.video_url.filter(|u| !u.is_empty())),
+        Some(false) => Ok(None),
+        None => Err("proxy-malformed".to_string()),
     }
-    Ok(data.video_url.filter(|u| !u.is_empty()))
+}
+
+/// Coarse, URL-free category for a `reqwest::Error`. The default `Display`
+/// impl includes the full request URL — which for us carries the CZ proxy
+/// `key=` secret — so we never stringify the raw error; we only report
+/// which stage failed.
+fn classify_reqwest_error(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else if e.is_decode() {
+        "decode"
+    } else if e.is_body() {
+        "body"
+    } else if e.is_request() {
+        "request"
+    } else {
+        "other"
+    }
 }
 
 /// Result of a single resolve attempt: either a playable URL, a "this
@@ -281,9 +309,11 @@ async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryRes
             }
         }
         Err(e) => {
-            // Never surface `e` to the client: it contains the full
-            // proxy URL (including the shared `key=` secret). Log the
-            // detail, return a generic status+message.
+            // `e` is one of the coarse codes emitted by
+            // `scrape_content_url` (`proxy-transport-timeout`,
+            // `proxy-http-502`, …) — never a raw reqwest Display, which
+            // would include the CZ proxy `key=`. Safe to log and still
+            // hidden from the client behind a generic status+message.
             tracing::error!(upload_id, error = %e, "scrape failed");
             let (status, message) = if e == "proxy-not-configured" {
                 (
