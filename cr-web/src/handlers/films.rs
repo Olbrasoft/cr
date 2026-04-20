@@ -657,7 +657,11 @@ async fn films_by_genre(
     Ok(Html(tmpl.render()?).into_response())
 }
 
-/// GET /api/films/search?q=matrix — search autocomplete
+/// GET /api/films/search?q=matrix — search autocomplete.
+///
+/// If the raw query returns nothing and it ends with a year pattern
+/// (" (YYYY)" or " YYYY"), retry without the trailing year — users often
+/// type "Mstitel (1989)" but the title column stores only "Mstitel".
 pub async fn films_search(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -667,24 +671,12 @@ pub async fn films_search(
         return Ok(axum::Json(Vec::<SearchResult>::new()).into_response());
     }
 
-    let pattern = format!("%{q}%");
-    let starts_pattern = format!("{q}%");
-    let rows = sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, imdb_rating, cover_filename \
-         FROM films \
-         WHERE title ILIKE $1 OR original_title ILIKE $1 \
-         ORDER BY \
-           CASE WHEN title ILIKE $2 THEN 0 \
-                WHEN title ILIKE $1 THEN 1 \
-                WHEN original_title ILIKE $2 THEN 2 \
-                ELSE 3 END, \
-           imdb_rating DESC NULLS LAST \
-         LIMIT 10",
-    )
-    .bind(&pattern)
-    .bind(&starts_pattern)
-    .fetch_all(&state.db)
-    .await?;
+    let mut rows = search_films_by_title(&state.db, q).await?;
+    if rows.is_empty()
+        && let Some(stripped) = strip_trailing_year(q)
+    {
+        rows = search_films_by_title(&state.db, &stripped).await?;
+    }
 
     let results: Vec<SearchResult> = rows
         .into_iter()
@@ -698,6 +690,45 @@ pub async fn films_search(
         .collect();
 
     Ok(axum::Json(results).into_response())
+}
+
+async fn search_films_by_title(
+    db: &sqlx::PgPool,
+    q: &str,
+) -> Result<Vec<SearchRow>, sqlx::Error> {
+    let pattern = format!("%{q}%");
+    let starts_pattern = format!("{q}%");
+    sqlx::query_as::<_, SearchRow>(
+        "SELECT slug, title, year, imdb_rating, cover_filename \
+         FROM films \
+         WHERE title ILIKE $1 OR original_title ILIKE $1 \
+         ORDER BY \
+           CASE WHEN title ILIKE $2 THEN 0 \
+                WHEN title ILIKE $1 THEN 1 \
+                WHEN original_title ILIKE $2 THEN 2 \
+                ELSE 3 END, \
+           imdb_rating DESC NULLS LAST \
+         LIMIT 10",
+    )
+    .bind(&pattern)
+    .bind(&starts_pattern)
+    .fetch_all(db)
+    .await
+}
+
+/// Strip a trailing year pattern (" (YYYY)" or " YYYY") from a search query.
+/// Requires leading whitespace and ≥2 chars remaining — avoids stripping a
+/// standalone year like "1984" or short titles like "X 1989".
+fn strip_trailing_year(q: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\s+(?:\(\d{4}\)|\d{4})\s*$").expect("const regex literal compiles")
+    });
+    let m = RE.find(q)?;
+    let before = q[..m.start()].trim_end();
+    if before.chars().count() < 2 {
+        return None;
+    }
+    Some(before.to_string())
 }
 
 /// GET /filmy-online/{slug}.webp — serve WebP cover image
@@ -1239,4 +1270,55 @@ fn not_found_response() -> Response {
         Html("<h1>404 — Stránka nenalezena</h1>"),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_trailing_year;
+
+    #[test]
+    fn strips_parenthesized_year() {
+        assert_eq!(
+            strip_trailing_year("Mstitel (1989)").as_deref(),
+            Some("Mstitel")
+        );
+        assert_eq!(
+            strip_trailing_year("The Matrix (1999)").as_deref(),
+            Some("The Matrix")
+        );
+        assert_eq!(
+            strip_trailing_year("Mstitel  (1989)  ").as_deref(),
+            Some("Mstitel")
+        );
+    }
+
+    #[test]
+    fn strips_bare_year() {
+        assert_eq!(
+            strip_trailing_year("Mstitel 1989").as_deref(),
+            Some("Mstitel")
+        );
+        assert_eq!(
+            strip_trailing_year("Rambo II 1985").as_deref(),
+            Some("Rambo II")
+        );
+    }
+
+    #[test]
+    fn does_not_strip_when_no_year_at_end() {
+        assert_eq!(strip_trailing_year("2001: A Space Odyssey"), None);
+        assert_eq!(strip_trailing_year("Matrix"), None);
+        assert_eq!(strip_trailing_year("Terminator 2"), None);
+    }
+
+    #[test]
+    fn does_not_strip_bare_year_alone() {
+        assert_eq!(strip_trailing_year("1984"), None);
+        assert_eq!(strip_trailing_year("2025"), None);
+    }
+
+    #[test]
+    fn does_not_strip_when_remaining_too_short() {
+        assert_eq!(strip_trailing_year("X 1989"), None);
+    }
 }
