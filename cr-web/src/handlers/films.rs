@@ -285,119 +285,57 @@ pub async fn films_list(
     let offset = (page - 1) * FILMS_PER_PAGE;
     let order = params.order_clause();
 
-    // Search filter
-    let search_q = params.q.as_ref().and_then(|q| {
-        let t = q.trim();
-        if t.len() >= 2 {
-            Some(format!("%{t}%"))
-        } else {
-            None
-        }
-    });
+    // Search filter. Primary pattern uses ILIKE on title/original_title. If
+    // that returns zero rows for a non-trivial query, fall back to matching
+    // against CONCAT_WS(' ', title, year::text) with the paren-stripped
+    // query — lets "Mstitel (1989)", "Marvinův pokoj 1996)", and partial
+    // "Marvinův pokoj 19" resolve. Mirrors the autocomplete API behavior.
+    let raw_q = params.q.as_deref().map(str::trim).filter(|t| t.len() >= 2);
+    let raw_pattern = raw_q.map(|t| format!("%{t}%"));
 
     let include = params.include_genres();
     let exclude = params.exclude_genres();
     let year_f = params.year_filter();
 
-    // Build dynamic WHERE parts
-    let mut where_parts: Vec<String> = vec![];
-    let mut bind_idx = 1;
+    let (total_count, films) = run_films_query(
+        &state.db,
+        FilmsSearchMode::Primary,
+        raw_pattern.as_deref(),
+        &params,
+        &include,
+        &exclude,
+        year_f,
+        order,
+        offset,
+    )
+    .await?;
 
-    let has_search = search_q.is_some();
-    if has_search {
-        where_parts.push(format!(
-            "(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})"
-        ));
-        bind_idx += 1;
-    }
-    if !include.is_empty() {
-        if params.genre_mode_and() {
-            // AND: film must have ALL selected genres
-            where_parts.push(format!(
-                "f.id IN (SELECT fg.film_id FROM film_genres fg \
-                 JOIN genres g ON g.id = fg.genre_id \
-                 WHERE g.slug = ANY(${bind_idx}) \
-                 GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
-                include.len()
-            ));
-        } else {
-            // OR (default): film must have ANY selected genre
-            where_parts.push(format!(
-                "f.id IN (SELECT fg.film_id FROM film_genres fg \
-                 JOIN genres g ON g.id = fg.genre_id \
-                 WHERE g.slug = ANY(${bind_idx}))"
-            ));
+    let (total_count, films) = match (total_count, raw_q) {
+        (0, Some(q)) => {
+            let normalized = normalize_query(q);
+            // Same min-length guard as the autocomplete API — avoid running
+            // a full-table scan with `%x%` when normalization collapsed the
+            // query to something trivial like "1" (from "(1").
+            if normalized.chars().count() < 2 {
+                (total_count, films)
+            } else {
+                let fb_pattern = format!("%{normalized}%");
+                run_films_query(
+                    &state.db,
+                    FilmsSearchMode::TitleYear,
+                    Some(&fb_pattern),
+                    &params,
+                    &include,
+                    &exclude,
+                    year_f,
+                    order,
+                    offset,
+                )
+                .await?
+            }
         }
-        bind_idx += 1;
-    }
-    if !exclude.is_empty() {
-        where_parts.push(format!(
-            "f.id NOT IN (SELECT fg.film_id FROM film_genres fg \
-             JOIN genres g ON g.id = fg.genre_id \
-             WHERE g.slug = ANY(${bind_idx}))"
-        ));
-        bind_idx += 1;
-    }
-    if year_f.is_some() {
-        where_parts.push(format!("f.year = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if let Some(af) = params.audio_filter() {
-        where_parts.push(af.to_string());
-    }
-
-    let where_clause = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_parts.join(" AND "))
+        _ => (total_count, films),
     };
-
-    // Count query
-    let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
-    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
-    if let Some(ref p) = search_q {
-        cq = cq.bind(p.clone());
-    }
-    if !include.is_empty() {
-        cq = cq.bind(include.clone());
-    }
-    if !exclude.is_empty() {
-        cq = cq.bind(exclude.clone());
-    }
-    if let Some(yr) = year_f {
-        cq = cq.bind(yr);
-    }
-    let count_row = cq.fetch_one(&state.db).await?;
-
-    // Films query
-    let films_query = format!(
-        "SELECT {FILM_COLUMNS} \
-         FROM films f {where_clause} \
-         ORDER BY {order} \
-         LIMIT ${limit_idx} OFFSET ${offset_idx}",
-        limit_idx = bind_idx,
-        offset_idx = bind_idx + 1
-    );
-    let mut fq = sqlx::query_as::<_, FilmRow>(&films_query);
-    if let Some(ref p) = search_q {
-        fq = fq.bind(p.clone());
-    }
-    if !include.is_empty() {
-        fq = fq.bind(include.clone());
-    }
-    if !exclude.is_empty() {
-        fq = fq.bind(exclude.clone());
-    }
-    if let Some(yr) = year_f {
-        fq = fq.bind(yr);
-    }
-    let films = fq
-        .bind(FILMS_PER_PAGE)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?;
-
-    let (total_count, films) = (count_row.count.unwrap_or(0), films);
     let total_pages = (total_count as f64 / FILMS_PER_PAGE as f64).ceil() as i64;
 
     let genres = load_genres(&state.db).await?;
@@ -659,9 +597,16 @@ async fn films_by_genre(
 
 /// GET /api/films/search?q=matrix — search autocomplete.
 ///
-/// If the raw query returns nothing and it ends with a year pattern
-/// (" (YYYY)" or " YYYY"), retry without the trailing year — users often
-/// type "Mstitel (1989)" but the title column stores only "Mstitel".
+/// Two-stage search:
+/// 1. Primary: ILIKE against `title` / `original_title`. Handles the common
+///    case and titles that literally contain digits ("1984", "2001: A Space
+///    Odyssey").
+/// 2. Fallback (only when primary returns zero): strip parens and collapse
+///    whitespace from the query, then ILIKE against the virtual expression
+///    `CONCAT_WS(' ', title, year)`. Lets "Marvinův pokoj 1996", "Marvinův
+///    pokoj (1996", "Marvinův pokoj 1996)", and even partial "Marvinův pokoj
+///    19" resolve to the same film — no schema/view needed, Postgres
+///    evaluates the expression at query time.
 pub async fn films_search(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -672,10 +617,13 @@ pub async fn films_search(
     }
 
     let mut rows = search_films_by_title(&state.db, q).await?;
-    if rows.is_empty()
-        && let Some(stripped) = strip_trailing_year(q)
-    {
-        rows = search_films_by_title(&state.db, &stripped).await?;
+    if rows.is_empty() {
+        let normalized = normalize_query(q);
+        // Skip fallback for collapsed queries like "(1" → "1" — `%1%` would
+        // bloat results with everything containing a "1" in title or year.
+        if normalized.chars().count() >= 2 {
+            rows = search_films_by_title_year(&state.db, &normalized).await?;
+        }
     }
 
     let results: Vec<SearchResult> = rows
@@ -713,19 +661,169 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
     .await
 }
 
-/// Strip a trailing year pattern (" (YYYY)" or " YYYY") from a search query.
-/// Requires leading whitespace and ≥2 chars remaining — avoids stripping a
-/// standalone year like "1984" or short titles like "X 1989".
-fn strip_trailing_year(q: &str) -> Option<String> {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\s+(?:\(\d{4}\)|\d{4})\s*$").expect("const regex literal compiles")
-    });
-    let m = RE.find(q)?;
-    let before = q[..m.start()].trim_end();
-    if before.chars().count() < 2 {
-        return None;
+async fn search_films_by_title_year(
+    db: &sqlx::PgPool,
+    q: &str,
+) -> Result<Vec<SearchRow>, sqlx::Error> {
+    let pattern = format!("%{q}%");
+    let starts_pattern = format!("{q}%");
+    sqlx::query_as::<_, SearchRow>(
+        "SELECT slug, title, year, imdb_rating, cover_filename \
+         FROM films \
+         WHERE CONCAT_WS(' ', title, year::text) ILIKE $1 \
+            OR CONCAT_WS(' ', original_title, year::text) ILIKE $1 \
+         ORDER BY \
+           CASE WHEN CONCAT_WS(' ', title, year::text) ILIKE $2 THEN 0 \
+                WHEN CONCAT_WS(' ', title, year::text) ILIKE $1 THEN 1 \
+                WHEN CONCAT_WS(' ', original_title, year::text) ILIKE $2 THEN 2 \
+                ELSE 3 END, \
+           imdb_rating DESC NULLS LAST \
+         LIMIT 10",
+    )
+    .bind(&pattern)
+    .bind(&starts_pattern)
+    .fetch_all(db)
+    .await
+}
+
+/// Normalize a search query for the title+year fallback: strip parentheses
+/// and collapse whitespace runs to single spaces. Handles malformed paren
+/// pairs: "Title (1996" and "Title 1996)" both normalize to "Title 1996",
+/// which then ILIKE-matches against `CONCAT_WS(' ', title, year)`.
+fn normalize_query(q: &str) -> String {
+    q.chars()
+        .filter(|c| *c != '(' && *c != ')')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Which predicate shape to use for the search filter in `films_list`.
+#[derive(Clone, Copy)]
+enum FilmsSearchMode {
+    /// `title ILIKE $N OR original_title ILIKE $N` — primary path.
+    Primary,
+    /// `CONCAT_WS(' ', title, year::text) ILIKE $N OR CONCAT_WS(' ',
+    /// original_title, year::text) ILIKE $N` — title+year fallback.
+    TitleYear,
+}
+
+impl FilmsSearchMode {
+    fn predicate(self, bind_idx: usize) -> String {
+        match self {
+            Self::Primary => {
+                format!("(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})")
+            }
+            Self::TitleYear => format!(
+                "(CONCAT_WS(' ', f.title, f.year::text) ILIKE ${bind_idx} \
+                 OR CONCAT_WS(' ', f.original_title, f.year::text) ILIKE ${bind_idx})"
+            ),
+        }
     }
-    Some(before.to_string())
+}
+
+/// Run the count + paginated films query for `films_list`, with the chosen
+/// search predicate shape (or no search filter when `search_pattern` is None).
+#[allow(clippy::too_many_arguments)]
+async fn run_films_query(
+    db: &sqlx::PgPool,
+    mode: FilmsSearchMode,
+    search_pattern: Option<&str>,
+    params: &FilmsQuery,
+    include: &[String],
+    exclude: &[String],
+    year_f: Option<i16>,
+    order: &str,
+    offset: i64,
+) -> Result<(i64, Vec<FilmRow>), sqlx::Error> {
+    let mut where_parts: Vec<String> = vec![];
+    let mut bind_idx = 1;
+
+    if search_pattern.is_some() {
+        where_parts.push(mode.predicate(bind_idx));
+        bind_idx += 1;
+    }
+    if !include.is_empty() {
+        if params.genre_mode_and() {
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include.len()
+            ));
+        } else {
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude.is_empty() {
+        where_parts.push(format!(
+            "f.id NOT IN (SELECT fg.film_id FROM film_genres fg \
+             JOIN genres g ON g.id = fg.genre_id \
+             WHERE g.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("f.year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if let Some(af) = params.audio_filter() {
+        where_parts.push(af.to_string());
+    }
+
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
+
+    let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
+    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
+    if let Some(p) = search_pattern {
+        cq = cq.bind(p.to_string());
+    }
+    if !include.is_empty() {
+        cq = cq.bind(include.to_vec());
+    }
+    if !exclude.is_empty() {
+        cq = cq.bind(exclude.to_vec());
+    }
+    if let Some(yr) = year_f {
+        cq = cq.bind(yr);
+    }
+    let count_row = cq.fetch_one(db).await?;
+
+    let films_query = format!(
+        "SELECT {FILM_COLUMNS} \
+         FROM films f {where_clause} \
+         ORDER BY {order} \
+         LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        limit_idx = bind_idx,
+        offset_idx = bind_idx + 1
+    );
+    let mut fq = sqlx::query_as::<_, FilmRow>(&films_query);
+    if let Some(p) = search_pattern {
+        fq = fq.bind(p.to_string());
+    }
+    if !include.is_empty() {
+        fq = fq.bind(include.to_vec());
+    }
+    if !exclude.is_empty() {
+        fq = fq.bind(exclude.to_vec());
+    }
+    if let Some(yr) = year_f {
+        fq = fq.bind(yr);
+    }
+    let films = fq.bind(FILMS_PER_PAGE).bind(offset).fetch_all(db).await?;
+
+    Ok((count_row.count.unwrap_or(0), films))
 }
 
 /// GET /filmy-online/{slug}.webp — serve WebP cover image
@@ -1271,51 +1369,54 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_trailing_year;
+    use super::normalize_query;
 
     #[test]
-    fn strips_parenthesized_year() {
+    fn strips_parens_complete_pair() {
+        assert_eq!(normalize_query("Mstitel (1989)"), "Mstitel 1989");
+        assert_eq!(normalize_query("The Matrix (1999)"), "The Matrix 1999");
+    }
+
+    #[test]
+    fn strips_parens_malformed() {
         assert_eq!(
-            strip_trailing_year("Mstitel (1989)").as_deref(),
-            Some("Mstitel")
+            normalize_query("Marvinův pokoj (1996"),
+            "Marvinův pokoj 1996"
         );
         assert_eq!(
-            strip_trailing_year("The Matrix (1999)").as_deref(),
-            Some("The Matrix")
-        );
-        assert_eq!(
-            strip_trailing_year("Mstitel  (1989)  ").as_deref(),
-            Some("Mstitel")
+            normalize_query("Marvinův pokoj 1996)"),
+            "Marvinův pokoj 1996"
         );
     }
 
     #[test]
-    fn strips_bare_year() {
+    fn collapses_whitespace() {
+        assert_eq!(normalize_query("Mstitel    1989"), "Mstitel 1989");
+        assert_eq!(normalize_query("  Mstitel  (1989)  "), "Mstitel 1989");
+    }
+
+    #[test]
+    fn preserves_partial_year() {
+        assert_eq!(normalize_query("Marvinův pokoj 19"), "Marvinův pokoj 19");
+        assert_eq!(normalize_query("Marvinův pokoj 1"), "Marvinův pokoj 1");
+        assert_eq!(normalize_query("Marvinův pokoj (19"), "Marvinův pokoj 19");
+    }
+
+    #[test]
+    fn preserves_ordinary_queries() {
+        assert_eq!(normalize_query("Marvinův pokoj"), "Marvinův pokoj");
         assert_eq!(
-            strip_trailing_year("Mstitel 1989").as_deref(),
-            Some("Mstitel")
+            normalize_query("2001: A Space Odyssey"),
+            "2001: A Space Odyssey"
         );
-        assert_eq!(
-            strip_trailing_year("Rambo II 1985").as_deref(),
-            Some("Rambo II")
-        );
+        assert_eq!(normalize_query("1984"), "1984");
     }
 
     #[test]
-    fn does_not_strip_when_no_year_at_end() {
-        assert_eq!(strip_trailing_year("2001: A Space Odyssey"), None);
-        assert_eq!(strip_trailing_year("Matrix"), None);
-        assert_eq!(strip_trailing_year("Terminator 2"), None);
-    }
-
-    #[test]
-    fn does_not_strip_bare_year_alone() {
-        assert_eq!(strip_trailing_year("1984"), None);
-        assert_eq!(strip_trailing_year("2025"), None);
-    }
-
-    #[test]
-    fn does_not_strip_when_remaining_too_short() {
-        assert_eq!(strip_trailing_year("X 1989"), None);
+    fn empty_when_only_whitespace_or_parens() {
+        assert_eq!(normalize_query(""), "");
+        assert_eq!(normalize_query("   "), "");
+        assert_eq!(normalize_query("()"), "");
+        assert_eq!(normalize_query("(  )"), "");
     }
 }
