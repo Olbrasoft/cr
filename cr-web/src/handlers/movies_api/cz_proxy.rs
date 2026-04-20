@@ -101,6 +101,17 @@ pub async fn movies_search(
 ) -> crate::error::WebResult<Json<SearchResponse>> {
     use crate::error::WebError;
 
+    // Issue #521 moved the detail-page "Další zdroje" flow off this
+    // endpoint. Rare traffic here while the flag is on usually means a
+    // stale cached template or a manual caller — worth an info log for
+    // the cutover window. Kept fully functional for rollback.
+    if state.config.prehrajto_sources_from_db {
+        tracing::info!(
+            q = %params.q.trim(),
+            "movies_search hit while PREHRAJTO_SOURCES_FROM_DB is on (deprecated path)"
+        );
+    }
+
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Err(WebError::bad_request("Missing search query"));

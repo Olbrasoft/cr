@@ -422,11 +422,55 @@ var cachedPrehrajtoPlayed = false;
 /* --- Přehraj.to: search, validate (direct vs proxy), auto-play if no SK Torrent --- */
 (function() {
     var filmTitle = "{{ film.title }}";
+    var filmId = {{ film.id }};
     var section = document.getElementById('prehrajto-section');
     var container = document.getElementById('prehrajto-results');
     var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
     if (!section || !container || !filmTitle) return;
 
+    {% if prehrajto_sources_from_db %}
+    // DB-backed flow (issue #521). No outbound prehraj.to calls on render;
+    // the list is served directly from `film_prehrajto_uploads`. `is_direct`
+    // is `true`/`false` once the stream endpoint has resolved the upload at
+    // least once, otherwise `null` — we optimistically render unknowns as
+    // "direct" so existing playback flows keep working the first time a
+    // user tries an upload.
+    fetch('/api/films/' + filmId + '/prehrajto-sources')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || !data.sources || !data.sources.length) return;
+
+            section.style.display = '';
+            var autoPlayed = false;
+            data.sources.forEach(function(src, idx) {
+                var movie = {
+                    url: src.url,
+                    title: src.title,
+                    // Thumbnails aren't in the DB — placeholder until we
+                    // either persist them at import or proxy them lazily.
+                    thumbnail: '',
+                    year: '',
+                };
+                var height = parseResolutionHint(src.resolution_hint);
+                var isDirect = src.is_direct !== false; // null → optimistic direct
+                var item = createItem(movie, isDirect, src.duration_sec, height);
+                if (!isDirect) item.classList.add('proxy-item');
+                // The server already ranked the list (lang-class →
+                // resolution → views), so appending in order matches the
+                // same ordering the stream endpoint uses for fallback —
+                // no client-side runtime-diff sort needed.
+                container.appendChild(item);
+
+                // Autoplay the first direct entry if there's no SK Torrent
+                // and no cached prehraj.to hit — mirrors the legacy flow.
+                if (idx === 0 && isDirect && !hasSktorrent && !cachedPrehrajtoPlayed && !autoPlayed) {
+                    autoPlayed = true;
+                    setTimeout(function() { item.click(); }, 500);
+                }
+            });
+        })
+        .catch(function() {});
+    {% else %}
     fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -512,6 +556,22 @@ var cachedPrehrajtoPlayed = false;
             validateBatch(0);
         })
         .catch(function() {});
+    {% endif %}
+
+    /* Map a `resolution_hint` string ("1080p", "bluray", "hdrip", …) to a
+       height in pixels so the badge CSS (`quality-hd` / `sd` / `low`)
+       picks the right color. Mirrors the SQL ranking in
+       `PREHRAJTO_SOURCES_SQL` — keep the two in sync. */
+    function parseResolutionHint(hint) {
+        if (!hint) return 0;
+        var h = hint.toLowerCase();
+        if (h === '2160p') return 2160;
+        if (h === '1080p' || h === 'bluray') return 1080;
+        if (h === '720p' || h === 'bdrip' || h === 'webrip' || h === 'web-dl') return 720;
+        if (h === 'hdrip' || h === 'hdtv') return 540;
+        if (h === '480p' || h === 'dvdrip' || h === 'tvrip') return 480;
+        return 0;
+    }
 
     function createItem(movie, isDirect, durationSec, height) {
         var item = document.createElement('div');
