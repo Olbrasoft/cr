@@ -1382,7 +1382,7 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_query, FilmsQuery};
+    use super::{FilmsQuery, normalize_query};
 
     fn query_with_jazyk(jazyk: Option<&str>) -> FilmsQuery {
         FilmsQuery {
