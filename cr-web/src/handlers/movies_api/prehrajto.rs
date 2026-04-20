@@ -21,7 +21,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
 use tokio::sync::Semaphore;
@@ -270,11 +270,21 @@ async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryRes
     let scrape_started = Instant::now();
     match scrape_content_url(state, &row.url).await {
         Ok(Some(video_url)) => {
+            // Classify the resolved URL once, and opportunistically
+            // persist the flag for the "Další zdroje" DB listing (#521)
+            // before deciding whether to redirect. The DB update happens
+            // on both paths so a proxy upload eventually flips to
+            // `is_direct = FALSE` even though we still refuse to
+            // redirect to it — the list endpoint then shows it with the
+            // "proxy" badge instead of optimistic "direct".
+            let is_direct = is_allowed_stream_url(&video_url);
+            persist_is_direct(state, upload_id, is_direct).await;
+
             // Belt-and-suspenders: the CZ proxy is a trusted component,
             // but a compromise or upstream change should not turn this
             // endpoint into an open redirect. Refuse anything off the
             // CDN allow-list (`premiumcdn.net`).
-            if !is_allowed_stream_url(&video_url) {
+            if !is_direct {
                 tracing::error!(
                     upload_id,
                     "resolved URL not on CDN allow-list — refusing to redirect"
@@ -344,6 +354,29 @@ async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryRes
             };
             TryResolveOutcome::HardError((status, message).into_response())
         }
+    }
+}
+
+/// Write `is_direct` for this `upload_id` when it changes. Called on
+/// every successful scrape so the DB-backed "Další zdroje" listing
+/// (#521) reflects the latest direct/proxy classification prehraj.to
+/// reports — no importer-time validate needed. A DB failure here is
+/// non-fatal (the next scrape will try again); log and move on.
+async fn persist_is_direct(state: &AppState, upload_id: &str, is_direct: bool) {
+    // `IS DISTINCT FROM` keeps the UPDATE a no-op when the flag is
+    // already correct (including across NULL → bool transitions), so
+    // repeated hits on a fresh cache don't churn the row.
+    let res = sqlx::query(
+        "UPDATE film_prehrajto_uploads \
+         SET is_direct = $1 \
+         WHERE upload_id = $2 AND is_direct IS DISTINCT FROM $1",
+    )
+    .bind(is_direct)
+    .bind(upload_id)
+    .execute(&state.db)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(upload_id, is_direct, error = ?e, "persist_is_direct failed");
     }
 }
 
@@ -454,6 +487,86 @@ pub async fn prehrajto_stream_upload(
         Err(resp) => resp,
     }
 }
+
+/// One row in the "Další zdroje" listing. Public so the Serialize impl
+/// produces a stable JSON contract for the template JS that consumes it.
+#[derive(Serialize, FromRow)]
+pub struct PrehrajtoSourceRow {
+    pub upload_id: String,
+    pub url: String,
+    pub title: String,
+    pub duration_sec: Option<i32>,
+    pub resolution_hint: Option<String>,
+    pub lang_class: String,
+    /// `Some(true)` = resolved to a `premiumcdn.net` URL on the last hit,
+    /// `Some(false)` = proxied, `None` = never resolved yet by the server
+    /// (the template renders this as "unknown" and optimistically treats
+    /// it like `direct` so existing playback flows keep working).
+    pub is_direct: Option<bool>,
+}
+
+/// `GET /api/films/{film_id}/prehrajto-sources` — list of all alive
+/// uploads for a film, ranked the same way the stream endpoint's
+/// fallback picks the primary (lang-class → resolution → views).
+/// Replaces the legacy live-scrape path for the detail-page "Další
+/// zdroje" block once `PREHRAJTO_SOURCES_FROM_DB=1`.
+pub async fn prehrajto_sources(
+    State(state): State<AppState>,
+    Path(film_id): Path<i32>,
+) -> Response {
+    match sqlx::query_as::<_, PrehrajtoSourceRow>(PREHRAJTO_SOURCES_SQL)
+        .bind(film_id)
+        .fetch_all(&state.db)
+        .await
+    {
+        Ok(rows) => Json(json!({
+            "film_id": film_id,
+            "count": rows.len(),
+            "sources": rows,
+        }))
+        .into_response(),
+        Err(e) => {
+            tracing::error!(film_id, error = ?e, "prehrajto_sources DB query failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
+        }
+    }
+}
+
+/// Ranking kept in sync with [`next_best_upload`] so the first row of
+/// this list is also the upload the stream endpoint would try first —
+/// same order the pilot importer uses for `prehrajto_primary_upload_id`.
+const PREHRAJTO_SOURCES_SQL: &str = r#"
+    SELECT upload_id, url, title, duration_sec, resolution_hint,
+           lang_class, is_direct
+    FROM film_prehrajto_uploads
+    WHERE film_id = $1 AND is_alive = TRUE
+    ORDER BY
+      CASE lang_class
+        WHEN 'CZ_DUB'    THEN 6
+        WHEN 'CZ_NATIVE' THEN 5
+        WHEN 'CZ_SUB'    THEN 4
+        WHEN 'SK_DUB'    THEN 3
+        WHEN 'SK_SUB'    THEN 2
+        WHEN 'UNKNOWN'   THEN 1
+        ELSE 0
+      END DESC,
+      CASE LOWER(COALESCE(resolution_hint, ''))
+        WHEN '2160p'  THEN 6
+        WHEN 'bluray' THEN 5
+        WHEN '1080p'  THEN 5
+        WHEN '720p'   THEN 4
+        WHEN 'bdrip'  THEN 4
+        WHEN 'webrip' THEN 4
+        WHEN 'web-dl' THEN 4
+        WHEN 'hdrip'  THEN 3
+        WHEN 'hdtv'   THEN 3
+        WHEN '480p'   THEN 2
+        WHEN 'dvdrip' THEN 2
+        WHEN 'tvrip'  THEN 2
+        ELSE 1
+      END DESC,
+      COALESCE(view_count, 0) DESC
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -594,5 +707,51 @@ mod tests {
             interpret_proxy_response(&empty).unwrap_err(),
             "proxy-malformed"
         );
+    }
+
+    // --- `PrehrajtoSourceRow` JSON contract -----------------------------
+    // Locks the JSON shape the film-detail template JS depends on. If a
+    // field is renamed or dropped here the template stops rendering the
+    // "Další zdroje" block, so this test is cheap insurance.
+
+    #[test]
+    fn source_row_serializes_with_expected_fields() {
+        let row = PrehrajtoSourceRow {
+            upload_id: "558bd2364b350".to_string(),
+            url: "https://prehraj.to/some-slug-558bd2364b350".to_string(),
+            title: "Example Movie 1080p CZ".to_string(),
+            duration_sec: Some(5412),
+            resolution_hint: Some("1080p".to_string()),
+            lang_class: "CZ_DUB".to_string(),
+            is_direct: Some(true),
+        };
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert_eq!(json["upload_id"], "558bd2364b350");
+        assert_eq!(json["url"], "https://prehraj.to/some-slug-558bd2364b350");
+        assert_eq!(json["title"], "Example Movie 1080p CZ");
+        assert_eq!(json["duration_sec"], 5412);
+        assert_eq!(json["resolution_hint"], "1080p");
+        assert_eq!(json["lang_class"], "CZ_DUB");
+        assert_eq!(json["is_direct"], true);
+    }
+
+    #[test]
+    fn source_row_serializes_null_is_direct_as_json_null() {
+        let row = PrehrajtoSourceRow {
+            upload_id: "0123456789abc".to_string(),
+            url: "https://prehraj.to/x-0123456789abc".to_string(),
+            title: "Unknown".to_string(),
+            duration_sec: None,
+            resolution_hint: None,
+            lang_class: "UNKNOWN".to_string(),
+            is_direct: None,
+        };
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert!(
+            json["is_direct"].is_null(),
+            "template JS treats null as unknown/optimistic direct"
+        );
+        assert!(json["duration_sec"].is_null());
+        assert!(json["resolution_hint"].is_null());
     }
 }

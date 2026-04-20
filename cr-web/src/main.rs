@@ -212,6 +212,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::movies_api::prehrajto_stream_upload),
         )
         .route(
+            "/films/{film_id}/prehrajto-sources",
+            axum::routing::get(handlers::movies_api::prehrajto_sources),
+        )
+        .route(
             "/movies/thumb",
             axum::routing::get(handlers::movies_api::movies_thumb),
         )

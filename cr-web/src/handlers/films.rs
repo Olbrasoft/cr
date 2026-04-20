@@ -252,6 +252,12 @@ struct FilmDetailTemplate {
     genres: Vec<FilmGenreNameRow>,
     #[allow(dead_code)] // Fetched from DB but not rendered via Askama; JS handles sources
     sources: Vec<FilmSourceRow>,
+    /// Gate the "Další zdroje" JS between the legacy live-scrape flow
+    /// and the new DB-backed `/api/films/{id}/prehrajto-sources`
+    /// endpoint (issue #521). Template renders this into a JS
+    /// boolean — flipping `PREHRAJTO_SOURCES_FROM_DB` at the
+    /// process env + restart is all it takes to roll back.
+    prehrajto_sources_from_db: bool,
 }
 
 // --- Search API types ---
@@ -458,6 +464,7 @@ pub async fn films_detail(
         film,
         genres,
         sources,
+        prehrajto_sources_from_db: state.config.prehrajto_sources_from_db,
     };
     Ok(Html(tmpl.render()?).into_response())
 }

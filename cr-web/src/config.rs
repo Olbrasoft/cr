@@ -48,6 +48,13 @@ pub struct AppConfig {
     /// Optional CZ-hosted proxy for scraping geo-blocked sources (prehraj.to,
     /// SK Torrent). None if unconfigured.
     pub cz_proxy: Option<CzProxyConfig>,
+    /// Serve the detail-page "Další zdroje" block from
+    /// `film_prehrajto_uploads` (DB) instead of the legacy live
+    /// search + per-result validate against prehraj.to. Set
+    /// `PREHRAJTO_SOURCES_FROM_DB=1` to enable. Rollback is just
+    /// flipping the flag back — the old search/validate handlers stay
+    /// routed so the template's fallback path keeps working.
+    pub prehrajto_sources_from_db: bool,
     /// Cloudflare API token scoped to Zone.Cache Purge. Enables the admin
     /// `/admin/cache/` page to invalidate CDN cache on demand. `None` when the
     /// env vars aren't provisioned — UI hides the purge actions in that case.
@@ -114,6 +121,11 @@ impl AppConfig {
             _ => None,
         };
 
+        let prehrajto_sources_from_db = matches!(
+            std::env::var("PREHRAJTO_SOURCES_FROM_DB").as_deref(),
+            Ok("1")
+        );
+
         let cf_cache_purge = match (
             std::env::var("CF_CACHE_PURGE_TOKEN")
                 .ok()
@@ -138,6 +150,7 @@ impl AppConfig {
             admin_import_run_enabled,
             admin_cache_purge_enabled,
             cz_proxy,
+            prehrajto_sources_from_db,
             cf_cache_purge,
         }))
     }
