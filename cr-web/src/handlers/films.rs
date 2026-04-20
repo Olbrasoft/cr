@@ -692,10 +692,7 @@ pub async fn films_search(
     Ok(axum::Json(results).into_response())
 }
 
-async fn search_films_by_title(
-    db: &sqlx::PgPool,
-    q: &str,
-) -> Result<Vec<SearchRow>, sqlx::Error> {
+async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchRow>, sqlx::Error> {
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     sqlx::query_as::<_, SearchRow>(
