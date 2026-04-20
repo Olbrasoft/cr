@@ -126,6 +126,13 @@ async fn main() -> Result<()> {
             2000,
             std::time::Duration::from_secs(6 * 3600),
         ),
+        // Prehraj.to tokens typically live ~2 h; the cache's own TTL is an
+        // upper bound while each entry also carries its own deadline.
+        prehrajto_stream_cache: cache::BoundedTtlCache::new(
+            5000,
+            std::time::Duration::from_secs(2 * 3600),
+        ),
+        prehrajto_in_flight: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // API routes with CORS
@@ -199,6 +206,10 @@ async fn main() -> Result<()> {
         .route(
             "/movies/stream",
             axum::routing::get(handlers::movies_api::movies_stream),
+        )
+        .route(
+            "/movies/stream/{upload_id}",
+            axum::routing::get(handlers::movies_api::prehrajto_stream_upload),
         )
         .route(
             "/movies/thumb",
