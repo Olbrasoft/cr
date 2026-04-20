@@ -659,9 +659,16 @@ async fn films_by_genre(
 
 /// GET /api/films/search?q=matrix — search autocomplete.
 ///
-/// If the raw query returns nothing and it ends with a year pattern
-/// (" (YYYY)" or " YYYY"), retry without the trailing year — users often
-/// type "Mstitel (1989)" but the title column stores only "Mstitel".
+/// Two-stage search:
+/// 1. Primary: ILIKE against `title` / `original_title`. Handles the common
+///    case and titles that literally contain digits ("1984", "2001: A Space
+///    Odyssey").
+/// 2. Fallback (only when primary returns zero): strip parens and collapse
+///    whitespace from the query, then ILIKE against the virtual expression
+///    `CONCAT_WS(' ', title, year)`. Lets "Marvinův pokoj 1996", "Marvinův
+///    pokoj (1996", "Marvinův pokoj 1996)", and even partial "Marvinův pokoj
+///    19" resolve to the same film — no schema/view needed, Postgres
+///    evaluates the expression at query time.
 pub async fn films_search(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -672,10 +679,11 @@ pub async fn films_search(
     }
 
     let mut rows = search_films_by_title(&state.db, q).await?;
-    if rows.is_empty()
-        && let Some(stripped) = strip_trailing_year(q)
-    {
-        rows = search_films_by_title(&state.db, &stripped).await?;
+    if rows.is_empty() {
+        let normalized = normalize_query(q);
+        if !normalized.is_empty() {
+            rows = search_films_by_title_year(&state.db, &normalized).await?;
+        }
     }
 
     let results: Vec<SearchResult> = rows
@@ -713,19 +721,42 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
     .await
 }
 
-/// Strip a trailing year pattern (" (YYYY)" or " YYYY") from a search query.
-/// Requires leading whitespace and ≥2 chars remaining — avoids stripping a
-/// standalone year like "1984" or short titles like "X 1989".
-fn strip_trailing_year(q: &str) -> Option<String> {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\s+(?:\(\d{4}\)|\d{4})\s*$").expect("const regex literal compiles")
-    });
-    let m = RE.find(q)?;
-    let before = q[..m.start()].trim_end();
-    if before.chars().count() < 2 {
-        return None;
-    }
-    Some(before.to_string())
+async fn search_films_by_title_year(
+    db: &sqlx::PgPool,
+    q: &str,
+) -> Result<Vec<SearchRow>, sqlx::Error> {
+    let pattern = format!("%{q}%");
+    let starts_pattern = format!("{q}%");
+    sqlx::query_as::<_, SearchRow>(
+        "SELECT slug, title, year, imdb_rating, cover_filename \
+         FROM films \
+         WHERE CONCAT_WS(' ', title, year::text) ILIKE $1 \
+            OR CONCAT_WS(' ', original_title, year::text) ILIKE $1 \
+         ORDER BY \
+           CASE WHEN CONCAT_WS(' ', title, year::text) ILIKE $2 THEN 0 \
+                WHEN CONCAT_WS(' ', title, year::text) ILIKE $1 THEN 1 \
+                WHEN CONCAT_WS(' ', original_title, year::text) ILIKE $2 THEN 2 \
+                ELSE 3 END, \
+           imdb_rating DESC NULLS LAST \
+         LIMIT 10",
+    )
+    .bind(&pattern)
+    .bind(&starts_pattern)
+    .fetch_all(db)
+    .await
+}
+
+/// Normalize a search query for the title+year fallback: strip parentheses
+/// and collapse whitespace runs to single spaces. Handles malformed paren
+/// pairs: "Title (1996" and "Title 1996)" both normalize to "Title 1996",
+/// which then ILIKE-matches against `CONCAT_WS(' ', title, year)`.
+fn normalize_query(q: &str) -> String {
+    q.chars()
+        .filter(|c| *c != '(' && *c != ')')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// GET /filmy-online/{slug}.webp — serve WebP cover image
@@ -1271,51 +1302,54 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_trailing_year;
+    use super::normalize_query;
 
     #[test]
-    fn strips_parenthesized_year() {
+    fn strips_parens_complete_pair() {
+        assert_eq!(normalize_query("Mstitel (1989)"), "Mstitel 1989");
+        assert_eq!(normalize_query("The Matrix (1999)"), "The Matrix 1999");
+    }
+
+    #[test]
+    fn strips_parens_malformed() {
         assert_eq!(
-            strip_trailing_year("Mstitel (1989)").as_deref(),
-            Some("Mstitel")
+            normalize_query("Marvinův pokoj (1996"),
+            "Marvinův pokoj 1996"
         );
         assert_eq!(
-            strip_trailing_year("The Matrix (1999)").as_deref(),
-            Some("The Matrix")
-        );
-        assert_eq!(
-            strip_trailing_year("Mstitel  (1989)  ").as_deref(),
-            Some("Mstitel")
+            normalize_query("Marvinův pokoj 1996)"),
+            "Marvinův pokoj 1996"
         );
     }
 
     #[test]
-    fn strips_bare_year() {
+    fn collapses_whitespace() {
+        assert_eq!(normalize_query("Mstitel    1989"), "Mstitel 1989");
+        assert_eq!(normalize_query("  Mstitel  (1989)  "), "Mstitel 1989");
+    }
+
+    #[test]
+    fn preserves_partial_year() {
+        assert_eq!(normalize_query("Marvinův pokoj 19"), "Marvinův pokoj 19");
+        assert_eq!(normalize_query("Marvinův pokoj 1"), "Marvinův pokoj 1");
+        assert_eq!(normalize_query("Marvinův pokoj (19"), "Marvinův pokoj 19");
+    }
+
+    #[test]
+    fn preserves_ordinary_queries() {
+        assert_eq!(normalize_query("Marvinův pokoj"), "Marvinův pokoj");
         assert_eq!(
-            strip_trailing_year("Mstitel 1989").as_deref(),
-            Some("Mstitel")
+            normalize_query("2001: A Space Odyssey"),
+            "2001: A Space Odyssey"
         );
-        assert_eq!(
-            strip_trailing_year("Rambo II 1985").as_deref(),
-            Some("Rambo II")
-        );
+        assert_eq!(normalize_query("1984"), "1984");
     }
 
     #[test]
-    fn does_not_strip_when_no_year_at_end() {
-        assert_eq!(strip_trailing_year("2001: A Space Odyssey"), None);
-        assert_eq!(strip_trailing_year("Matrix"), None);
-        assert_eq!(strip_trailing_year("Terminator 2"), None);
-    }
-
-    #[test]
-    fn does_not_strip_bare_year_alone() {
-        assert_eq!(strip_trailing_year("1984"), None);
-        assert_eq!(strip_trailing_year("2025"), None);
-    }
-
-    #[test]
-    fn does_not_strip_when_remaining_too_short() {
-        assert_eq!(strip_trailing_year("X 1989"), None);
+    fn empty_when_only_whitespace_or_parens() {
+        assert_eq!(normalize_query(""), "");
+        assert_eq!(normalize_query("   "), "");
+        assert_eq!(normalize_query("()"), "");
+        assert_eq!(normalize_query("(  )"), "");
     }
 }
