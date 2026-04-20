@@ -285,119 +285,57 @@ pub async fn films_list(
     let offset = (page - 1) * FILMS_PER_PAGE;
     let order = params.order_clause();
 
-    // Search filter
-    let search_q = params.q.as_ref().and_then(|q| {
-        let t = q.trim();
-        if t.len() >= 2 {
-            Some(format!("%{t}%"))
-        } else {
-            None
-        }
-    });
+    // Search filter. Primary pattern uses ILIKE on title/original_title. If
+    // that returns zero rows for a non-trivial query, fall back to matching
+    // against CONCAT_WS(' ', title, year::text) with the paren-stripped
+    // query — lets "Mstitel (1989)", "Marvinův pokoj 1996)", and partial
+    // "Marvinův pokoj 19" resolve. Mirrors the autocomplete API behavior.
+    let raw_q = params.q.as_deref().map(str::trim).filter(|t| t.len() >= 2);
+    let raw_pattern = raw_q.map(|t| format!("%{t}%"));
 
     let include = params.include_genres();
     let exclude = params.exclude_genres();
     let year_f = params.year_filter();
 
-    // Build dynamic WHERE parts
-    let mut where_parts: Vec<String> = vec![];
-    let mut bind_idx = 1;
+    let (total_count, films) = run_films_query(
+        &state.db,
+        FilmsSearchMode::Primary,
+        raw_pattern.as_deref(),
+        &params,
+        &include,
+        &exclude,
+        year_f,
+        order,
+        offset,
+    )
+    .await?;
 
-    let has_search = search_q.is_some();
-    if has_search {
-        where_parts.push(format!(
-            "(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})"
-        ));
-        bind_idx += 1;
-    }
-    if !include.is_empty() {
-        if params.genre_mode_and() {
-            // AND: film must have ALL selected genres
-            where_parts.push(format!(
-                "f.id IN (SELECT fg.film_id FROM film_genres fg \
-                 JOIN genres g ON g.id = fg.genre_id \
-                 WHERE g.slug = ANY(${bind_idx}) \
-                 GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
-                include.len()
-            ));
-        } else {
-            // OR (default): film must have ANY selected genre
-            where_parts.push(format!(
-                "f.id IN (SELECT fg.film_id FROM film_genres fg \
-                 JOIN genres g ON g.id = fg.genre_id \
-                 WHERE g.slug = ANY(${bind_idx}))"
-            ));
+    let (total_count, films) = match (total_count, raw_q) {
+        (0, Some(q)) => {
+            let normalized = normalize_query(q);
+            // Same min-length guard as the autocomplete API — avoid running
+            // a full-table scan with `%x%` when normalization collapsed the
+            // query to something trivial like "1" (from "(1").
+            if normalized.chars().count() < 2 {
+                (total_count, films)
+            } else {
+                let fb_pattern = format!("%{normalized}%");
+                run_films_query(
+                    &state.db,
+                    FilmsSearchMode::TitleYear,
+                    Some(&fb_pattern),
+                    &params,
+                    &include,
+                    &exclude,
+                    year_f,
+                    order,
+                    offset,
+                )
+                .await?
+            }
         }
-        bind_idx += 1;
-    }
-    if !exclude.is_empty() {
-        where_parts.push(format!(
-            "f.id NOT IN (SELECT fg.film_id FROM film_genres fg \
-             JOIN genres g ON g.id = fg.genre_id \
-             WHERE g.slug = ANY(${bind_idx}))"
-        ));
-        bind_idx += 1;
-    }
-    if year_f.is_some() {
-        where_parts.push(format!("f.year = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if let Some(af) = params.audio_filter() {
-        where_parts.push(af.to_string());
-    }
-
-    let where_clause = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_parts.join(" AND "))
+        _ => (total_count, films),
     };
-
-    // Count query
-    let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
-    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
-    if let Some(ref p) = search_q {
-        cq = cq.bind(p.clone());
-    }
-    if !include.is_empty() {
-        cq = cq.bind(include.clone());
-    }
-    if !exclude.is_empty() {
-        cq = cq.bind(exclude.clone());
-    }
-    if let Some(yr) = year_f {
-        cq = cq.bind(yr);
-    }
-    let count_row = cq.fetch_one(&state.db).await?;
-
-    // Films query
-    let films_query = format!(
-        "SELECT {FILM_COLUMNS} \
-         FROM films f {where_clause} \
-         ORDER BY {order} \
-         LIMIT ${limit_idx} OFFSET ${offset_idx}",
-        limit_idx = bind_idx,
-        offset_idx = bind_idx + 1
-    );
-    let mut fq = sqlx::query_as::<_, FilmRow>(&films_query);
-    if let Some(ref p) = search_q {
-        fq = fq.bind(p.clone());
-    }
-    if !include.is_empty() {
-        fq = fq.bind(include.clone());
-    }
-    if !exclude.is_empty() {
-        fq = fq.bind(exclude.clone());
-    }
-    if let Some(yr) = year_f {
-        fq = fq.bind(yr);
-    }
-    let films = fq
-        .bind(FILMS_PER_PAGE)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?;
-
-    let (total_count, films) = (count_row.count.unwrap_or(0), films);
     let total_pages = (total_count as f64 / FILMS_PER_PAGE as f64).ceil() as i64;
 
     let genres = load_genres(&state.db).await?;
@@ -681,7 +619,9 @@ pub async fn films_search(
     let mut rows = search_films_by_title(&state.db, q).await?;
     if rows.is_empty() {
         let normalized = normalize_query(q);
-        if !normalized.is_empty() {
+        // Skip fallback for collapsed queries like "(1" → "1" — `%1%` would
+        // bloat results with everything containing a "1" in title or year.
+        if normalized.chars().count() >= 2 {
             rows = search_films_by_title_year(&state.db, &normalized).await?;
         }
     }
@@ -757,6 +697,133 @@ fn normalize_query(q: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Which predicate shape to use for the search filter in `films_list`.
+#[derive(Clone, Copy)]
+enum FilmsSearchMode {
+    /// `title ILIKE $N OR original_title ILIKE $N` — primary path.
+    Primary,
+    /// `CONCAT_WS(' ', title, year::text) ILIKE $N OR CONCAT_WS(' ',
+    /// original_title, year::text) ILIKE $N` — title+year fallback.
+    TitleYear,
+}
+
+impl FilmsSearchMode {
+    fn predicate(self, bind_idx: usize) -> String {
+        match self {
+            Self::Primary => {
+                format!("(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})")
+            }
+            Self::TitleYear => format!(
+                "(CONCAT_WS(' ', f.title, f.year::text) ILIKE ${bind_idx} \
+                 OR CONCAT_WS(' ', f.original_title, f.year::text) ILIKE ${bind_idx})"
+            ),
+        }
+    }
+}
+
+/// Run the count + paginated films query for `films_list`, with the chosen
+/// search predicate shape (or no search filter when `search_pattern` is None).
+#[allow(clippy::too_many_arguments)]
+async fn run_films_query(
+    db: &sqlx::PgPool,
+    mode: FilmsSearchMode,
+    search_pattern: Option<&str>,
+    params: &FilmsQuery,
+    include: &[String],
+    exclude: &[String],
+    year_f: Option<i16>,
+    order: &str,
+    offset: i64,
+) -> Result<(i64, Vec<FilmRow>), sqlx::Error> {
+    let mut where_parts: Vec<String> = vec![];
+    let mut bind_idx = 1;
+
+    if search_pattern.is_some() {
+        where_parts.push(mode.predicate(bind_idx));
+        bind_idx += 1;
+    }
+    if !include.is_empty() {
+        if params.genre_mode_and() {
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY fg.film_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include.len()
+            ));
+        } else {
+            where_parts.push(format!(
+                "f.id IN (SELECT fg.film_id FROM film_genres fg \
+                 JOIN genres g ON g.id = fg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude.is_empty() {
+        where_parts.push(format!(
+            "f.id NOT IN (SELECT fg.film_id FROM film_genres fg \
+             JOIN genres g ON g.id = fg.genre_id \
+             WHERE g.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("f.year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if let Some(af) = params.audio_filter() {
+        where_parts.push(af.to_string());
+    }
+
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
+
+    let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
+    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
+    if let Some(p) = search_pattern {
+        cq = cq.bind(p.to_string());
+    }
+    if !include.is_empty() {
+        cq = cq.bind(include.to_vec());
+    }
+    if !exclude.is_empty() {
+        cq = cq.bind(exclude.to_vec());
+    }
+    if let Some(yr) = year_f {
+        cq = cq.bind(yr);
+    }
+    let count_row = cq.fetch_one(db).await?;
+
+    let films_query = format!(
+        "SELECT {FILM_COLUMNS} \
+         FROM films f {where_clause} \
+         ORDER BY {order} \
+         LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        limit_idx = bind_idx,
+        offset_idx = bind_idx + 1
+    );
+    let mut fq = sqlx::query_as::<_, FilmRow>(&films_query);
+    if let Some(p) = search_pattern {
+        fq = fq.bind(p.to_string());
+    }
+    if !include.is_empty() {
+        fq = fq.bind(include.to_vec());
+    }
+    if !exclude.is_empty() {
+        fq = fq.bind(exclude.to_vec());
+    }
+    if let Some(yr) = year_f {
+        fq = fq.bind(yr);
+    }
+    let films = fq.bind(FILMS_PER_PAGE).bind(offset).fetch_all(db).await?;
+
+    Ok((count_row.count.unwrap_or(0), films))
 }
 
 /// GET /filmy-online/{slug}.webp — serve WebP cover image
