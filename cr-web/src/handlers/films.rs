@@ -129,6 +129,9 @@ impl FilmsQuery {
         self.smer.as_deref() != Some("asc")
     }
 
+    // CZ-audio / CZ-subs matching unions sktorrent (`f.has_dub`, `f.has_subtitles`)
+    // with prehraj.to rollup flags (`f.prehrajto_has_dub` = CZ audio incl. CZ_NATIVE,
+    // `f.prehrajto_has_subs` = CZ subs; see migration 20260508_048 note).
     fn audio_filter(&self) -> Option<&'static str> {
         let val = self.jazyk.as_deref().map(|s| s.trim()).unwrap_or("");
         if val.is_empty() || val == "vse" {
@@ -138,9 +141,12 @@ impl FilmsQuery {
         let has_dub = parts.contains(&"dub") || parts.contains(&"cz") || parts.contains(&"sk");
         let has_sub = parts.contains(&"sub") || parts.contains(&"titulky");
         match (has_dub, has_sub) {
-            (true, false) => Some("f.has_dub = true"),
-            (false, true) => Some("f.has_subtitles = true"),
-            (true, true) => Some("(f.has_dub = true OR f.has_subtitles = true)"),
+            (true, false) => Some("(f.has_dub = true OR f.prehrajto_has_dub = true)"),
+            (false, true) => Some("(f.has_subtitles = true OR f.prehrajto_has_subs = true)"),
+            (true, true) => Some(
+                "(f.has_dub = true OR f.has_subtitles = true \
+                  OR f.prehrajto_has_dub = true OR f.prehrajto_has_subs = true)",
+            ),
             _ => None,
         }
     }
@@ -1376,7 +1382,61 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_query;
+    use super::{FilmsQuery, normalize_query};
+
+    fn query_with_jazyk(jazyk: Option<&str>) -> FilmsQuery {
+        FilmsQuery {
+            strana: None,
+            razeni: None,
+            zanry: None,
+            bez: None,
+            q: None,
+            rok: None,
+            rezim: None,
+            smer: None,
+            jazyk: jazyk.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn audio_filter_dub_unions_prehrajto() {
+        let q = query_with_jazyk(Some("dub"));
+        assert_eq!(
+            q.audio_filter(),
+            Some("(f.has_dub = true OR f.prehrajto_has_dub = true)")
+        );
+    }
+
+    #[test]
+    fn audio_filter_sub_unions_prehrajto() {
+        let q = query_with_jazyk(Some("sub"));
+        assert_eq!(
+            q.audio_filter(),
+            Some("(f.has_subtitles = true OR f.prehrajto_has_subs = true)")
+        );
+    }
+
+    #[test]
+    fn audio_filter_dub_and_sub_unions_both() {
+        let q = query_with_jazyk(Some("dub,sub"));
+        let sql = q.audio_filter().expect("expected filter for dub,sub");
+        assert!(sql.contains("f.has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("f.has_subtitles = true"), "sql = {sql}");
+        assert!(sql.contains("f.prehrajto_has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("f.prehrajto_has_subs = true"), "sql = {sql}");
+    }
+
+    #[test]
+    fn audio_filter_vse_is_none() {
+        assert!(query_with_jazyk(Some("vse")).audio_filter().is_none());
+    }
+
+    #[test]
+    fn audio_filter_missing_or_empty_is_none() {
+        assert!(query_with_jazyk(None).audio_filter().is_none());
+        assert!(query_with_jazyk(Some("")).audio_filter().is_none());
+        assert!(query_with_jazyk(Some("   ")).audio_filter().is_none());
+    }
 
     #[test]
     fn strips_parens_complete_pair() {
