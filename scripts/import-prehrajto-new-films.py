@@ -564,9 +564,11 @@ def main() -> int:
     # Per-thread `requests.Session` is managed by `_thread_session()`; no main-
     # thread session to create here.
     # Hoisted out of the try block so the finally cleanup can touch them even
-    # if we raise before entering the per-film loop.
+    # if we raise before entering the per-film loop (otherwise UnboundLocalError
+    # during cleanup would mask the original exception).
     dry_run_covers_created: list[Path] = []
     cover_pool: ThreadPoolExecutor | None = None
+    cover_futures: list = []
     try:
         cur = conn.cursor()
 
@@ -687,7 +689,6 @@ def main() -> int:
             max_workers=max(1, args.cover_workers),
             thread_name_prefix="cover",
         )
-        cover_futures: list = []
 
         # ---- Phase 1: Parallel TMDB prefetch ----
         # Each film needs two TMDB calls (cs-CZ + en-US). Before this split,
