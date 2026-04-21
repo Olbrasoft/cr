@@ -62,7 +62,7 @@
             {% when None %}{% endmatch %}
             <div class="meta-row">
                 {% match series.imdb_rating %}
-                {% when Some with (r) %}<span class="meta-badge imdb" title="IMDB hodnocení">IMDB {{ r }}</span>
+                {% when Some with (r) %}<span class="meta-badge imdb" title="TMDB hodnocení">TMDB {{ r }}</span>
                 {% when None %}{% endmatch %}
                 {% match series.csfd_rating %}
                 {% when Some with (r) %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>
@@ -306,7 +306,7 @@ function doSearch() {
                                 ? '<img src="/serialy-online/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
-                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+                            var rat = r.imdb_rating ? ' — TMDB ' + r.imdb_rating : '';
                             return '<a href="/serialy-online/' + r.slug + '/" class="search-item" alt="' + r.title + '" title="' + r.title + '">'
                                 + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
