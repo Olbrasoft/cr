@@ -6,3 +6,9 @@ target/
 docs/
 *.md
 !cr-web/templates/*.html
+
+# Cover WebPs live on Cloudflare R2 (sub-issue #576) — the cover
+# handler fetches them through the cr-img-proxy worker. Baking them
+# into the image would shadow R2 with stale disk copies.
+data/movies/covers-webp/
+data/series/covers-webp/

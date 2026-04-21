@@ -15,6 +15,7 @@ pub mod admin_dashboard;
 pub mod admin_import;
 mod admin_test_sledujteto;
 mod audiobooks;
+pub mod cover_proxy;
 mod download_video;
 mod films;
 mod filmy_serialy;
