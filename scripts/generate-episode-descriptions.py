@@ -3,7 +3,9 @@
 
 Same pattern as generate-film-descriptions.py but for individual TV
 episodes. Source = episodes.overview (TMDB CS when present, EN fallback).
-Output → episodes.generated_description (migration 037).
+Output → episodes.description (migration 037 added it as
+`generated_description`, migration 051 renamed it to `description`
+since the table never had a separate raw-description column).
 
 Uses the 4 dev GEMINI_API_KEY_1..4 keys in parallel. With ~22k eligible
 episodes and free-tier 1500 RPD per key, expect ~4 days of wall time.
@@ -162,7 +164,7 @@ def get_episodes(conn, limit: int = 0):
         "       e.overview_en, s.title, s.tmdb_id "
         "FROM episodes e JOIN series s ON s.id = e.series_id "
         "WHERE e.overview IS NOT NULL AND e.overview != '' "
-        "  AND (e.generated_description IS NULL OR e.generated_description = '') "
+        "  AND (e.description IS NULL OR e.description = '') "
         "ORDER BY e.series_id, e.season, e.episode"
     )
     if limit > 0:
@@ -211,7 +213,7 @@ def process_batch(batch, conn, dry_run: bool):
             else:
                 if not dry_run:
                     cur.execute(
-                        "UPDATE episodes SET generated_description = %s WHERE id = %s",
+                        "UPDATE episodes SET description = %s WHERE id = %s",
                         (text, ep_id),
                     )
                 print(f"  OK: {label} — {len(text)} chars, {dur}ms", flush=True)
