@@ -6,7 +6,7 @@
 
 {% block og_title %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — film online{% endblock %}
 {% block og_description %}{% match film.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — sledujte online zdarma na ceskarepublika.wiki{% endmatch %}{% endblock %}
-{% block og_image %}{% match film.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/filmy-online/{{ film.slug }}-large.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+{% block og_image %}{% match film.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/filmy-online/{{ film.slug }}-large.{{ film.large_url_ext() }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
 {% block og_type %}video.movie{% endblock %}
 
 {# Portrait poster dimensions (780×1170, 2:3 aspect) trigger Discord's
@@ -16,7 +16,7 @@
 {% block og_extra %}
 {% match film.cover_filename %}
 {% when Some with (c) %}
-<meta property="og:image:type" content="image/webp">
+<meta property="og:image:type" content="image/{% if film.large_url_ext() == "jpg" %}jpeg{% else %}{{ film.large_url_ext() }}{% endif %}">
 <meta property="og:image:width" content="780">
 <meta property="og:image:height" content="1170">
 <meta property="og:image:alt" content="{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %}">
@@ -137,7 +137,7 @@
             {% match film.cover_filename %}
             {% when Some with (cover) %}
             <div class="cover-zoom" data-gallery-open="film" data-index="0"
-                 data-gallery-photos="[&quot;/filmy-online/{{ film.slug }}-large.webp&quot;]"
+                 data-gallery-photos="[&quot;/filmy-online/{{ film.slug }}-large.{{ film.large_url_ext() }}&quot;]"
                  title="Zobrazit větší obrázek">
                 <img src="/filmy-online/{{ film.slug }}.webp" alt="{{ film.title }}" width="200" height="300">
                 <span class="zoom-icon" aria-hidden="true">&#128269;</span>

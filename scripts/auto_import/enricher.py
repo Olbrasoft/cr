@@ -149,11 +149,13 @@ def upsert_film(
             "has_subtitles = has_subtitles OR %s, "
             "imdb_rating = COALESCE(imdb_rating, %s), "
             "csfd_rating = COALESCE(csfd_rating, %s), "
+            "tmdb_poster_path = COALESCE(tmdb_poster_path, %s), "
             "sktorrent_added_at = now() "
             "WHERE id = %s",
             (sktorrent_video_id, sktorrent_cdn, qualities_str,
              has_dub, has_subtitles,
              movie.vote_average, csfd_rating,
+             movie.poster_path,
              film_id),
         )
         log.info("upserted SKT into existing film %d (imdb=%s)", film_id, movie.imdb_id)
@@ -201,8 +203,9 @@ def upsert_film(
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
+            tmdb_poster_path,
             added_at, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
@@ -211,6 +214,7 @@ def upsert_film(
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             has_dub, has_subtitles,
+            movie.poster_path,
         ),
     )
     film_id = cur.fetchone()[0]

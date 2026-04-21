@@ -633,6 +633,7 @@ def main() -> int:
             has_dub, has_subtitles,
             prehrajto_url, prehrajto_has_dub, prehrajto_has_subs,
             prehrajto_primary_upload_id, prehrajto_has_sk_dub, prehrajto_has_sk_subs,
+            tmdb_poster_path,
             created_at, added_at
         ) VALUES (
             %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
@@ -642,6 +643,7 @@ def main() -> int:
             false, false,
             NULL, %(has_cz_audio)s, %(has_cz_subs)s,
             %(primary_upload)s, %(has_sk_dub)s, %(has_sk_subs)s,
+            %(poster_path)s,
             NOW(), NOW()
         )
         ON CONFLICT (imdb_id) WHERE imdb_id IS NOT NULL DO NOTHING
@@ -842,6 +844,7 @@ def main() -> int:
                         "primary_upload": primary_upload_id,
                         "has_sk_dub": has_sk_dub,
                         "has_sk_subs": has_sk_subs,
+                        "poster_path": movie.get("poster_path"),
                     })
                     row = cur.fetchone()
                     cur.execute("RELEASE SAVEPOINT film_insert_sp")

@@ -8,7 +8,7 @@ const FILMS_PER_PAGE: i64 = 24;
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
     f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
     f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs";
+    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path";
 
 // --- DB row types ---
 
@@ -42,6 +42,32 @@ struct FilmRow {
     prehrajto_has_dub: bool,
     #[allow(dead_code)] // Not rendered in current templates; kept for future dub/sub badges
     prehrajto_has_subs: bool,
+    /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
+    /// `scripts/backfill-tmdb-poster-paths.py`. When set, the large-cover
+    /// URL switches to the extension the path ends with (`.jpg`/`.png`) and
+    /// `films_cover_large_dynamic` proxies the TMDB image. When None, the
+    /// template keeps the legacy `-large.webp` URL served from R2.
+    tmdb_poster_path: Option<String>,
+}
+
+impl FilmRow {
+    /// Extension for the large-cover URL rendered in the detail template.
+    /// Derived from `tmdb_poster_path` when the film has been backfilled;
+    /// otherwise falls back to `webp` so the existing R2-backed route keeps
+    /// serving until the backfill completes.
+    pub fn large_url_ext(&self) -> &str {
+        match self.tmdb_poster_path.as_deref() {
+            Some(p) => {
+                if let Some(dot) = p.rfind('.') {
+                    // Strip leading dot from path suffix, e.g. "/x.jpg" -> "jpg".
+                    &p[dot + 1..]
+                } else {
+                    "jpg"
+                }
+            }
+            None => "webp",
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -402,6 +428,12 @@ pub async fn films_detail(
     axum::extract::Query(params): axum::extract::Query<FilmsQuery>,
     headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
+    // Large cover dynamically proxied from TMDB — real extension in URL
+    // so the response content type matches what the template rendered.
+    // See `films_cover_large_dynamic` for the fallback chain.
+    if slug.ends_with("-large.jpg") || slug.ends_with("-large.png") {
+        return films_cover_large_dynamic(State(state), Path(slug)).await;
+    }
     // WebP cover request: /filmy-online/some-film.webp (small) or -large.webp
     if slug.ends_with("-large.webp") {
         return films_cover_large(State(state), Path(slug)).await;
@@ -933,6 +965,85 @@ pub async fn films_cover_large(
         }
     }
     Ok(placeholder_webp())
+}
+
+/// GET /filmy-online/{slug}-large.{jpg,png} — proxy TMDB poster on demand.
+///
+/// Detail-page thumbnails get few hits, so we skip R2 storage and stream the
+/// TMDB image through. Cloudflare caches the response for a year, so each
+/// edge fetches TMDB at most once per (edge, poster) — the next visitor is
+/// served from cache. On failure we serve a placeholder in the SAME format
+/// the URL advertises (jpeg for `-large.jpg`, png for `-large.png`) so
+/// browsers and OG scrapers decode without a MIME mismatch — the template's
+/// `og:image:type` is derived from the same URL extension.
+pub async fn films_cover_large_dynamic(
+    State(state): State<AppState>,
+    Path(slug_ext): Path<String>,
+) -> WebResult<Response> {
+    use crate::handlers::cover_proxy::placeholder_for_ext;
+
+    // Strip `-large.jpg` / `-large.png`, whichever the request carried, and
+    // remember the extension so fallbacks can emit bytes of the same type.
+    let (slug, ext) = if let Some(s) = slug_ext.strip_suffix("-large.jpg") {
+        (s, "jpg")
+    } else if let Some(s) = slug_ext.strip_suffix("-large.png") {
+        (s, "png")
+    } else {
+        (slug_ext.as_str(), "jpg")
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct CoverRow {
+        tmdb_poster_path: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_poster_path FROM films WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(&state.db)
+        .await?;
+
+    // Row missing or poster_path not backfilled → placeholder in requested
+    // format. The small-cover (`/filmy-online/{slug}.webp`) route still
+    // serves the list-view thumbnail from R2, so nothing user-visible
+    // depends on this handler synthesising something from R2.
+    let Some(path) = row.and_then(|r| r.tmdb_poster_path) else {
+        return Ok(placeholder_for_ext(ext));
+    };
+
+    let url = format!("https://image.tmdb.org/t/p/w780{path}");
+    let Ok(resp) = state
+        .http_client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    if !resp.status().is_success() {
+        return Ok(placeholder_for_ext(ext));
+    }
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let Ok(bytes) = resp.bytes().await else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, ct),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response())
 }
 
 // --- Sktorrent resolve API ---
