@@ -191,18 +191,35 @@ def tmdb_search(title: str, year: int | None, api_key: str, session: requests.Se
     if not results:
         return None
 
-    top = results[0]
-    top_title_norm = norm_title((top.get("title") or "") + " " + (top.get("original_title") or ""))
-    score = fuzz.token_set_ratio(title, top_title_norm)
-    if score >= 85:
-        return {
-            "tmdb_id": top["id"],
-            "tmdb_title": top.get("title"),
-            "tmdb_original_title": top.get("original_title"),
-            "tmdb_release_date": top.get("release_date"),
-            "fuzzy_score": score,
-        }
-    return None
+    best: tuple[int, int, dict] | None = None
+    for cand in results[:5]:
+        cand_norm = norm_title((cand.get("title") or "") + " " + (cand.get("original_title") or ""))
+        score = fuzz.token_set_ratio(title, cand_norm)
+        if score < 85:
+            continue
+        year_bonus = 0
+        rel = cand.get("release_date") or ""
+        if year and len(rel) >= 4 and rel[:4].isdigit():
+            ry = int(rel[:4])
+            if ry == year:
+                year_bonus = 10
+            elif abs(ry - year) <= 1:
+                year_bonus = 3
+        rank = (score + year_bonus, score)
+        if best is None or rank > best[:2]:
+            best = (rank[0], rank[1], cand)
+
+    if best is None:
+        return None
+
+    _, score, top = best
+    return {
+        "tmdb_id": top["id"],
+        "tmdb_title": top.get("title"),
+        "tmdb_original_title": top.get("original_title"),
+        "tmdb_release_date": top.get("release_date"),
+        "fuzzy_score": score,
+    }
 
 
 def load_known_tmdb_ids(database_url: str) -> set[int]:
@@ -378,6 +395,7 @@ def main() -> None:
 
     db_url = os.environ.get("DATABASE_URL", "").strip()
     if db_url and matched:
+        db_url = db_url.replace("@db:", "@127.0.0.1:")
         try:
             known = load_known_tmdb_ids(db_url)
             log.info("DB contains %d film tmdb_ids", len(known))

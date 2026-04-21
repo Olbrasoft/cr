@@ -31,7 +31,7 @@
   .stats b { color: var(--text); }
   main { padding: 0 20px 20px; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-  th { text-align: left; padding: 8px 10px; background: var(--panel); border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; }
+  th { text-align: left; padding: 8px 10px; background: var(--panel); border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   th:hover { color: var(--text); }
   th .sort-arrow { display: inline-block; width: 10px; color: var(--accent); }
   td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -170,7 +170,11 @@
       if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
       const text = await r.text();
       const rows = parseCsv(text);
+      if (!rows.length) throw new Error("CSV je prázdný");
       const header = rows.shift();
+      const required = ["norm_title", "year", "upload_count", "sample_slug_id", "sample_name"];
+      const missing = required.filter(c => !header.includes(c));
+      if (missing.length) throw new Error(`CSV nemá sloupce: ${missing.join(", ")}`);
       const iTitle = header.indexOf("norm_title");
       const iYear = header.indexOf("year");
       const iCount = header.indexOf("upload_count");
