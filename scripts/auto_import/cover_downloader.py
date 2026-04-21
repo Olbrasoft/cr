@@ -26,8 +26,8 @@ DEFAULT_TIMEOUT = 30
 # poster is ~780×1170, well above this floor. Anything smaller/weirder is
 # almost certainly a placeholder, a content-encoding tripped halfway, or
 # bytes from a different response — refuse to save it rather than corrupt
-# the cover. Aspect 0.4–1.0 accepts slightly off-square crops without
-# admitting square ad creatives.
+# the cover. Aspect 0.4–1.0 accepts portrait, near-square, and square
+# images while still rejecting wider landscape-like creatives.
 _MIN_POSTER_SIDE = 100
 _MIN_POSTER_ASPECT = 0.4
 _MAX_POSTER_ASPECT = 1.0

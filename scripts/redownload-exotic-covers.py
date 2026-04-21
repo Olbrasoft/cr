@@ -37,15 +37,18 @@ an empty string (all exotic glyphs). It does not catch any legitimate
 cover, because Latin slugs always contain at least one letter before
 the first digit.
 
-Resume semantics: idempotent. Re-running after a partial apply only
-re-processes rows whose `cover_filename` still matches the pattern and
-whose overwrite was not yet committed to R2.
+Re-run semantics: safe but not idempotent. Re-running `--apply` revisits
+every row whose `cover_filename` still matches the selection predicate
+and always passes `overwrite=True` to `download_cover`; if
+`--upload-r2` and/or `--purge-cf` are set, those operations are repeated
+too. That's intentional — the script is a one-shot data-repair tool, so
+"run twice and nothing bad happens" (same bytes, same keys, same CF
+purge calls) is the contract rather than "skip already-done rows".
 """
 
 from __future__ import annotations
 
 import argparse
-import io
 import os
 import shutil
 import subprocess
@@ -169,7 +172,14 @@ def _cf_purge(urls: list[str]) -> bool:
             print(f"  [cf] purge batch {i}: {type(e).__name__}", file=sys.stderr)
             ok = False
             continue
-        if r.status_code != 200 or not r.json().get("success"):
+        # CF normally returns JSON but on an edge failure it can reply with
+        # an HTML error page. Guard the decode so one bad batch doesn't
+        # abort the whole purge loop.
+        try:
+            success = bool(r.json().get("success"))
+        except ValueError:
+            success = False
+        if r.status_code != 200 or not success:
             print(f"  [cf] purge batch {i}: HTTP {r.status_code} {r.text[:200]}",
                   file=sys.stderr)
             ok = False
@@ -201,8 +211,12 @@ def main() -> int:
         sys.exit("ERROR: TMDB_API_KEY env var required.")
     out_dir = Path(args.out_dir)
 
+    # autocommit=True — we only SELECT here, and the loop below then does
+    # minutes of network I/O per row (TMDB + R2 upload). Holding an open
+    # transaction across all of that would leave an idle-in-transaction
+    # session pinning a snapshot and blocking vacuum on `films`.
     conn = psycopg2.connect(DB_URL)
-    conn.autocommit = False
+    conn.autocommit = True
     cur = conn.cursor()
     cur.execute(
         """SELECT id, slug, cover_filename, tmdb_id, title
@@ -212,6 +226,8 @@ def main() -> int:
          ORDER BY id""",
     )
     rows = cur.fetchall()
+    cur.close()
+    conn.close()
     if args.limit:
         rows = rows[:args.limit]
     print(f"Matched {len(rows)} films with exotic-cohort cover_filename.")
@@ -260,8 +276,13 @@ def main() -> int:
                 if not _r2_upload(rclone_cfg, large_path, f"films/large/{slug}.webp"):
                     uploaded = False
                 if not uploaded:
-                    # Don't count as ok, but the local file is still fixed.
-                    print(f"  [warn] id={row_id} local OK, R2 upload partial")
+                    # Local file is fixed, but R2 upload is what prod serves
+                    # from — a partial R2 write leaves the wrong content
+                    # live, so count this as a failure. Skip CF purge so the
+                    # still-wrong URL doesn't get pulled from cache.
+                    print(f"  [warn] id={row_id} local OK, R2 upload partial — counting as failed")
+                    failed += 1
+                    continue
             ok += 1
             if args.purge_cf:
                 purged_urls.append(f"https://ceskarepublika.wiki/filmy-online/{slug}.webp")
