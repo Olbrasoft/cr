@@ -33,11 +33,13 @@ pub struct SeriesRow {
     #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
     /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
-    /// `scripts/backfill-tmdb-poster-paths.py --table series`. When set, the
-    /// large-cover URL switches to the extension the path ends with
-    /// (`.jpg`/`.png`) and `series_cover_large_dynamic` proxies the TMDB
-    /// image. When None, the template keeps the legacy `-large.webp` URL
-    /// served from R2.
+    /// `scripts/backfill-tmdb-poster-paths.py --table series`. The detail
+    /// template only emits a large-cover URL when `cover_filename` is `Some`
+    /// (otherwise it renders a no-cover placeholder); in that branch
+    /// `large_url_ext()` consults this field and flips the extension to the
+    /// one the path ends with (`.jpg`/`.png`), which `series_cover_large_dynamic`
+    /// proxies from TMDB. When this field is `None` but `cover_filename` is
+    /// `Some`, the template keeps the legacy `-large.webp` URL served from R2.
     tmdb_poster_path: Option<String>,
 }
 
@@ -638,7 +640,8 @@ pub async fn series_resolve(
     axum::extract::Query(params): axum::extract::Query<SeriesQuery>,
     headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
-    let state_clone = state.clone();
+    // Cover requests short-circuit before the `state.clone()` below so that
+    // hot image endpoints don't pay for a clone they never read.
     // Large cover dynamically proxied from TMDB — real extension in URL so
     // the response content type matches what the template rendered. See
     // `series_cover_large_dynamic` for the fallback chain.
@@ -649,6 +652,7 @@ pub async fn series_resolve(
     if slug_raw.ends_with(".webp") {
         return series_cover(State(state), Path(slug_raw)).await;
     }
+    let state_clone = state.clone();
 
     // Genre page?
     let genre =
