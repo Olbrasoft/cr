@@ -997,12 +997,10 @@ pub async fn films_cover_large_dynamic(
         tmdb_poster_path: Option<String>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>(
-        "SELECT tmdb_poster_path FROM films WHERE slug = $1",
-    )
-    .bind(slug)
-    .fetch_optional(&state.db)
-    .await?;
+    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_poster_path FROM films WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(&state.db)
+        .await?;
 
     // Row missing or poster_path not backfilled → placeholder in requested
     // format. The small-cover (`/filmy-online/{slug}.webp`) route still
