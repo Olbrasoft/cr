@@ -8,6 +8,7 @@ Pure HTTP + Pillow. No DB. Idempotent — skips if both files already exist.
 
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 
@@ -20,6 +21,16 @@ except ImportError:  # pragma: no cover
 
 TMDB_IMG_BASE = "https://image.tmdb.org/t/p"
 DEFAULT_TIMEOUT = 30
+
+# Integrity bounds for decoded posters. TMDB w780 is 2:3 portrait: a valid
+# poster is ~780×1170, well above this floor. Anything smaller/weirder is
+# almost certainly a placeholder, a content-encoding tripped halfway, or
+# bytes from a different response — refuse to save it rather than corrupt
+# the cover. Aspect 0.4–1.0 accepts portrait, near-square, and square
+# images while still rejecting wider landscape-like creatives.
+_MIN_POSTER_SIDE = 100
+_MIN_POSTER_ASPECT = 0.4
+_MAX_POSTER_ASPECT = 1.0
 
 log = logging.getLogger(__name__)
 
@@ -53,16 +64,16 @@ def download_sktorrent_thumb(
 
     url = f"https://online.sktorrent.eu/media/videos/tmb1/{sktorrent_video_id}/1.jpg"
     try:
-        r = requests.get(url, timeout=DEFAULT_TIMEOUT, stream=True)
+        r = requests.get(url, timeout=DEFAULT_TIMEOUT)
     except requests.RequestException as e:
-        log.warning("sktorrent thumb fetch failed for %s: %s", slug, e)
+        log.warning("sktorrent thumb fetch failed for %s: %s", slug, type(e).__name__)
         return None
-    if r.status_code != 200 or int(r.headers.get("Content-Length", "0") or 0) < 500:
+    if r.status_code != 200 or len(r.content) < 500:
         log.warning("sktorrent thumb missing/empty for %s (HTTP %d)", slug, r.status_code)
         return None
 
     try:
-        img = Image.open(r.raw).convert("RGB")
+        img = Image.open(io.BytesIO(r.content)).convert("RGB")
     except Exception as e:
         log.warning("sktorrent thumb decode failed for %s: %s", slug, e)
         return None
@@ -112,21 +123,43 @@ def download_cover(
         log.debug("cover %s already exists — skip", slug)
         return small_path, large_path
 
-    # Fetch w780 from TMDB (best quality available without going to original)
+    # Fetch w780 from TMDB (best quality available without going to original).
+    # Buffer the full response body into memory BEFORE handing to Pillow.
+    # Previously we used `stream=True` + `Image.open(r.raw)`; under thread-
+    # pool parallelism that has been observed to splice bytes across
+    # responses — the exotic-cohort cover corruption in issue #574 matches
+    # the symptom. A 780×1170 JPEG is ≤200 kB, so `.content` is cheap and
+    # gives Pillow a fully-owned buffer that cannot be touched by any
+    # other thread's response handle.
     url = f"{TMDB_IMG_BASE}/w780{poster_path}"
     try:
-        r = requests.get(url, timeout=DEFAULT_TIMEOUT, stream=True)
+        r = requests.get(url, timeout=DEFAULT_TIMEOUT)
     except requests.RequestException as e:
-        log.warning("cover fetch failed for %s: %s", slug, e)
+        # Don't interpolate `e`: the URL contains no api_key here, but the
+        # habit avoids a future slip where it might.
+        log.warning("cover fetch failed for %s: %s", slug, type(e).__name__)
         return None
     if r.status_code != 200:
         log.warning("cover fetch HTTP %d for %s", r.status_code, slug)
         return None
 
     try:
-        img = Image.open(r.raw).convert("RGB")
+        img = Image.open(io.BytesIO(r.content)).convert("RGB")
     except Exception as e:
         log.warning("cover decode failed for %s: %s", slug, e)
+        return None
+
+    # Sanity: reject absurdly tiny or wrong-aspect frames. The TMDB CDN
+    # occasionally returns a 1×1 tracking GIF on internal 5xx; a successful
+    # HTTP 200 isn't enough by itself.
+    w, h = img.size
+    if w < _MIN_POSTER_SIDE or h < _MIN_POSTER_SIDE:
+        log.warning("cover too small for %s: %dx%d (min %d)", slug, w, h, _MIN_POSTER_SIDE)
+        return None
+    aspect = w / h
+    if not (_MIN_POSTER_ASPECT <= aspect <= _MAX_POSTER_ASPECT):
+        log.warning("cover aspect out of range for %s: %dx%d (aspect %.2f)",
+                    slug, w, h, aspect)
         return None
 
     # Large: 780×1170 (preserve aspect — TMDB poster is 2:3)
