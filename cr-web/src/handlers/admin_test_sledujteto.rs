@@ -9,9 +9,14 @@
 //! page never leaks into search. The rest of `/admin/` is also currently
 //! auth-less (see comment in `admin_dashboard.rs`); once admin auth lands,
 //! this page inherits it automatically.
+//!
+//! Gated by `SLEDUJTETO_POC_ENABLED=1` (mirrored on the `/api/sledujteto/*`
+//! endpoints in `main.rs`). When the flag is off the page returns 404 so a
+//! production deploy can't accidentally drive uncached upstream load.
 
 use askama::Template;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 
 use crate::error::WebResult;
@@ -24,6 +29,9 @@ struct AdminTestSledujtetoTemplate {
 }
 
 pub async fn admin_test_sledujteto(State(state): State<AppState>) -> WebResult<Response> {
+    if !state.config.sledujteto_poc_enabled {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
     let tmpl = AdminTestSledujtetoTemplate {
         img: state.image_base_url.clone(),
     };

@@ -247,22 +247,28 @@ async fn main() -> Result<()> {
         .route(
             "/films/sktorrent-resolve",
             axum::routing::get(handlers::sktorrent_resolve),
-        )
-        // #551 POC surface: both endpoints are public and hit sledujteto.cz
-        // on every call, which is fine for the low-traffic /admin/test-
-        // sledujteto/ diagnostic page but is NOT the shape we want for the
-        // production three-source film pages. The proper handler (with
-        // token expiry caching + in-flight mutex, mirroring prehrajto)
-        // lands in #547 and will replace these.
-        .route(
-            "/sledujteto/search",
-            axum::routing::get(handlers::movies_api::sledujteto_search),
-        )
-        .route(
-            "/sledujteto/resolve",
-            axum::routing::get(handlers::movies_api::sledujteto_resolve),
-        )
-        .layer(cors);
+        );
+
+    // #551 POC surface: both endpoints are public and hit sledujteto.cz on
+    // every call, which is acceptable for the low-traffic
+    // /admin/test-sledujteto/ diagnostic page but NOT the shape we want for
+    // production. Gate behind SLEDUJTETO_POC_ENABLED so an unattended deploy
+    // can't drive uncached upstream load. The proper cached handler lands
+    // in #547 and replaces these.
+    let api_routes = if state.config.sledujteto_poc_enabled {
+        api_routes
+            .route(
+                "/sledujteto/search",
+                axum::routing::get(handlers::movies_api::sledujteto_search),
+            )
+            .route(
+                "/sledujteto/resolve",
+                axum::routing::get(handlers::movies_api::sledujteto_resolve),
+            )
+    } else {
+        api_routes
+    }
+    .layer(cors);
 
     let app = Router::new()
         .route("/", axum::routing::get(handlers::homepage))
