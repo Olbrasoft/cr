@@ -48,15 +48,17 @@ impl SeriesRow {
     /// Derived from `tmdb_poster_path` when the series has been backfilled;
     /// otherwise falls back to `webp` so the existing R2-backed route keeps
     /// serving until the backfill completes.
+    ///
+    /// Only `jpg` and `png` are whitelisted — `series_resolve` dispatches
+    /// exactly those two large-cover extensions to the dynamic proxy, and
+    /// TMDB's in-practice storage is always JPG. Unknown/unexpected suffixes
+    /// get normalized to `jpg` rather than falling through to the HTML handler.
     pub fn large_url_ext(&self) -> &str {
         match self.tmdb_poster_path.as_deref() {
-            Some(p) => {
-                if let Some(dot) = p.rfind('.') {
-                    &p[dot + 1..]
-                } else {
-                    "jpg"
-                }
-            }
+            Some(p) => match p.rsplit_once('.').map(|(_, ext)| ext) {
+                Some("png") => "png",
+                Some(_) | None => "jpg",
+            },
             None => "webp",
         }
     }
