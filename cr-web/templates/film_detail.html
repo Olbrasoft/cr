@@ -159,7 +159,7 @@
             <div class="meta-row">
                 {% match film.imdb_rating %}
                 {% when Some with (r) %}
-                <span class="meta-badge imdb">IMDB {{ r }}</span>
+                <span class="meta-badge imdb" title="TMDB hodnocení">TMDB {{ r }}</span>
                 {% when None %}
                 {% endmatch %}
 
@@ -943,7 +943,7 @@ function doSearch() {
                                 ? '<img src="/filmy-online/' + r.slug + '.webp" alt="">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
-                            var rat = r.imdb_rating ? ' — IMDB ' + r.imdb_rating : '';
+                            var rat = r.imdb_rating ? ' — TMDB ' + r.imdb_rating : '';
                             return '<a href="/filmy-online/' + r.slug + '/" class="search-item">'
                                 + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
