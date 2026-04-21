@@ -44,6 +44,24 @@ pub fn immutable_webp(bytes: Vec<u8>) -> Response {
         .into_response()
 }
 
+/// `image/webp` bytes wrapped with `no-store`. Used when we serve
+/// *something* under a URL that may get a better answer soon — e.g.
+/// the `-large.webp` endpoint falling back to the small variant while
+/// the large is not yet on R2. If we returned those bytes with
+/// `immutable`, CF and browsers would cache the low-res image for a
+/// year and never pick up the large file that imports later.
+pub fn no_store_webp(bytes: Vec<u8>) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/webp"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 /// Tiny 1×1 transparent WebP. Same bytes as the pre-#576 handlers used.
 /// `no-store` is deliberate — a missing cover is a transient state
 /// (import will fill it in shortly), caching the placeholder pins an

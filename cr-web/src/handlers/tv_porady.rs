@@ -630,22 +630,28 @@ pub async fn tv_porad_cover_large(
         return Ok(placeholder_webp());
     };
 
+    use crate::handlers::cover_proxy::no_store_webp;
     // Pre-migration large covers were cached under the `series/large/`
-    // prefix (tv_shows shared the series_covers_dir). Try the new
-    // `tv-shows/{id}/cover-large.webp` first, then those older forms.
-    let mut candidates = vec![new_r2_key("tv-shows", row.id, true)];
-    candidates.push(format!("series/large/{slug}.webp"));
+    // prefix (tv_shows shared the series_covers_dir). (R2 key,
+    // is_small_fallback) — small-variant fallbacks are served with
+    // `no-store` so a later-imported large can take over (see
+    // films_cover_large).
+    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("tv-shows", row.id, true), false)];
+    candidates.push((format!("series/large/{slug}.webp"), false));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("series", cf, true));
+        candidates.push((old_r2_key("series", cf, true), false));
     }
-    // Fall through to small variant inlined (avoid async recursion).
-    candidates.push(new_r2_key("tv-shows", row.id, false));
+    candidates.push((new_r2_key("tv-shows", row.id, false), true));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("series", cf, false));
+        candidates.push((old_r2_key("series", cf, false), true));
     }
-    for key in &candidates {
+    for (key, is_small_fallback) in &candidates {
         if let Some(bytes) = try_fetch_r2(&state, key).await {
-            return Ok(immutable_webp(bytes));
+            return Ok(if *is_small_fallback {
+                no_store_webp(bytes)
+            } else {
+                immutable_webp(bytes)
+            });
         }
     }
     Ok(placeholder_webp())

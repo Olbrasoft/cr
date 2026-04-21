@@ -906,26 +906,30 @@ pub async fn films_cover_large(
         return Ok(placeholder_webp());
     };
 
-    use crate::handlers::cover_proxy::{immutable_webp, try_fetch_r2};
-    let new_key = new_r2_key("films", row.id, true);
-    // Old large covers were keyed by `slug` (handler cache) AND sometimes
-    // by `cover_filename` (#578 backfill). Try all three in order of
-    // likely hit rate, stop at the first that exists.
-    let mut candidates = vec![new_key];
-    candidates.push(format!("films/large/{slug}.webp"));
+    use crate::handlers::cover_proxy::{immutable_webp, no_store_webp, try_fetch_r2};
+    // Tuple: (R2 key, is_small_fallback). Large-variant hits are cached
+    // for a year (`immutable`); small-variant fallbacks are `no-store`
+    // so a later-imported large cover can unseat them without a manual
+    // CF purge.
+    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("films", row.id, true), false)];
+    candidates.push((format!("films/large/{slug}.webp"), false));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("films", cf, true));
+        candidates.push((old_r2_key("films", cf, true), false));
     }
-    // If large missing, fall through to the small variant (same row we
-    // already loaded) so the detail page renders something instead of a
-    // broken image. Inlined to avoid async recursion with films_cover.
-    candidates.push(new_r2_key("films", row.id, false));
+    // Small-variant fallbacks — inlined to avoid async recursion with
+    // films_cover. Marked `is_small_fallback=true` so they get served
+    // with `no-store`.
+    candidates.push((new_r2_key("films", row.id, false), true));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("films", cf, false));
+        candidates.push((old_r2_key("films", cf, false), true));
     }
-    for key in &candidates {
+    for (key, is_small_fallback) in &candidates {
         if let Some(bytes) = try_fetch_r2(&state, key).await {
-            return Ok(immutable_webp(bytes));
+            return Ok(if *is_small_fallback {
+                no_store_webp(bytes)
+            } else {
+                immutable_webp(bytes)
+            });
         }
     }
     Ok(placeholder_webp())

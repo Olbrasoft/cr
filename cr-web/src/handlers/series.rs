@@ -1158,20 +1158,25 @@ pub async fn series_cover_large(
         return Ok(placeholder_webp());
     };
 
-    let mut candidates = vec![new_r2_key("series", row.id, true)];
-    candidates.push(format!("series/large/{slug}.webp"));
+    use crate::handlers::cover_proxy::no_store_webp;
+    // (R2 key, is_small_fallback) — small variants served under the
+    // `-large.webp` URL must be `no-store` (see films_cover_large).
+    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("series", row.id, true), false)];
+    candidates.push((format!("series/large/{slug}.webp"), false));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("series", cf, true));
+        candidates.push((old_r2_key("series", cf, true), false));
     }
-    // If large missing, fall through to the small variant (inlined to
-    // avoid async recursion with series_cover).
-    candidates.push(new_r2_key("series", row.id, false));
+    candidates.push((new_r2_key("series", row.id, false), true));
     if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push(old_r2_key("series", cf, false));
+        candidates.push((old_r2_key("series", cf, false), true));
     }
-    for key in &candidates {
+    for (key, is_small_fallback) in &candidates {
         if let Some(bytes) = try_fetch_r2(&state, key).await {
-            return Ok(immutable_webp(bytes));
+            return Ok(if *is_small_fallback {
+                no_store_webp(bytes)
+            } else {
+                immutable_webp(bytes)
+            });
         }
     }
     Ok(placeholder_webp())

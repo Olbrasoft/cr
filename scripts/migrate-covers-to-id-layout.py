@@ -63,7 +63,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -201,6 +200,15 @@ def _load_rows(cur) -> list[Row]:
 
 # ----- rclone helpers (R2) ---------------------------------------------
 
+_MISSING_PREFIX_MARKERS = (
+    "directory not found",
+    "not found",
+    "doesn't exist",
+    "does not exist",
+    "cannot find",
+)
+
+
 def _list_all_r2_keys() -> set[str]:
     """Return every R2 key under the three cover prefixes in one go.
 
@@ -208,6 +216,13 @@ def _list_all_r2_keys() -> set[str]:
     round-trips, which is ~500x cheaper than one `lsjson` per candidate.
     Includes both old-layout (`{prefix}/name.webp`, `{prefix}/large/...`)
     and any already-migrated new-layout (`{prefix}/{id}/cover.webp`) keys.
+
+    Fails fast on auth / network / config errors — a silently-truncated
+    cache would make later rows treat their source as missing and count
+    them as skipped, which looks like success but leaves old keys behind.
+    Missing-prefix stderr ("directory not found") is the one case we
+    tolerate: `tv-shows/` has no objects until the migration creates
+    some, and listing a pristine prefix returns non-zero.
     """
     keys: set[str] = set()
     for prefix in ("films", "series", "tv-shows"):
@@ -217,8 +232,15 @@ def _list_all_r2_keys() -> set[str]:
             capture_output=True, text=True,
         )
         if r.returncode != 0:
-            # Prefix may not exist yet (tv-shows/ initially), not an error.
-            continue
+            stderr_lower = (r.stderr or "").strip().lower()
+            if any(m in stderr_lower for m in _MISSING_PREFIX_MARKERS):
+                continue
+            print(
+                f"[R2 ERR] failed to list prefix {prefix}/: "
+                f"{r.stderr.strip() or 'rclone lsf exited non-zero with no stderr'}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         for line in r.stdout.splitlines():
             line = line.strip()
             if line:
@@ -256,14 +278,25 @@ def _r2_moveto(src: str, dst: str, *, dry_run: bool) -> bool:
     return True
 
 
-def _r2_delete(key: str, *, dry_run: bool) -> None:
+def _r2_delete(key: str, *, dry_run: bool) -> bool:
+    """Delete a single R2 object. Returns True on success, False on
+    failure (stderr surfaced to our caller so the run-summary exit code
+    can reflect partial failures)."""
     if dry_run:
         print(f"    [R2 dry-run] delete {key}")
-        return
-    subprocess.run(
+        return True
+    r = subprocess.run(
         ["rclone", "deletefile", f"{RCLONE_REMOTE}:{R2_BUCKET}/{key}"],
         capture_output=True, text=True,
     )
+    if r.returncode != 0:
+        print(
+            f"    [R2 ERR] delete {key}: "
+            f"{r.stderr.strip() or 'rclone deletefile failed'}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 # ----- local-disk helpers ----------------------------------------------
@@ -279,63 +312,73 @@ def _local_move(src: Path, dst: Path, *, dry_run: bool) -> bool:
 
 # ----- migration core --------------------------------------------------
 
-def _migrate_r2_row(row: Row, cache: set[str], *,
-                    dry_run: bool) -> tuple[int, int, int]:
-    """Move row's R2 covers. Returns (moved, already_done, missing).
+def _migrate_r2_row(row: Row, cache: frozenset[str], *,
+                    dry_run: bool) -> tuple[int, int, int, int]:
+    """Move row's R2 covers. Returns (moved, already_done, missing, failed).
 
-    `cache` is the pre-listed set of every R2 key; we update it in place
-    as we move objects so later rows see a consistent view (matters when
-    two rows claim the same old path — unlikely but possible)."""
-    moved = already_done = missing = 0
+    `cache` is the pre-listed set of every R2 key captured at startup.
+    It's a frozenset because this function runs concurrently across rows
+    (see `main()`'s ThreadPoolExecutor): mutating a shared set while
+    other workers read it would race on membership queries. Each row's
+    keys are disjoint from every other row's (distinct id, distinct
+    cover_filename), so we never need the cache to reflect our own
+    moves — stale "source exists" reads only happen for keys a row
+    already owns exclusively. Idempotency across separate runs is
+    handled by the destination-exists check; within a single run,
+    moves that have already happened inside this call are naturally
+    invisible and the fallback paths cope.
+    """
+    moved = already_done = missing = failed = 0
 
     # Small cover: old → new.
-    if _r2_exists(row.new_r2_small, cache):
-        if _r2_exists(row.old_r2_small, cache):
+    if row.new_r2_small in cache:
+        if row.old_r2_small in cache:
             # Destination already there (previous half-run). Delete the
-            # leftover source so re-runs are clean.
-            _r2_delete(row.old_r2_small, dry_run=dry_run)
-            if not dry_run:
-                cache.discard(row.old_r2_small)
+            # leftover source so re-runs are clean. A failed delete is
+            # surfaced so the script exits non-zero.
+            if not _r2_delete(row.old_r2_small, dry_run=dry_run):
+                failed += 1
         already_done += 1
-    elif _r2_exists(row.old_r2_small, cache):
+    elif row.old_r2_small in cache:
         if _r2_moveto(row.old_r2_small, row.new_r2_small, dry_run=dry_run):
             moved += 1
-            if not dry_run:
-                cache.discard(row.old_r2_small)
-                cache.add(row.new_r2_small)
         else:
-            missing += 1
+            failed += 1
     else:
         missing += 1
 
     # Large cover: try the two possible old paths before giving up.
     # The handler wrote `/large/{slug}.webp`; the #578 backfill wrote
     # `/large/{cover_filename}.webp`. We accept whichever exists first.
-    if _r2_exists(row.new_r2_large, cache):
+    if row.new_r2_large in cache:
         # Clean up any leftover in either old path.
         for old in (row.old_r2_large_by_slug, row.old_r2_large_by_cover):
-            if _r2_exists(old, cache):
-                _r2_delete(old, dry_run=dry_run)
-                if not dry_run:
-                    cache.discard(old)
+            if old in cache and not _r2_delete(old, dry_run=dry_run):
+                failed += 1
         already_done += 1
     else:
         for old in (row.old_r2_large_by_slug, row.old_r2_large_by_cover):
-            if _r2_exists(old, cache):
+            if old in cache:
                 if _r2_moveto(old, row.new_r2_large, dry_run=dry_run):
                     moved += 1
-                    if not dry_run:
-                        cache.discard(old)
-                        cache.add(row.new_r2_large)
+                else:
+                    failed += 1
                 break
-        # Large variant is optional for most titles — TMDB-fetch path fills
-        # it on first detail-page request. Don't count as missing.
+        # Large variant is optional for most titles — no `missing`
+        # bump here (parent #575 docs this as acceptable — TMDB/import
+        # paths fill large covers lazily).
 
-    return moved, already_done, missing
+    return moved, already_done, missing, failed
 
 
-def _migrate_local_row(row: Row, *, dry_run: bool) -> tuple[int, int, int]:
-    moved = already_done = missing = 0
+def _migrate_local_row(row: Row, *, dry_run: bool) -> tuple[int, int, int, int]:
+    """Move row's on-disk covers. Returns (moved, already_done, missing,
+    failed). `failed` is always 0 today — shutil.move raises on I/O
+    error, which bubbles up as a traceback and aborts the run; kept in
+    the signature for parity with `_migrate_r2_row` so callers can sum
+    tuples without special-casing.
+    """
+    moved = already_done = missing = failed = 0
 
     if row.new_local_small.exists():
         if row.old_local_small.exists():
@@ -368,7 +411,7 @@ def _migrate_local_row(row: Row, *, dry_run: bool) -> tuple[int, int, int]:
                     moved += 1
                 break
 
-    return moved, already_done, missing
+    return moved, already_done, missing, failed
 
 
 # ----- entry point -----------------------------------------------------
@@ -401,10 +444,12 @@ def main() -> int:
     # would issue ~4 subprocess calls per row (small + large × old/new)
     # which is 120k calls for 30k films — around 30 min and seriously
     # rate-limited. A `rclone lsf` per prefix is 5 HTTP round-trips total
-    # and populates a `set[str]` we then hit in O(1).
-    r2_keys: set[str] = set()
+    # and populates a frozenset we then hit in O(1). Frozen because
+    # ThreadPoolExecutor workers share it concurrently; see
+    # `_migrate_r2_row` for why a captured snapshot is sufficient.
+    r2_keys: frozenset[str] = frozenset()
     if args.r2:
-        r2_keys = _list_all_r2_keys()
+        r2_keys = frozenset(_list_all_r2_keys())
         print(f"R2 pre-listed {len(r2_keys):,} objects across films/"
               f" series/ tv-shows/")
 
@@ -438,11 +483,9 @@ def main() -> int:
     # ~150 ms each), so ~16 concurrent workers move 23k rows in <10 min
     # without tripping R2's per-account rate limits (~500 req/s). Local
     # disk work is tiny and stays sequential on the main thread.
-    total_moved = total_done = total_missing = 0
-    stats_lock = threading.Lock()
-    cache_lock = threading.Lock()
+    total_moved = total_done = total_missing = total_failed = 0
 
-    def handle_row(i_row: tuple[int, Row]) -> tuple[int, int, int]:
+    def handle_row(i_row: tuple[int, Row]) -> tuple[int, int, int, int]:
         i, row = i_row
         if i % 500 == 0 or i == 1:
             print(
@@ -450,46 +493,54 @@ def main() -> int:
                 f"slug={row.slug!r} cf={row.cover_filename!r}",
                 flush=True,
             )
-        m = d = s = 0
+        m = d = s = f = 0
         if args.r2:
-            # The cache (set[str]) is not thread-safe for `discard`/`add`
-            # races on the same key. In practice each row touches its own
-            # keys, so contention is effectively zero; a coarse lock
-            # keeps us correct even in the pathological case.
-            with cache_lock:
-                cache_snapshot = r2_keys
-            rm, rd, rs = _migrate_r2_row(row, cache_snapshot, dry_run=args.dry_run)
+            # r2_keys is a frozenset captured at startup — see the
+            # `_migrate_r2_row` docstring for why a stale snapshot is
+            # safe. No lock needed.
+            rm, rd, rs, rf = _migrate_r2_row(row, r2_keys, dry_run=args.dry_run)
             m += rm
             d += rd
             s += rs
+            f += rf
         if args.local:
-            lm, ld, ls = _migrate_local_row(row, dry_run=args.dry_run)
+            lm, ld, ls, lf = _migrate_local_row(row, dry_run=args.dry_run)
             m += lm
             d += ld
             s += ls
-        return m, d, s
+            f += lf
+        return m, d, s, f
 
     if args.r2 and args.apply:
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-            for m, d, s in pool.map(handle_row, enumerate(rows, 1)):
-                with stats_lock:
-                    total_moved += m
-                    total_done += d
-                    total_missing += s
+            for m, d, s, f in pool.map(handle_row, enumerate(rows, 1)):
+                total_moved += m
+                total_done += d
+                total_missing += s
+                total_failed += f
     else:
         # Dry-run and local-only modes — sequential is fine and gives a
         # readable, ordered transcript of planned moves.
         for i_row in enumerate(rows, 1):
-            m, d, s = handle_row(i_row)
+            m, d, s, f = handle_row(i_row)
             total_moved += m
             total_done += d
             total_missing += s
+            total_failed += f
 
-    print(f"\nSummary: moved={total_moved}  "
-          f"already_migrated={total_done}  missing_source={total_missing}")
+    print(
+        f"\nSummary: moved={total_moved}  "
+        f"already_migrated={total_done}  missing_source={total_missing}  "
+        f"failed={total_failed}"
+    )
     if args.dry_run:
         print("[dry-run] no changes applied. Add --apply to execute.")
-    return 0
+    # Exit non-zero on any failure so ops automation (CI runbooks, wake
+    # hooks) notices a partial migration rather than reporting green.
+    # `missing_source` is NOT a failure — rows can legitimately have no
+    # cover uploaded (TMDB miss / exotic cohort) and the handler serves
+    # placeholders for those.
+    return 0 if total_failed == 0 else 1
 
 
 if __name__ == "__main__":
