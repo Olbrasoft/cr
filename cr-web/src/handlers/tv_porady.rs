@@ -567,237 +567,94 @@ pub async fn tv_porad_cover(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
+    use crate::handlers::cover_proxy::{
+        fetch_cover, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp,
+    };
+
     if slug_webp.ends_with("-large.webp") {
-        return tv_porad_cover_large(State(state), Path(slug_webp)).await;
+        return Box::pin(tv_porad_cover_large(State(state), Path(slug_webp))).await;
     }
-    let slug = slug_webp.strip_suffix(".webp").unwrap_or(&slug_webp);
+    let (slug, _is_large) = parse_cover_slug(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
+        id: i32,
         cover_filename: Option<String>,
-        tmdb_id: Option<i32>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>(
-        "SELECT cover_filename, tmdb_id FROM tv_shows WHERE slug = $1",
-    )
-    .bind(slug)
-    .fetch_optional(&state.db)
-    .await?;
+    let row =
+        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM tv_shows WHERE slug = $1")
+            .bind(&slug)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let (cover_filename, tmdb_id) = match row {
-        Some(r) => (r.cover_filename, r.tmdb_id),
-        None => (None, None),
+    let Some(row) = row else {
+        return Ok(placeholder_webp());
     };
-    // Reuse series_covers_dir for now (migration reuses files written for
-    // these same slugs before they were moved).
-    let covers_dir = state.config.series_covers_dir.clone();
 
-    if let Some(ref filename) = cover_filename {
-        let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
-        if path.exists()
-            && let Ok(bytes) = tokio::fs::read(&path).await
-        {
-            return Ok((
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "image/webp"),
-                    (header::CACHE_CONTROL, "public, max-age=31536000"),
-                ],
-                bytes,
-            )
-                .into_response());
-        }
-    }
-
-    if let Some(tid) = tmdb_id {
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        if !tmdb_key.is_empty() {
-            let detail_url =
-                format!("https://api.themoviedb.org/3/tv/{tid}?api_key={tmdb_key}&language=cs-CZ");
-            if let Ok(resp) = state
-                .http_client
-                .get(&detail_url)
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await
-                && let Ok(data) = resp.json::<serde_json::Value>().await
-                && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
-            {
-                let img_url = format!("https://image.tmdb.org/t/p/w200{poster_path}");
-                if let Ok(img_resp) = state
-                    .http_client
-                    .get(&img_url)
-                    .timeout(std::time::Duration::from_secs(15))
-                    .send()
-                    .await
-                    && img_resp.status().is_success()
-                    && let Ok(raw_bytes) = img_resp.bytes().await
-                {
-                    // TMDB returns JPEG; re-encode to WebP off the async
-                    // runtime (CPU-bound) and bail out if transcoding fails
-                    // so we don't cache raw JPEG under a .webp filename.
-                    let raw = raw_bytes.to_vec();
-                    let output_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
-                        let img = image::load_from_memory(&raw).ok()?;
-                        let mut buf = Vec::new();
-                        let mut cursor = std::io::Cursor::new(&mut buf);
-                        img.write_to(&mut cursor, image::ImageFormat::WebP).ok()?;
-                        Some(buf)
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-
-                    if let Some(output_bytes) = output_bytes {
-                        let cache_path =
-                            std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
-                        let _ = tokio::fs::create_dir_all(&covers_dir).await;
-                        let _ = tokio::fs::write(&cache_path, &output_bytes).await;
-
-                        return Ok((
-                            StatusCode::OK,
-                            [
-                                (header::CONTENT_TYPE, "image/webp"),
-                                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                            ],
-                            output_bytes,
-                        )
-                            .into_response());
-                    }
-                }
-            }
-        }
-    }
-
-    // `no-store` — missing TV pořad cover is a transient state; a cached
-    // placeholder would pin an empty card for hours after the real WebP
-    // arrives on disk.
-    static PLACEHOLDER: &[u8] = &[
-        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
-        0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    ];
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        PLACEHOLDER.to_vec(),
-    )
-        .into_response())
+    let new_key = new_r2_key("tv-shows", row.id, false);
+    // Pre-migration tv_shows covers shared the `series/` R2 prefix with
+    // the `series` table. Keep the old-layout fallback on that prefix
+    // until the migration script has moved them under `tv-shows/`.
+    let old_key = row
+        .cover_filename
+        .as_deref()
+        .map(|cf| old_r2_key("series", cf, false));
+    Ok(fetch_cover(&state, &new_key, old_key.as_deref()).await)
 }
 
-/// GET /tv-porady/{slug}-large.webp — w780 poster from TMDB, cached.
+/// GET /tv-porady/{slug}-large.webp — large (780×1170) cover.
 pub async fn tv_porad_cover_large(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    let slug = slug_webp.strip_suffix("-large.webp").unwrap_or(&slug_webp);
+    use crate::handlers::cover_proxy::{
+        immutable_webp, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp, try_fetch_r2,
+    };
+
+    let (slug, _is_large) = parse_cover_slug(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
-        tmdb_id: Option<i32>,
+        id: i32,
+        cover_filename: Option<String>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_id FROM tv_shows WHERE slug = $1")
-        .bind(slug)
-        .fetch_optional(&state.db)
-        .await?;
+    let row =
+        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM tv_shows WHERE slug = $1")
+            .bind(&slug)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let tmdb_id = row.and_then(|r| r.tmdb_id);
-    let covers_dir = state.config.series_covers_dir.clone();
+    let Some(row) = row else {
+        return Ok(placeholder_webp());
+    };
 
-    let cache_dir = std::path::Path::new(&covers_dir).join("large");
-    let cache_path = cache_dir.join(format!("{slug}.webp"));
-
-    if cache_path.exists()
-        && let Ok(bytes) = tokio::fs::read(&cache_path).await
-    {
-        return Ok((
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/webp"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            bytes,
-        )
-            .into_response());
+    use crate::handlers::cover_proxy::no_store_webp;
+    // Pre-migration large covers were cached under the `series/large/`
+    // prefix (tv_shows shared the series_covers_dir). (R2 key,
+    // is_small_fallback) — small-variant fallbacks are served with
+    // `no-store` so a later-imported large can take over (see
+    // films_cover_large).
+    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("tv-shows", row.id, true), false)];
+    candidates.push((format!("series/large/{slug}.webp"), false));
+    if let Some(cf) = row.cover_filename.as_deref() {
+        candidates.push((old_r2_key("series", cf, true), false));
     }
-
-    if let Some(tid) = tmdb_id {
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        if !tmdb_key.is_empty() {
-            let detail_url =
-                format!("https://api.themoviedb.org/3/tv/{tid}?api_key={tmdb_key}&language=cs-CZ");
-
-            if let Ok(resp) = state
-                .http_client
-                .get(&detail_url)
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await
-                && let Ok(data) = resp.json::<serde_json::Value>().await
-                && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
-            {
-                let poster_url = format!("https://image.tmdb.org/t/p/w780{poster_path}");
-                if let Ok(img_resp) = state
-                    .http_client
-                    .get(&poster_url)
-                    .timeout(std::time::Duration::from_secs(15))
-                    .send()
-                    .await
-                    && img_resp.status().is_success()
-                    && let Ok(bytes) = img_resp.bytes().await
-                {
-                    let raw = bytes.to_vec();
-                    let output_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
-                        let img = image::load_from_memory(&raw).ok()?;
-                        let mut buf = Vec::new();
-                        let mut cursor = std::io::Cursor::new(&mut buf);
-                        img.write_to(&mut cursor, image::ImageFormat::WebP).ok()?;
-                        Some(buf)
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-
-                    if let Some(output_bytes) = output_bytes {
-                        let _ = tokio::fs::create_dir_all(&cache_dir).await;
-                        let _ = tokio::fs::write(&cache_path, &output_bytes).await;
-
-                        return Ok((
-                            StatusCode::OK,
-                            [
-                                (header::CONTENT_TYPE, "image/webp"),
-                                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                            ],
-                            output_bytes,
-                        )
-                            .into_response());
-                    }
-                }
-            }
+    candidates.push((new_r2_key("tv-shows", row.id, false), true));
+    if let Some(cf) = row.cover_filename.as_deref() {
+        candidates.push((old_r2_key("series", cf, false), true));
+    }
+    for (key, is_small_fallback) in &candidates {
+        if let Some(bytes) = try_fetch_r2(&state, key).await {
+            return Ok(if *is_small_fallback {
+                no_store_webp(bytes)
+            } else {
+                immutable_webp(bytes)
+            });
         }
     }
-
-    // Same rationale as the small-cover fallback — don't let a transient
-    // miss on the large variant pin an empty poster in the browser cache.
-    static PLACEHOLDER: &[u8] = &[
-        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
-        0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    ];
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        PLACEHOLDER.to_vec(),
-    )
-        .into_response())
+    Ok(placeholder_webp())
 }
 
 fn build_query_string(params: &TvShowQuery) -> String {

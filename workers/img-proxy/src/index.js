@@ -19,7 +19,12 @@ export default {
 
     // SEO municipality URLs: {orp}/{municipality}/{photo}.webp
     // These need DB lookup (Axum handles), pass through to origin.
-    const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/', 'regions/', 'videos/'];
+    // films/series/tv-shows are id-keyed (e.g. films/29876/cover.webp)
+    // — deep path but still a direct R2 object, so serve from the bucket
+    // rather than looping through origin.
+    const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/',
+                           'regions/', 'videos/', 'films/', 'series/',
+                           'tv-shows/'];
     const isKnownPrefix = knownPrefixes.some(p => key.startsWith(p));
     const segmentCount = key.split('/').length;
     if (!isKnownPrefix && segmentCount === 3) {

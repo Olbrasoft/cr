@@ -1095,242 +1095,91 @@ pub async fn series_cover(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    // Detect -large variant — fetches w780 poster from TMDB (cached to disk)
+    use crate::handlers::cover_proxy::{
+        fetch_cover, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp,
+    };
+
     if slug_webp.ends_with("-large.webp") {
-        return series_cover_large(State(state), Path(slug_webp)).await;
+        // Box::pin to break the mutual-recursion future size cycle
+        // (series_cover → series_cover_large → … small fallback paths).
+        return Box::pin(series_cover_large(State(state), Path(slug_webp))).await;
     }
-    let slug = slug_webp.strip_suffix(".webp").unwrap_or(&slug_webp);
+    let (slug, _is_large) = parse_cover_slug(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
+        id: i32,
         cover_filename: Option<String>,
-        tmdb_id: Option<i32>,
     }
 
     let row =
-        sqlx::query_as::<_, CoverRow>("SELECT cover_filename, tmdb_id FROM series WHERE slug = $1")
-            .bind(slug)
+        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM series WHERE slug = $1")
+            .bind(&slug)
             .fetch_optional(&state.db)
             .await?;
 
-    let (cover_filename, tmdb_id) = match row {
-        Some(r) => (r.cover_filename, r.tmdb_id),
-        None => (None, None),
+    let Some(row) = row else {
+        return Ok(placeholder_webp());
     };
-    let covers_dir = state.config.series_covers_dir.clone();
 
-    // Try local file first
-    if let Some(ref filename) = cover_filename {
-        let path = std::path::Path::new(&covers_dir).join(format!("{filename}.webp"));
-        if path.exists()
-            && let Ok(bytes) = tokio::fs::read(&path).await
-        {
-            return Ok((
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "image/webp"),
-                    (header::CACHE_CONTROL, "public, max-age=31536000"),
-                ],
-                bytes,
-            )
-                .into_response());
-        }
-    }
-
-    // Fallback: fetch w200 poster from TMDB on-the-fly and cache to disk
-    if let Some(tid) = tmdb_id {
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        if !tmdb_key.is_empty() {
-            let detail_url =
-                format!("https://api.themoviedb.org/3/tv/{tid}?api_key={tmdb_key}&language=cs-CZ");
-            if let Ok(resp) = state
-                .http_client
-                .get(&detail_url)
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await
-                && let Ok(data) = resp.json::<serde_json::Value>().await
-                && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
-            {
-                let img_url = format!("https://image.tmdb.org/t/p/w200{poster_path}");
-                if let Ok(img_resp) = state
-                    .http_client
-                    .get(&img_url)
-                    .timeout(std::time::Duration::from_secs(15))
-                    .send()
-                    .await
-                    && let Ok(img_bytes) = img_resp.bytes().await
-                {
-                    // Cache to disk for next request
-                    let cache_path = std::path::Path::new(&covers_dir).join(format!("{slug}.webp"));
-                    let _ = tokio::fs::create_dir_all(&covers_dir).await;
-                    let _ = tokio::fs::write(&cache_path, &img_bytes).await;
-
-                    return Ok((
-                        StatusCode::OK,
-                        [
-                            (header::CONTENT_TYPE, "image/webp"),
-                            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                        ],
-                        img_bytes.to_vec(),
-                    )
-                        .into_response());
-                }
-            }
-        }
-    }
-
-    // Placeholder (1x1 WebP). `no-store` is deliberate — browsers that
-    // fetched a placeholder while the real cover was still being imported
-    // would otherwise keep the 1x1 for the full max-age, making the next
-    // pageview still show an empty card even after the WebP lands on disk.
-    static PLACEHOLDER: &[u8] = &[
-        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
-        0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    ];
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        PLACEHOLDER.to_vec(),
-    )
-        .into_response())
+    let new_key = new_r2_key("series", row.id, false);
+    let old_key = row
+        .cover_filename
+        .as_deref()
+        .map(|cf| old_r2_key("series", cf, false));
+    Ok(fetch_cover(&state, &new_key, old_key.as_deref()).await)
 }
 
-/// GET /serialy-online/{slug}-large.webp — serve w780 poster from TMDB (cached).
-/// Mirrors films_cover_large for feature parity on series detail pages.
+/// GET /serialy-online/{slug}-large.webp — large (780×1170) cover.
+/// See handlers::cover_proxy for the R2 key schema + fallback rationale.
 pub async fn series_cover_large(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    let slug = slug_webp.strip_suffix("-large.webp").unwrap_or(&slug_webp);
+    use crate::handlers::cover_proxy::{
+        immutable_webp, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp, try_fetch_r2,
+    };
+
+    let (slug, _is_large) = parse_cover_slug(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
-        tmdb_id: Option<i32>,
+        id: i32,
+        cover_filename: Option<String>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_id FROM series WHERE slug = $1")
-        .bind(slug)
-        .fetch_optional(&state.db)
-        .await?;
+    let row =
+        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM series WHERE slug = $1")
+            .bind(&slug)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let tmdb_id = row.and_then(|r| r.tmdb_id);
-    let covers_dir = state.config.series_covers_dir.clone();
+    let Some(row) = row else {
+        return Ok(placeholder_webp());
+    };
 
-    // Cache path: {covers_dir}/large/{slug}.webp
-    let cache_dir = std::path::Path::new(&covers_dir).join("large");
-    let cache_path = cache_dir.join(format!("{slug}.webp"));
-
-    if cache_path.exists()
-        && let Ok(bytes) = tokio::fs::read(&cache_path).await
-    {
-        return Ok((
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/webp"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            bytes,
-        )
-            .into_response());
+    use crate::handlers::cover_proxy::no_store_webp;
+    // (R2 key, is_small_fallback) — small variants served under the
+    // `-large.webp` URL must be `no-store` (see films_cover_large).
+    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("series", row.id, true), false)];
+    candidates.push((format!("series/large/{slug}.webp"), false));
+    if let Some(cf) = row.cover_filename.as_deref() {
+        candidates.push((old_r2_key("series", cf, true), false));
     }
-
-    // Fetch from TMDB (TV endpoint)
-    if let Some(tid) = tmdb_id {
-        let tmdb_key = "0405855b8275307d3cf3284470fd9d28";
-        let detail_url =
-            format!("https://api.themoviedb.org/3/tv/{tid}?api_key={tmdb_key}&language=cs-CZ");
-
-        if let Ok(resp) = state
-            .http_client
-            .get(&detail_url)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-            && let Ok(data) = resp.json::<serde_json::Value>().await
-            && let Some(poster_path) = data.get("poster_path").and_then(|v| v.as_str())
-        {
-            let poster_url = format!("https://image.tmdb.org/t/p/w780{poster_path}");
-            if let Ok(img_resp) = state
-                .http_client
-                .get(&poster_url)
-                .timeout(std::time::Duration::from_secs(15))
-                .send()
-                .await
-                && img_resp.status().is_success()
-                && let Ok(bytes) = img_resp.bytes().await
-            {
-                let output_bytes = if let Ok(img) = image::load_from_memory(&bytes) {
-                    let mut buf = Vec::new();
-                    let mut cursor = std::io::Cursor::new(&mut buf);
-                    if img.write_to(&mut cursor, image::ImageFormat::WebP).is_ok() {
-                        buf
-                    } else {
-                        bytes.to_vec()
-                    }
-                } else {
-                    bytes.to_vec()
-                };
-
-                let _ = tokio::fs::create_dir_all(&cache_dir).await;
-                let _ = tokio::fs::write(&cache_path, &output_bytes).await;
-
-                return Ok((
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, "image/webp"),
-                        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-                    ],
-                    output_bytes,
-                )
-                    .into_response());
-            }
+    candidates.push((new_r2_key("series", row.id, false), true));
+    if let Some(cf) = row.cover_filename.as_deref() {
+        candidates.push((old_r2_key("series", cf, false), true));
+    }
+    for (key, is_small_fallback) in &candidates {
+        if let Some(bytes) = try_fetch_r2(&state, key).await {
+            return Ok(if *is_small_fallback {
+                no_store_webp(bytes)
+            } else {
+                immutable_webp(bytes)
+            });
         }
     }
-
-    // Fallback to small cover (inline to avoid async recursion)
-    let row = sqlx::query_as::<_, CoverRow2>("SELECT cover_filename FROM series WHERE slug = $1")
-        .bind(slug)
-        .fetch_optional(&state.db)
-        .await?;
-    let covers_dir_small = state.config.series_covers_dir.clone();
-    if let Some(filename) = row.and_then(|r| r.cover_filename) {
-        let path = std::path::Path::new(&covers_dir_small).join(format!("{filename}.webp"));
-        if path.exists()
-            && let Ok(bytes) = tokio::fs::read(&path).await
-        {
-            return Ok((
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "image/webp"),
-                    (header::CACHE_CONTROL, "public, max-age=31536000"),
-                ],
-                bytes,
-            )
-                .into_response());
-        }
-    }
-    // Tiny empty WebP placeholder. `no-store` — same reasoning as the
-    // series_cover fallback above: don't let a transient miss get pinned
-    // in the browser cache for hours after the real file appears.
-    static PLACEHOLDER: &[u8] = &[
-        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
-        0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    ];
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        PLACEHOLDER.to_vec(),
-    )
-        .into_response())
+    Ok(placeholder_webp())
 }
 
 /// Build pagination query string for series list views.
@@ -1367,11 +1216,6 @@ fn build_series_query_string(params: &SeriesQuery) -> String {
         parts.push(("rok", r.clone()));
     }
     super::build_pagination_qs(&parts)
-}
-
-#[derive(sqlx::FromRow)]
-struct CoverRow2 {
-    cover_filename: Option<String>,
 }
 
 /// GET /serialy-online/person/{filename} — serve person profile image from disk.
