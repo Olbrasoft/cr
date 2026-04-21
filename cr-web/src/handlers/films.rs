@@ -8,7 +8,7 @@ const FILMS_PER_PAGE: i64 = 24;
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
     f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
     f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs";
+    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path";
 
 // --- DB row types ---
 
@@ -42,6 +42,32 @@ struct FilmRow {
     prehrajto_has_dub: bool,
     #[allow(dead_code)] // Not rendered in current templates; kept for future dub/sub badges
     prehrajto_has_subs: bool,
+    /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
+    /// `scripts/backfill-tmdb-poster-paths.py`. When set, the large-cover
+    /// URL switches to the extension the path ends with (`.jpg`/`.png`) and
+    /// `films_cover_large_dynamic` proxies the TMDB image. When None, the
+    /// template keeps the legacy `-large.webp` URL served from R2.
+    tmdb_poster_path: Option<String>,
+}
+
+impl FilmRow {
+    /// Extension for the large-cover URL rendered in the detail template.
+    /// Derived from `tmdb_poster_path` when the film has been backfilled;
+    /// otherwise falls back to `webp` so the existing R2-backed route keeps
+    /// serving until the backfill completes.
+    pub fn large_url_ext(&self) -> &str {
+        match self.tmdb_poster_path.as_deref() {
+            Some(p) => {
+                if let Some(dot) = p.rfind('.') {
+                    // Strip leading dot from path suffix, e.g. "/x.jpg" -> "jpg".
+                    &p[dot + 1..]
+                } else {
+                    "jpg"
+                }
+            }
+            None => "webp",
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -402,6 +428,12 @@ pub async fn films_detail(
     axum::extract::Query(params): axum::extract::Query<FilmsQuery>,
     headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
+    // Large cover dynamically proxied from TMDB — real extension in URL
+    // so the response content type matches what the template rendered.
+    // See `films_cover_large_dynamic` for the fallback chain.
+    if slug.ends_with("-large.jpg") || slug.ends_with("-large.png") {
+        return films_cover_large_dynamic(State(state), Path(slug)).await;
+    }
     // WebP cover request: /filmy-online/some-film.webp (small) or -large.webp
     if slug.ends_with("-large.webp") {
         return films_cover_large(State(state), Path(slug)).await;
@@ -932,6 +964,103 @@ pub async fn films_cover_large(
             });
         }
     }
+    Ok(placeholder_webp())
+}
+
+/// GET /filmy-online/{slug}-large.{jpg,png} — proxy TMDB poster on demand.
+///
+/// Detail-page thumbnails get few hits, so we skip R2 storage and stream the
+/// TMDB image through. Cloudflare caches the response for a year, so each
+/// edge fetches TMDB at most once per (edge, poster) — the next visitor is
+/// served from cache. Fallback chain when TMDB has no poster or fails:
+/// small R2 cover (`no-store` so a later backfill can unseat it) → 1×1
+/// placeholder.
+pub async fn films_cover_large_dynamic(
+    State(state): State<AppState>,
+    Path(slug_ext): Path<String>,
+) -> WebResult<Response> {
+    use crate::handlers::cover_proxy::{
+        new_r2_key, no_store_webp, old_r2_key, placeholder_webp, try_fetch_r2,
+    };
+
+    // Strip `-large.jpg` / `-large.png`, whichever the request carried.
+    let slug = slug_ext
+        .strip_suffix("-large.jpg")
+        .or_else(|| slug_ext.strip_suffix("-large.png"))
+        .unwrap_or(&slug_ext);
+
+    #[derive(sqlx::FromRow)]
+    struct CoverRow {
+        id: i32,
+        cover_filename: Option<String>,
+        tmdb_poster_path: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, CoverRow>(
+        "SELECT id, cover_filename, tmdb_poster_path FROM films WHERE slug = $1",
+    )
+    .bind(slug)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(placeholder_webp());
+    };
+
+    // 1) TMDB proxy via image.tmdb.org. Preserve whatever content type
+    //    TMDB returns (jpg/png) so the client decodes correctly — the URL
+    //    suffix we route on was chosen from the same poster_path.
+    if let Some(path) = row.tmdb_poster_path.as_deref() {
+        let url = format!("https://image.tmdb.org/t/p/w780{path}");
+        if let Ok(resp) = state
+            .http_client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            && resp.status().is_success()
+        {
+            let ct = resp
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "image/jpeg".to_string());
+            if let Ok(bytes) = resp.bytes().await {
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        (axum::http::header::CONTENT_TYPE, ct),
+                        (
+                            axum::http::header::CACHE_CONTROL,
+                            "public, max-age=31536000, immutable".to_string(),
+                        ),
+                    ],
+                    bytes.to_vec(),
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    // 2) Small R2 cover as a transient fallback — keeps something visible
+    //    while TMDB is unreachable or the row has no poster_path yet.
+    let small_candidates: Vec<String> = std::iter::once(new_r2_key("films", row.id, false))
+        .chain(
+            row.cover_filename
+                .as_deref()
+                .map(|cf| old_r2_key("films", cf, false)),
+        )
+        .collect();
+    for key in &small_candidates {
+        if let Some(bytes) = try_fetch_r2(&state, key).await {
+            // `no-store` on purpose: TMDB is the canonical source once the
+            // row is backfilled — we want a subsequent request to try TMDB
+            // again instead of serving the small cover from cache for a year.
+            return Ok(no_store_webp(bytes));
+        }
+    }
+
     Ok(placeholder_webp())
 }
 
