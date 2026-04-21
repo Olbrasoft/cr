@@ -146,6 +146,8 @@ def _close_run(conn, run_id: int, status: str,
                added_films = %s,
                added_series = %s,
                added_episodes = %s,
+               added_tv_shows = %s,
+               added_tv_episodes = %s,
                updated_films = %s,
                updated_episodes = %s,
                failed_count = %s,
@@ -160,6 +162,8 @@ def _close_run(conn, run_id: int, status: str,
             counters["added_films"],
             counters["added_series"],
             counters["added_episodes"],
+            counters["added_tv_shows"],
+            counters["added_tv_episodes"],
             counters["updated_films"],
             counters["updated_episodes"],
             counters["failed_count"],
@@ -495,12 +499,11 @@ def _process_tv_show(conn, *, run_id: int, video: ScannedVideo,
         conn.commit()
         return
 
-    # Fold into the existing counters so the dashboard / reports stay consistent.
-    # We reuse added_series / added_episodes here rather than bolting new
-    # counters — the semantics match (a new container + an episode under it).
+    # tv_porady scanner has its own counters so /admin/import/ can show
+    # the TV branch separately from the series scanner. Issue #566.
     if result.action == "added_tv_show+added_tv_episode":
-        counters["added_series"] += 1
-        counters["added_episodes"] += 1
+        counters["added_tv_shows"] += 1
+        counters["added_tv_episodes"] += 1
         _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
                      detected_type="tv_show",
                      imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
@@ -513,7 +516,7 @@ def _process_tv_show(conn, *, run_id: int, video: ScannedVideo,
                      target_tv_show_id=result.tv_show_id,
                      target_tv_episode_id=result.tv_episode_id)
     elif result.action == "added_tv_episode":
-        counters["added_episodes"] += 1
+        counters["added_tv_episodes"] += 1
         _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
                      detected_type="tv_episode",
                      imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
@@ -559,6 +562,7 @@ def run(trigger: str, max_new: int) -> int:
     counters = {
         "scanned_pages": 0, "scanned_videos": 0,
         "added_films": 0, "added_series": 0, "added_episodes": 0,
+        "added_tv_shows": 0, "added_tv_episodes": 0,
         "updated_films": 0, "updated_episodes": 0,
         "failed_count": 0, "skipped_count": 0,
     }

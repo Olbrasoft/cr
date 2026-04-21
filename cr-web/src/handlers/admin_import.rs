@@ -34,6 +34,8 @@ struct ImportRunRow {
     added_films: i32,
     added_series: i32,
     added_episodes: i32,
+    added_tv_shows: i32,
+    added_tv_episodes: i32,
     updated_films: i32,
     updated_episodes: i32,
     failed_count: i32,
@@ -212,8 +214,8 @@ pub async fn admin_import_list(State(state): State<AppState>) -> WebResult<Respo
     let runs = sqlx::query_as::<_, ImportRunRow>(
         "SELECT id, started_at, finished_at, status, trigger, scanned_pages, \
          scanned_videos, checkpoint_before, checkpoint_after, added_films, \
-         added_series, added_episodes, updated_films, updated_episodes, \
-         failed_count, skipped_count, error_message \
+         added_series, added_episodes, added_tv_shows, added_tv_episodes, \
+         updated_films, updated_episodes, failed_count, skipped_count, error_message \
          FROM import_runs ORDER BY started_at DESC LIMIT 30",
     )
     .fetch_all(&state.db)
@@ -288,8 +290,8 @@ pub async fn admin_import_detail(
     let run = sqlx::query_as::<_, ImportRunRow>(
         "SELECT id, started_at, finished_at, status, trigger, scanned_pages, \
          scanned_videos, checkpoint_before, checkpoint_after, added_films, \
-         added_series, added_episodes, updated_films, updated_episodes, \
-         failed_count, skipped_count, error_message \
+         added_series, added_episodes, added_tv_shows, added_tv_episodes, \
+         updated_films, updated_episodes, failed_count, skipped_count, error_message \
          FROM import_runs WHERE id = $1",
     )
     .bind(run_id)
@@ -665,6 +667,11 @@ struct AdminImportSummaryTemplate {
     skipped: Vec<SkippedRow>,
     failed: Vec<FailureItemRow>,
     total_runs: i64,
+    /// Issue #566 — TV pořady don't have card panels yet (those are
+    /// follow-up to #563), so for now we surface them as scalar counts in
+    /// the stats row alongside the other "all-time" tallies.
+    new_tv_shows_count: i64,
+    new_tv_episodes_count: i64,
 }
 
 /// GET /admin/import/summary — single page aggregating every decision
@@ -769,6 +776,19 @@ pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Re
         .await?
         .unwrap_or(0);
 
+    let new_tv_shows_count = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM import_items WHERE action = 'added_tv_show'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
+    let new_tv_episodes_count = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM import_items WHERE action = 'added_tv_episode'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
+
     let tmpl = AdminImportSummaryTemplate {
         img: state.image_base_url.clone(),
         new_films,
@@ -778,6 +798,8 @@ pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Re
         skipped,
         failed,
         total_runs,
+        new_tv_shows_count,
+        new_tv_episodes_count,
     };
     Ok(noindex(tmpl.render()?))
 }
