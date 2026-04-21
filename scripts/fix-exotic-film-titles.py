@@ -70,7 +70,11 @@ def _pick_new_title(cur, row_id: int, current_title: str, original_title: str | 
             timeout=15,
         )
     except requests.RequestException as e:
-        print(f"  [net] tmdb_id={tmdb_id}: {e}", file=sys.stderr)
+        # Intentionally do NOT interpolate `e` directly — RequestException str
+        # often includes the full URL with `?api_key=...`, which would leak
+        # the TMDB key into stderr / log files. Only the exception class and
+        # tmdb_id are safe to print.
+        print(f"  [net] tmdb_id={tmdb_id}: {type(e).__name__}", file=sys.stderr)
         return None
     time.sleep(TMDB_SLEEP)
     if r.status_code != 200:
@@ -87,26 +91,43 @@ def _pick_new_title(cur, row_id: int, current_title: str, original_title: str | 
     return en_title
 
 
+def _slug_taken(cur, candidate: str, self_id: int) -> bool:
+    """True if `candidate` is already used by another film or by any genre.
+
+    films and genres share the /filmy-online/ URL namespace and the DB
+    enforces uniqueness across both via triggers (migration 028) — so a slug
+    that is free in `films` but matches a genre would cause the UPDATE to
+    abort mid-transaction. Check both tables here.
+    """
+    cur.execute(
+        "SELECT 1 FROM films WHERE slug = %s AND id <> %s",
+        (candidate, self_id),
+    )
+    if cur.fetchone():
+        return True
+    cur.execute("SELECT 1 FROM genres WHERE slug = %s", (candidate,))
+    return cur.fetchone() is not None
+
+
 def _unique_slug(cur, base: str, year: int | None, self_id: int) -> str:
     """Free slug: base → base-YYYY → base-2 → base-3 …
 
     Ignores collisions with this row itself — we're about to overwrite it.
+    Also respects cross-table uniqueness with the `genres` table (see trigger
+    in migration 20260419_028_create_films_genres.sql).
     """
     if not base:
         base = "film"
-    cur.execute("SELECT 1 FROM films WHERE slug = %s AND id <> %s", (base, self_id))
-    if not cur.fetchone():
+    if not _slug_taken(cur, base, self_id):
         return base
     if year:
         candidate = f"{base}-{year}"
-        cur.execute("SELECT 1 FROM films WHERE slug = %s AND id <> %s", (candidate, self_id))
-        if not cur.fetchone():
+        if not _slug_taken(cur, candidate, self_id):
             return candidate
     counter = 2
     while True:
         candidate = f"{base}-{counter}"
-        cur.execute("SELECT 1 FROM films WHERE slug = %s AND id <> %s", (candidate, self_id))
-        if not cur.fetchone():
+        if not _slug_taken(cur, candidate, self_id):
             return candidate
         counter += 1
 

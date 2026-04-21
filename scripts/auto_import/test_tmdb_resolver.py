@@ -40,6 +40,18 @@ CASES = [
 
     # Czech title that happens to share Latin characters with original — keep.
     ("czech-short-with-ascii", "Ano", "Yes", "Yes", True),
+
+    # Regression: Czech-original films (original_language == 'cs' on TMDB) have
+    # original_title == cs_title by design. These must stay usable — otherwise
+    # the enricher would fall back to title_en and overwrite proper Czech
+    # titles/slugs with English ones.
+    ("czech-original-equals-cs", "Pelíšky", "Cosy Dens", "Pelíšky", True),
+    ("czech-original-all-same", "Horem pádem", "Horem pádem", "Horem pádem", False),  # cs == en → no translation
+    ("slovak-original-latin", "Musíme si pomáhať", "We Must Help Each Other", "Musíme si pomáhať", True),
+
+    # Whitespace normalisation — leading/trailing spaces don't hide a fallback.
+    ("trailing-space-equals-en", "The Matrix ", "The Matrix", "The Matrix", False),
+    ("trailing-space-valid-cs", "Pán prstenů ", "The Lord of the Rings", "The Lord of the Rings", True),
 ]
 
 

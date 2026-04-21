@@ -69,19 +69,30 @@ def is_usable_cs_title(cs_title: str | None, en_title: str | None, original_titl
     as a fallback when no Czech entry exists, not null. That leaves us with a
     "title_cs" that is really Hindi/Japanese/Korean/etc. — unreadable on a
     Czech site. Treat the value as unusable when any of the following holds:
-      * cs_title is empty / None
-      * cs_title equals original_title verbatim (TMDB echoed the fallback)
-      * cs_title equals en_title verbatim (no separate Czech translation)
-      * cs_title contains glyphs outside the Latin-extended + European
-        diacritics range (see _NON_LATIN_SCRIPT_RE).
+
+      * cs_title is empty / None (after stripping whitespace).
+      * cs_title contains any glyph in one of the non-Latin script blocks
+        listed in _NON_LATIN_SCRIPT_RE (CJK, kana, Hangul, Devanagari, Arabic,
+        Cyrillic, Hebrew, Thai).
+      * cs_title equals en_title verbatim — TMDB returned the same string for
+        both languages, meaning there is no separate Czech translation.
+      * cs_title equals original_title *and* original_title itself contains a
+        non-Latin script. This catches the "TMDB echoed the foreign original"
+        case without wrongly rejecting Czech films (where original_title IS
+        Czech, so cs == original is the desired state).
     """
     if not cs_title:
         return False
-    if original_title and cs_title == original_title:
-        return False
-    if en_title and cs_title == en_title:
+    cs_title = cs_title.strip()
+    if not cs_title:
         return False
     if _NON_LATIN_SCRIPT_RE.search(cs_title):
+        return False
+    if en_title and cs_title == en_title.strip():
+        return False
+    if (original_title
+            and cs_title == original_title.strip()
+            and _NON_LATIN_SCRIPT_RE.search(original_title)):
         return False
     return True
 
