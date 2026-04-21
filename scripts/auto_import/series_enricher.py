@@ -92,7 +92,7 @@ def _genre_id_lookup(cur) -> dict[str, int]:
 def ensure_series(
     conn: psycopg2.extensions.connection,
     tv: TvResolution,
-    cover_dir: Path,
+    cover_dir: str,
 ) -> tuple[bool, int | None]:
     """Find existing series or create a new one.
 
@@ -137,14 +137,14 @@ def ensure_series(
     cur.execute(
         """INSERT INTO series
            (title, original_title, slug, first_air_year, last_air_year,
-            description, generated_description, imdb_id, tmdb_id,
+            description, imdb_id, tmdb_id,
             season_count, episode_count, cover_filename, added_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
            RETURNING id""",
         (
             name_cs, name_en if name_en != name_cs else None, slug,
             tv.first_air_year, tv.last_air_year,
-            description, generated,
+            description,
             tv.imdb_id, tv.tmdb_id,
             tv.season_count, tv.episode_count,
             cover_filename,
@@ -244,7 +244,7 @@ def process_series_batch(
     *,
     tv: TvResolution,
     episodes_to_add: list[tuple[int, int, int, int | None, list[str], bool, bool]],
-    cover_dir: Path,
+    cover_dir: str,
 ) -> list[tuple[str, int | None, int, int]]:
     """Single series + multiple new episodes — exactly ONE series creation.
 

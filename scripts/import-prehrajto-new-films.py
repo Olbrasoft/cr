@@ -13,7 +13,9 @@ Metadata comes from TMDB, never from prehraj.to upload titles:
   * `year`           = `.release_date[:4]`
   * `runtime_min`    = `.runtime`
   * `cover_filename` = downloaded via auto_import.cover_downloader.download_cover
-  * `generated_description` = NULL (filled later by Gemma-4 SEO job, #527)
+  * `description` = copied raw from TMDB overview (cs-CZ, en-US fallback).
+    Post-migration-051 this is later overwritten by the Gemma rewrite pipeline
+    `scripts/backfill_prehrajto_gemma.py` so the live site serves a unique text.
 
 Safety guarantees (hard-enforced at runtime):
   - Never DELETE from films, film_prehrajto_uploads, or any other table.
@@ -406,10 +408,10 @@ def tmdb_get(path: str, params: dict,
 
 
 def _cover_worker(poster_path: str, slug: str,
-                  covers_dir: Path) -> tuple | None:
-    """Thread-pool task for downloading a TMDB poster. Returns the WebP
-    paths tuple (small, large) on success, None on failure. Logged
-    failures do not raise — they're tallied from the future's result."""
+                  covers_dir: str) -> str | None:
+    """Thread-pool task for downloading a TMDB poster. Returns the R2 key
+    on success, None on failure. Logged failures do not raise — they're
+    tallied from the future's result."""
     try:
         return download_cover(poster_path, slug, covers_dir)
     except Exception as e:  # noqa: BLE001 — isolate per-film failures
@@ -491,8 +493,8 @@ def main() -> int:
                     help="Directory containing video-sitemap-*.xml files")
     ap.add_argument("--matches", required=True,
                     help="Path to matches-full.csv (from pilot)")
-    ap.add_argument("--covers-dir", default="data/movies/covers-webp",
-                    help="Directory to write cover WebPs into (created if missing)")
+    ap.add_argument("--r2-prefix", default="films",
+                    help="R2 object prefix for uploaded covers (default: films)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Run end-to-end but ROLLBACK at the end — no writes persisted "
                          "and no cover files left behind (covers are deleted if dry-run)")
@@ -531,8 +533,7 @@ def main() -> int:
         log.error("no video-sitemap-*.xml files in %s", sitemap_dir)
         return 2
 
-    covers_dir = Path(args.covers_dir)
-    covers_dir.mkdir(parents=True, exist_ok=True)
+    covers_dir = args.r2_prefix  # R2 prefix string (e.g. "films"); no disk dir anymore
 
     # ---- Load matches from pilot CSV ----
     log.info("Loading matches from %s ...", args.matches)
@@ -625,7 +626,7 @@ def main() -> int:
         # conflict target is well-defined.
         insert_film_sql = """
         INSERT INTO films (
-            title, original_title, slug, year, description, generated_description,
+            title, original_title, slug, year, description,
             imdb_id, tmdb_id, runtime_min, cover_filename,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
@@ -634,7 +635,7 @@ def main() -> int:
             prehrajto_primary_upload_id, prehrajto_has_sk_dub, prehrajto_has_sk_subs,
             created_at, added_at
         ) VALUES (
-            %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s, NULL,
+            %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
             %(imdb_id)s, %(tmdb_id)s, %(runtime_min)s, %(cover_filename)s,
             NULL, NULL,
             NULL, NULL, NULL,

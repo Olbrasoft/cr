@@ -93,7 +93,7 @@ def upsert_film(
     sktorrent_cdn: int | None,
     sktorrent_qualities: list[str],
     movie: MovieResolution,
-    cover_dir: Path,
+    cover_dir: str,
     has_dub: bool = False,
     has_subtitles: bool = False,
     csfd_rating: int | None = None,
@@ -106,7 +106,7 @@ def upsert_film(
         sktorrent_cdn: 1-9 (online{N})
         sktorrent_qualities: ["720p", "480p", ...]
         movie: TMDB resolution (must have imdb_id)
-        cover_dir: where to save webp covers (e.g. data/movies/covers-webp)
+        cover_dir: R2 prefix (no trailing slash), e.g. "films" or "series"
 
     Returns:
         (action, film_id) — action is one of "updated_film", "added_film", "skipped"
@@ -196,17 +196,17 @@ def upsert_film(
     imdb_rating = movie.vote_average
     cur.execute(
         """INSERT INTO films
-           (title, original_title, slug, year, description, generated_description,
+           (title, original_title, slug, year, description,
             imdb_id, tmdb_id, runtime_min, cover_filename,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             added_at, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
-            description, generated,
+            description,
             movie.imdb_id, movie.tmdb_id, movie.runtime_min, cover_filename,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
