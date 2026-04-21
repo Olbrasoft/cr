@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, asdict
 from typing import TYPE_CHECKING
@@ -41,6 +42,48 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 DEFAULT_TIMEOUT = 15
 
 log = logging.getLogger(__name__)
+
+
+# Script blocks that would render as unreadable glyphs on a Czech-locale page.
+# Used to detect when TMDB's cs-CZ endpoint fell back to the original-language
+# title instead of returning a real Czech translation.
+_NON_LATIN_SCRIPT_RE = re.compile(
+    "["
+    "\u4E00-\u9FFF"   # CJK Unified Ideographs (Chinese, common Japanese kanji)
+    "\u3040-\u30FF"   # Hiragana + Katakana
+    "\uAC00-\uD7AF"   # Korean Hangul syllables
+    "\u0900-\u097F"   # Devanagari (Hindi, Marathi, ...)
+    "\u0600-\u06FF"   # Arabic
+    "\u0400-\u04FF"   # Cyrillic
+    "\u0500-\u052F"   # Cyrillic Supplement
+    "\u05D0-\u05EA"   # Hebrew letters
+    "\u0E00-\u0E7F"   # Thai
+    "]"
+)
+
+
+def is_usable_cs_title(cs_title: str | None, en_title: str | None, original_title: str | None) -> bool:
+    """Decide whether TMDB's cs-CZ title is an actual Czech translation.
+
+    TMDB's /movie?language=cs-CZ endpoint returns the original-language title
+    as a fallback when no Czech entry exists, not null. That leaves us with a
+    "title_cs" that is really Hindi/Japanese/Korean/etc. — unreadable on a
+    Czech site. Treat the value as unusable when any of the following holds:
+      * cs_title is empty / None
+      * cs_title equals original_title verbatim (TMDB echoed the fallback)
+      * cs_title equals en_title verbatim (no separate Czech translation)
+      * cs_title contains glyphs outside the Latin-extended + European
+        diacritics range (see _NON_LATIN_SCRIPT_RE).
+    """
+    if not cs_title:
+        return False
+    if original_title and cs_title == original_title:
+        return False
+    if en_title and cs_title == en_title:
+        return False
+    if _NON_LATIN_SCRIPT_RE.search(cs_title):
+        return False
+    return True
 
 
 @dataclass
@@ -261,12 +304,17 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
     va_raw = src.get("vote_average") or src_en.get("vote_average")
     vote_average = float(va_raw) if va_raw else None
 
+    raw_cs_title = (cs or {}).get("title")
+    en_title = src_en.get("title") or src.get("title")
+    original_title = src.get("original_title")
+    title_cs = raw_cs_title if is_usable_cs_title(raw_cs_title, en_title, original_title) else None
+
     return MovieResolution(
         tmdb_id=tmdb_id,
         imdb_id=src.get("imdb_id") or src_en.get("imdb_id"),
-        title_cs=(cs or {}).get("title"),
-        title_en=src_en.get("title") or src.get("title"),
-        original_title=src.get("original_title"),
+        title_cs=title_cs,
+        title_en=en_title,
+        original_title=original_title,
         overview_cs=((cs or {}).get("overview") or "").strip() or None,
         overview_en=(src_en.get("overview") or "").strip() or None,
         year=year,
@@ -297,12 +345,17 @@ def _build_tv_resolution(session: requests.Session, candidate: dict, score: floa
     lad = (cs or src_en).get("last_air_date") or ""
     last_year = int(lad[:4]) if len(lad) >= 4 and lad[:4].isdigit() else None
 
+    raw_cs_name = (cs or {}).get("name")
+    en_name = src_en.get("name") or src.get("name")
+    original_name = src.get("original_name")
+    name_cs = raw_cs_name if is_usable_cs_title(raw_cs_name, en_name, original_name) else None
+
     return TvResolution(
         tmdb_id=tmdb_id,
         imdb_id=ext.get("imdb_id"),
-        name_cs=(cs or {}).get("name"),
-        name_en=src_en.get("name") or src.get("name"),
-        original_name=src.get("original_name"),
+        name_cs=name_cs,
+        name_en=en_name,
+        original_name=original_name,
         overview_cs=((cs or {}).get("overview") or "").strip() or None,
         overview_en=(src_en.get("overview") or "").strip() or None,
         first_air_year=first_year,
