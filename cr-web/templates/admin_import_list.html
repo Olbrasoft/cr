@@ -19,7 +19,7 @@
 <main class="admin-import-page">
     <nav class="breadcrumb">
         <a href="/" title="Domů">Česká republika</a>
-        <span>›</span> <span>Admin</span>
+        <span>›</span> <a href="/admin/" title="Admin rozcestník">Admin</a>
         <span>›</span> <span>Auto-import</span>
     </nav>
 
@@ -52,6 +52,8 @@
                 <th>Filmy +</th>
                 <th>Seriály +</th>
                 <th>Epizody +</th>
+                <th>TV show +</th>
+                <th>TV epizoda +</th>
                 <th>Doplněno</th>
                 <th>Selhalo</th>
                 <th>Přeskočeno</th>
@@ -69,6 +71,8 @@
                 <td>{{ r.added_films }}</td>
                 <td>{{ r.added_series }}</td>
                 <td>{{ r.added_episodes }}</td>
+                <td>{{ r.added_tv_shows }}</td>
+                <td>{{ r.added_tv_episodes }}</td>
                 <td>{{ r.updated_films + r.updated_episodes }}</td>
                 <td class="{% if r.failed_count > 0 %}error-cell{% endif %}">{{ r.failed_count }}</td>
                 <td>{{ r.skipped_count }}</td>
