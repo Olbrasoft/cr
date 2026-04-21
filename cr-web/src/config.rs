@@ -25,9 +25,14 @@ pub struct AppConfig {
     pub geojson_dir: String,
     /// Root for /static/*.
     pub static_dir: String,
-    /// Film WebP covers (small variant).
+    /// Legacy film WebP covers dir. Kept in config so an old env var doesn't
+    /// crash boot, but the serving path now proxies R2 via the cr-img-proxy
+    /// Worker (see docs/IMAGE_PIPELINE.md rule 1). Will be dropped alongside
+    /// the volume mount in epic #552.
+    #[allow(dead_code)]
     pub film_covers_dir: String,
-    /// Series WebP covers (small variant).
+    /// Legacy series WebP covers dir. Same rationale as `film_covers_dir`.
+    #[allow(dead_code)]
     pub series_covers_dir: String,
     /// Series episode stills (small variant).
     pub series_stills_dir: String,
@@ -48,6 +53,13 @@ pub struct AppConfig {
     /// Optional CZ-hosted proxy for scraping geo-blocked sources (prehraj.to,
     /// SK Torrent). None if unconfigured.
     pub cz_proxy: Option<CzProxyConfig>,
+    /// Hard gate on the sledujteto.cz POC surface (issue #551): the
+    /// `/admin/test-sledujteto/` diagnostic page and the `/api/sledujteto/*`
+    /// endpoints it consumes. Both register only when
+    /// `SLEDUJTETO_POC_ENABLED=1`. Off by default so a forgotten POC can't
+    /// drive uncached upstream load on production. The proper, cached
+    /// three-source handler lands in #547 and replaces these.
+    pub sledujteto_poc_enabled: bool,
     /// Serve the detail-page "Další zdroje" block from
     /// `film_prehrajto_uploads` (DB) instead of the legacy live
     /// search + per-result validate against prehraj.to. Set
@@ -126,6 +138,9 @@ impl AppConfig {
             Ok("1")
         );
 
+        let sledujteto_poc_enabled =
+            matches!(std::env::var("SLEDUJTETO_POC_ENABLED").as_deref(), Ok("1"));
+
         let cf_cache_purge = match (
             std::env::var("CF_CACHE_PURGE_TOKEN")
                 .ok()
@@ -151,6 +166,7 @@ impl AppConfig {
             admin_cache_purge_enabled,
             cz_proxy,
             prehrajto_sources_from_db,
+            sledujteto_poc_enabled,
             cf_cache_purge,
         }))
     }

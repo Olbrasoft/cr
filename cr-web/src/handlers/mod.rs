@@ -13,6 +13,7 @@ pub mod admin_backups;
 pub mod admin_cache;
 pub mod admin_dashboard;
 pub mod admin_import;
+mod admin_test_sledujteto;
 mod audiobooks;
 mod download_video;
 mod films;
@@ -29,6 +30,7 @@ mod tv_porady;
 pub mod video_api;
 
 // Re-export all public handlers so main.rs doesn't need changes
+pub use admin_test_sledujteto::admin_test_sledujteto;
 pub use audiobooks::audiobooks;
 pub use download_video::download_video;
 pub use films::{SktorrentSource, films_detail, films_list, films_search, sktorrent_resolve};

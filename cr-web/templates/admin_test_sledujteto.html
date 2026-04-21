@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Test sledujteto.cz{% endblock %}
+
+{% block meta_description %}Diagnostická stránka pro sledujteto.cz — ověření hash-gen a www CDN přehrávání z produkce.{% endblock %}
+
+{% block og_title %}Admin — Test sledujteto.cz{% endblock %}
+{% block og_description %}Diagnostická stránka pro sledujteto.cz.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/admin/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <h1>Admin — Test sledujteto.cz</h1>
+    </a>
+</div>
+{% endblock %}
+
+{% block header_search %}{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem"></div>
+{% endblock %}
+
+{% block head %}
+<meta name="robots" content="noindex, nofollow">
+<style>
+.movies-hero { text-align: center; padding: 2.5rem 0 1.5rem; }
+.movies-hero h2 { font-size: 2rem; font-weight: 800; color: var(--color-black); }
+.movies-hero p { color: #555; margin-top: 0.5rem; font-size: 1.05rem; }
+.movies-hero .source-note { display: inline-block; margin-top: 0.5rem; padding: 0.25rem 0.75rem; background: #fff4e0; border-radius: 16px; font-size: 0.82rem; color: #7a4a00; }
+
+.search-card { background: white; border-radius: 12px; box-shadow: var(--shadow-premium); border: 1px solid var(--color-gray-border); padding: 2rem; margin-bottom: 2rem; }
+.search-group { display: flex; gap: 0.75rem; }
+.search-input { flex: 1; padding: 0.85rem 1rem; border: 2px solid var(--color-gray-border); border-radius: 24px; font-size: 1rem; font-family: 'Inter', sans-serif; transition: border-color 0.2s; }
+.search-input:focus { outline: none; border-color: var(--color-blue); box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15); }
+.search-input::placeholder { color: #aaa; }
+.btn-search { background: var(--color-red); color: white; border: none; border-radius: 24px; padding: 0.85rem 1.5rem; font-size: 1rem; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer; transition: background 0.15s; white-space: nowrap; }
+.btn-search:hover { background: var(--color-blue); color: white; }
+.btn-search:disabled { background: #ccc; cursor: default; }
+
+.results-info { color: #888; font-size: 0.9rem; margin-bottom: 1rem; }
+.results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1.25rem; }
+.movie-card { background: white; border-radius: 10px; border: 1px solid var(--color-gray-border); overflow: hidden; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; text-decoration: none; color: inherit; display: block; }
+.movie-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+.movie-card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #e8e8e8; }
+.movie-card .card-info { padding: 0.75rem; }
+.movie-card .card-title { font-weight: 600; font-size: 0.88rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--color-black); }
+.movie-card .card-meta { color: #888; font-size: 0.78rem; margin-top: 0.25rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.movie-card .card-meta .meta-hd { color: white; background: var(--color-red); padding: 0 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
+
+.player-section { display: none; margin-bottom: 2rem; }
+.player-section.visible { display: block; }
+.btn-back { background: var(--color-gray-border); color: var(--color-black); border: none; border-radius: 20px; padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: 500; font-family: 'Inter', sans-serif; cursor: pointer; margin-bottom: 1rem; transition: background 0.15s; }
+.btn-back:hover { background: #ccc; }
+.video-container { background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16/9; }
+.video-container video { width: 100%; height: 100%; }
+.now-playing { margin-top: 0.75rem; font-size: 1.1rem; font-weight: 700; color: var(--color-black); }
+
+.status-msg { display: none; text-align: center; padding: 1rem; font-size: 0.95rem; color: #555; }
+.status-msg.visible { display: block; }
+.status-msg.error { color: var(--color-red); }
+
+.poc-section { margin: 1.5rem 0; padding: 1rem; background: #fff9e6; border: 1px solid #f0d97a; border-radius: 10px; }
+.poc-section h3 { margin: 0 0 0.25rem; font-size: 1rem; color: #7a4a00; font-weight: 700; }
+.poc-section p { margin: 0 0 0.75rem; font-size: 0.82rem; color: #7a4a00; }
+.poc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.5rem; }
+.poc-tile { background: white; border: 1px solid var(--color-gray-border); border-radius: 6px; padding: 0.55rem 0.7rem; cursor: pointer; font-size: 0.82rem; transition: transform 0.1s, border-color 0.15s; text-align: left; }
+.poc-tile:hover { transform: translateY(-2px); border-color: var(--color-blue); }
+.poc-tile strong { display: block; color: var(--color-black); margin-bottom: 0.15rem; font-size: 0.88rem; }
+.poc-tile .meta { color: #888; font-size: 0.72rem; }
+.poc-tile.expected-fail { background: #fff0f0; border-color: #f4c0c0; }
+.poc-tile.expected-fail strong::after { content: " ✗"; color: var(--color-red); }
+.spinner-sm { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--color-gray-border); border-top-color: var(--color-blue); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 600px) {
+    .search-group { flex-direction: column; }
+    .movies-hero h2 { font-size: 1.5rem; }
+    .results-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <a href="/admin/">Admin</a> &raquo; <span>Test sledujteto.cz</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="movies-hero">
+    <h2>Test sledujteto.cz</h2>
+    <p>Interní diagnostika — ověření hash-gen a přehrávání z produkční IP.</p>
+    <span class="source-note">Zdroj: sledujteto.cz — stream www.* funguje z Hetzneru, data{N}.* vyžaduje CZ/SK IP.</span>
+</section>
+
+<section class="poc-section" id="poc-section">
+    <h3>Rychlé testy (issue #551 POC)</h3>
+    <p>Natvrdo zakódované filmy pro ověření přehrávání z produkční IP (Hetzner AS24940). „www" = www.sledujteto.cz (očekávaně funkční), „dataN" = geo-blokované (očekávaně selže).</p>
+    <div class="poc-grid">
+        <button type="button" class="poc-tile" data-files-id="15546" data-title="Matrix 1 (1999) CZ dabing"><strong>Matrix 1</strong><span class="meta">CZ dab · SD · www</span></button>
+        <button type="button" class="poc-tile" data-files-id="15545" data-title="Matrix 2 Reloaded (2003) CZ dabing"><strong>Matrix 2 Reloaded</strong><span class="meta">CZ dab · SD · www</span></button>
+        <button type="button" class="poc-tile" data-files-id="15532" data-title="Matrix 3 Revolutions (2003) CZ dabing"><strong>Matrix 3 Revolutions</strong><span class="meta">CZ dab · SD · www</span></button>
+        <button type="button" class="poc-tile expected-fail" data-files-id="88496" data-title="Matrix Revolutions (2003) 1080p"><strong>Matrix Revolutions 1080p</strong><span class="meta">CZ dab · FHD · data10 (test blocklistu)</span></button>
+        <button type="button" class="poc-tile" data-files-id="60920" data-title="Matrix 4 Resurrections (2021) HD"><strong>Matrix 4 Resurrections</strong><span class="meta">CZ dab · HD</span></button>
+        <button type="button" class="poc-tile" data-files-id="49963" data-title="Pelíšky (1999) FHD"><strong>Pelíšky</strong><span class="meta">CZ · FHD 1080p</span></button>
+        <button type="button" class="poc-tile" data-files-id="50000" data-title="Test ID 50000"><strong>Test ID 50000</strong><span class="meta">demo</span></button>
+        <button type="button" class="poc-tile" data-files-id="42000" data-title="Test ID 42000"><strong>Test ID 42000</strong><span class="meta">demo</span></button>
+    </div>
+</section>
+
+<div class="search-card">
+    <div class="search-group">
+        <label for="search-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">Hledat film nebo seriál</label>
+        <input type="text" class="search-input" id="search-input"
+               placeholder="Hledej film nebo seriál (např. Matrix, Angelika, Banda)"
+               autocomplete="off" spellcheck="false">
+        <button class="btn-search" id="btn-search">Hledat</button>
+    </div>
+    <div class="search-group" style="margin-top:0.75rem;">
+        <input type="text" class="search-input" id="files-id-input"
+               placeholder="Nebo zadej files_id přímo (např. 74237 pro Banda S04E03)"
+               autocomplete="off" inputmode="numeric" pattern="[0-9]*">
+        <button class="btn-search" id="btn-play-id" style="background:var(--color-blue);">Přehrát</button>
+    </div>
+    <p style="margin:0.75rem 0 0; font-size:0.8rem; color:#888;">
+        Tip: <code>files_id</code> najdeš v URL detailu na sledujteto.cz (<code>data-ng-init="init(N,...)"</code> v HTML) — viz pole <code>id</code> v API <code>/api/sledujteto/search</code>.
+    </p>
+</div>
+
+<div class="status-msg" id="status-msg">
+    <span class="spinner-sm" id="status-spinner" style="display:none;"></span>
+    <span id="status-text"></span>
+</div>
+
+<div class="player-section" id="player-section">
+    <button class="btn-back" id="btn-back">&#8592; Zpět na výsledky</button>
+    <div class="video-container">
+        <video id="video-player" controls preload="metadata"></video>
+    </div>
+    <div class="now-playing" id="now-playing"></div>
+</div>
+
+<div id="results-section" style="display:none;">
+    <div class="results-info" id="results-info"></div>
+    <div class="results-grid" id="results-grid"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    var searchInput = document.getElementById('search-input');
+    var btnSearch = document.getElementById('btn-search');
+    var statusMsg = document.getElementById('status-msg');
+    var statusSpinner = document.getElementById('status-spinner');
+    var statusText = document.getElementById('status-text');
+    var resultsSection = document.getElementById('results-section');
+    var resultsGrid = document.getElementById('results-grid');
+    var resultsInfo = document.getElementById('results-info');
+    var playerSection = document.getElementById('player-section');
+    var videoPlayer = document.getElementById('video-player');
+    var nowPlaying = document.getElementById('now-playing');
+    var btnBack = document.getElementById('btn-back');
+
+    var currentResults = [];
+
+    function showStatus(text, isError, loading) {
+        statusText.textContent = text;
+        statusSpinner.style.display = loading ? 'inline-block' : 'none';
+        statusMsg.classList.add('visible');
+        statusMsg.classList.toggle('error', !!isError);
+    }
+    function hideStatus() {
+        statusMsg.classList.remove('visible');
+        statusMsg.classList.remove('error');
+    }
+    function showResults() {
+        resultsSection.style.display = 'block';
+        playerSection.classList.remove('visible');
+    }
+    function showPlayer() {
+        resultsSection.style.display = 'none';
+        playerSection.classList.add('visible');
+    }
+
+    btnSearch.addEventListener('click', searchMovies);
+    searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); searchMovies(); }
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.poc-tile'), function(tile) {
+        tile.addEventListener('click', function() {
+            var id = parseInt(tile.getAttribute('data-files-id'), 10);
+            var title = tile.getAttribute('data-title') || ('Video ' + id);
+            if (!id) return;
+            window.history.pushState({}, '', '/admin/test-sledujteto/?watch=' + id + '&title=' + encodeURIComponent(title));
+            playMovie({ files_id: id, name: title });
+        });
+    });
+
+    var filesIdInput = document.getElementById('files-id-input');
+    var btnPlayId = document.getElementById('btn-play-id');
+    function playById() {
+        var id = parseInt((filesIdInput.value || '').trim(), 10);
+        if (!id || id <= 0) {
+            showStatus('Zadej platn\u00e9 files_id (cel\u00e9 kladn\u00e9 \u010d\u00edslo).', true);
+            return;
+        }
+        window.history.pushState({}, '', '/admin/test-sledujteto/?watch=' + id);
+        playMovie({ files_id: id, name: 'Video ' + id });
+    }
+    btnPlayId.addEventListener('click', playById);
+    filesIdInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); playById(); }
+    });
+
+    function searchMovies() {
+        var query = searchInput.value.trim();
+        if (!query) {
+            showStatus('Zadejte n\u00e1zev filmu nebo seri\u00e1lu.', true);
+            return;
+        }
+        stopVideo();
+        window.history.pushState({}, '', '/admin/test-sledujteto/?q=' + encodeURIComponent(query));
+        showStatus('Vyhled\u00e1v\u00e1m\u2026', false, true);
+        resultsSection.style.display = 'none';
+        playerSection.classList.remove('visible');
+        btnSearch.disabled = true;
+
+        fetch('/api/sledujteto/search?q=' + encodeURIComponent(query))
+            .then(function(r) {
+                if (!r.ok) throw new Error('Server vr\u00e1til chybu ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                if (data.success && data.movies && data.movies.length > 0) {
+                    currentResults = data.movies;
+                    hideStatus();
+                    displayResults(data.movies, query);
+                } else if (data.success) {
+                    showStatus('Nic nenalezeno pro \u201e' + query + '\u201c', true);
+                } else {
+                    showStatus('Chyba: ' + (data.error || 'nezn\u00e1m\u00e1'), true);
+                }
+            })
+            .catch(function(err) { showStatus('Chyba: ' + err.message, true); })
+            .finally(function() { btnSearch.disabled = false; });
+    }
+
+    function displayResults(movies, query) {
+        resultsInfo.textContent = 'Nalezeno ' + movies.length + ' v\u00fdsledk\u016f pro \u201e' + query + '\u201c';
+        resultsGrid.innerHTML = '';
+        movies.forEach(function(movie) {
+            var card = document.createElement('a');
+            card.className = 'movie-card';
+            card.href = '/admin/test-sledujteto/?watch=' + movie.files_id +
+                        '&title=' + encodeURIComponent(movie.name);
+            card.onclick = function(e) {
+                if (!e.ctrlKey && !e.metaKey && e.button === 0) {
+                    e.preventDefault();
+                    window.history.pushState({}, '', card.href);
+                    playMovie(movie);
+                }
+            };
+            if (movie.preview) {
+                var img = document.createElement('img');
+                img.src = movie.preview;
+                img.alt = movie.name;
+                img.loading = 'lazy';
+                img.onerror = function() { this.style.visibility = 'hidden'; };
+                card.appendChild(img);
+            } else {
+                var ph = document.createElement('div');
+                ph.style.width = '100%';
+                ph.style.aspectRatio = '16/9';
+                ph.style.background = '#ddd';
+                card.appendChild(ph);
+            }
+            var info = document.createElement('div');
+            info.className = 'card-info';
+            var title = document.createElement('div');
+            title.className = 'card-title';
+            title.textContent = movie.name;
+            info.appendChild(title);
+            var meta = document.createElement('div');
+            meta.className = 'card-meta';
+            if (movie.is_hd) {
+                var hd = document.createElement('span');
+                hd.className = 'meta-hd';
+                hd.textContent = 'HD';
+                meta.appendChild(hd);
+            }
+            if (movie.duration) meta.appendChild(metaSpan(movie.duration));
+            if (movie.filesize) meta.appendChild(metaSpan(movie.filesize));
+            if (typeof movie.views === 'number') meta.appendChild(metaSpan(movie.views + '\u00a0zhl.'));
+            info.appendChild(meta);
+            card.appendChild(info);
+            resultsGrid.appendChild(card);
+        });
+        showResults();
+    }
+
+    function metaSpan(text) { var s = document.createElement('span'); s.textContent = text; return s; }
+
+    function playMovie(movie) {
+        showStatus('Na\u010d\u00edt\u00e1m zdroj\u2026', false, true);
+        showPlayer();
+        nowPlaying.textContent = movie.name || movie.title || ('Video ' + movie.files_id);
+
+        fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(movie.files_id))
+            .then(function(r) {
+                if (!r.ok) throw new Error('Server vr\u00e1til chybu ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                if (data.success && data.video_url) {
+                    hideStatus();
+                    loadVideo(data.video_url);
+                } else {
+                    showStatus(data.error || 'Video se nepoda\u0159ilo na\u010d\u00edst.', true);
+                }
+            })
+            .catch(function(err) { showStatus('Chyba: ' + err.message, true); });
+    }
+
+    function loadVideo(url) {
+        stopVideo();
+        videoPlayer.src = url;
+        videoPlayer.play().catch(function() { /* autoplay blocked is fine, user hits play */ });
+    }
+
+    function stopVideo() {
+        videoPlayer.pause();
+        videoPlayer.src = '';
+        videoPlayer.load();
+    }
+
+    btnBack.addEventListener('click', function() {
+        stopVideo();
+        hideStatus();
+        playerSection.classList.remove('visible');
+        var query = searchInput.value.trim();
+        if (query) {
+            window.history.pushState({}, '', '/admin/test-sledujteto/?q=' + encodeURIComponent(query));
+        } else {
+            window.history.pushState({}, '', '/admin/test-sledujteto/');
+        }
+        if (currentResults.length > 0) resultsSection.style.display = 'block';
+    });
+
+    window.addEventListener('popstate', function() {
+        var params = new URLSearchParams(window.location.search);
+        var watchId = params.get('watch');
+        var watchTitle = params.get('title');
+        var searchQuery = params.get('q');
+        stopVideo();
+        if (watchId) {
+            playMovie({ files_id: watchId, name: watchTitle || ('Video ' + watchId) });
+        } else if (searchQuery) {
+            searchInput.value = searchQuery;
+            if (currentResults.length > 0) { hideStatus(); showResults(); }
+            else { searchMovies(); }
+        } else {
+            hideStatus();
+            resultsSection.style.display = 'none';
+            playerSection.classList.remove('visible');
+        }
+    });
+
+    var params = new URLSearchParams(window.location.search);
+    var watchId = params.get('watch');
+    var watchTitle = params.get('title');
+    var q = params.get('q');
+    if (watchId) {
+        playMovie({ files_id: watchId, name: watchTitle || ('Video ' + watchId) });
+    } else if (q) {
+        searchInput.value = q;
+        searchMovies();
+    }
+})();
+</script>
+{% endblock %}
