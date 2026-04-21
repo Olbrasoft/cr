@@ -972,96 +972,80 @@ pub async fn films_cover_large(
 /// Detail-page thumbnails get few hits, so we skip R2 storage and stream the
 /// TMDB image through. Cloudflare caches the response for a year, so each
 /// edge fetches TMDB at most once per (edge, poster) — the next visitor is
-/// served from cache. Fallback chain when TMDB has no poster or fails:
-/// small R2 cover (`no-store` so a later backfill can unseat it) → 1×1
-/// placeholder.
+/// served from cache. On failure we serve a placeholder in the SAME format
+/// the URL advertises (jpeg for `-large.jpg`, png for `-large.png`) so
+/// browsers and OG scrapers decode without a MIME mismatch — the template's
+/// `og:image:type` is derived from the same URL extension.
 pub async fn films_cover_large_dynamic(
     State(state): State<AppState>,
     Path(slug_ext): Path<String>,
 ) -> WebResult<Response> {
-    use crate::handlers::cover_proxy::{
-        new_r2_key, no_store_webp, old_r2_key, placeholder_webp, try_fetch_r2,
-    };
+    use crate::handlers::cover_proxy::placeholder_for_ext;
 
-    // Strip `-large.jpg` / `-large.png`, whichever the request carried.
-    let slug = slug_ext
-        .strip_suffix("-large.jpg")
-        .or_else(|| slug_ext.strip_suffix("-large.png"))
-        .unwrap_or(&slug_ext);
+    // Strip `-large.jpg` / `-large.png`, whichever the request carried, and
+    // remember the extension so fallbacks can emit bytes of the same type.
+    let (slug, ext) = if let Some(s) = slug_ext.strip_suffix("-large.jpg") {
+        (s, "jpg")
+    } else if let Some(s) = slug_ext.strip_suffix("-large.png") {
+        (s, "png")
+    } else {
+        (slug_ext.as_str(), "jpg")
+    };
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
-        id: i32,
-        cover_filename: Option<String>,
         tmdb_poster_path: Option<String>,
     }
 
     let row = sqlx::query_as::<_, CoverRow>(
-        "SELECT id, cover_filename, tmdb_poster_path FROM films WHERE slug = $1",
+        "SELECT tmdb_poster_path FROM films WHERE slug = $1",
     )
     .bind(slug)
     .fetch_optional(&state.db)
     .await?;
 
-    let Some(row) = row else {
-        return Ok(placeholder_webp());
+    // Row missing or poster_path not backfilled → placeholder in requested
+    // format. The small-cover (`/filmy-online/{slug}.webp`) route still
+    // serves the list-view thumbnail from R2, so nothing user-visible
+    // depends on this handler synthesising something from R2.
+    let Some(path) = row.and_then(|r| r.tmdb_poster_path) else {
+        return Ok(placeholder_for_ext(ext));
     };
 
-    // 1) TMDB proxy via image.tmdb.org. Preserve whatever content type
-    //    TMDB returns (jpg/png) so the client decodes correctly — the URL
-    //    suffix we route on was chosen from the same poster_path.
-    if let Some(path) = row.tmdb_poster_path.as_deref() {
-        let url = format!("https://image.tmdb.org/t/p/w780{path}");
-        if let Ok(resp) = state
-            .http_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-            && resp.status().is_success()
-        {
-            let ct = resp
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "image/jpeg".to_string());
-            if let Ok(bytes) = resp.bytes().await {
-                return Ok((
-                    StatusCode::OK,
-                    [
-                        (axum::http::header::CONTENT_TYPE, ct),
-                        (
-                            axum::http::header::CACHE_CONTROL,
-                            "public, max-age=31536000, immutable".to_string(),
-                        ),
-                    ],
-                    bytes.to_vec(),
-                )
-                    .into_response());
-            }
-        }
+    let url = format!("https://image.tmdb.org/t/p/w780{path}");
+    let Ok(resp) = state
+        .http_client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    if !resp.status().is_success() {
+        return Ok(placeholder_for_ext(ext));
     }
-
-    // 2) Small R2 cover as a transient fallback — keeps something visible
-    //    while TMDB is unreachable or the row has no poster_path yet.
-    let small_candidates: Vec<String> = std::iter::once(new_r2_key("films", row.id, false))
-        .chain(
-            row.cover_filename
-                .as_deref()
-                .map(|cf| old_r2_key("films", cf, false)),
-        )
-        .collect();
-    for key in &small_candidates {
-        if let Some(bytes) = try_fetch_r2(&state, key).await {
-            // `no-store` on purpose: TMDB is the canonical source once the
-            // row is backfilled — we want a subsequent request to try TMDB
-            // again instead of serving the small cover from cache for a year.
-            return Ok(no_store_webp(bytes));
-        }
-    }
-
-    Ok(placeholder_webp())
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let Ok(bytes) = resp.bytes().await else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, ct),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response())
 }
 
 // --- Sktorrent resolve API ---

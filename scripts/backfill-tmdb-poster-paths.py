@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Backfill `films.tmdb_poster_path` from TMDB API for issue #581.
+"""Backfill `tmdb_poster_path` from TMDB API for issue #581.
 
-Large film covers move from static R2 storage to a dynamic proxy that
-fetches `https://image.tmdb.org/t/p/w780{poster_path}` at request time.
-The `poster_path` string (e.g. `/mqlgZ…uJ.jpg`) is a content hash that
-cannot be derived from `tmdb_id`, so we store it once and reuse.
+Large covers move from static R2 storage to a dynamic proxy that fetches
+`https://image.tmdb.org/t/p/w780{poster_path}` at request time. The
+`poster_path` string (e.g. `/mqlgZ…uJ.jpg`) is a content hash that cannot
+be derived from `tmdb_id`, so we store it once and reuse.
 
 Usage:
     DATABASE_URL=postgres://... TMDB_API_KEY=... python3 scripts/backfill-tmdb-poster-paths.py [--table films|series|tv_shows] [--limit N]
+
+The `series` and `tv_shows` options require the corresponding migration
+landing with issues #582/#583 — the script aborts with a clear error if
+`tmdb_poster_path` doesn't exist on the chosen table.
 
 Idempotent — rows already holding a non-null `tmdb_poster_path` are skipped.
 """
@@ -73,6 +77,21 @@ def main() -> int:
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
     cur = conn.cursor()
+
+    # Preflight — fail fast with a clear message if the column hasn't been
+    # added to this table yet (e.g. running with --table series before #582
+    # has landed the series migration).
+    cur.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = 'tmdb_poster_path'",
+        (args.table,),
+    )
+    if cur.fetchone() is None:
+        raise SystemExit(
+            f"Table {args.table!r} has no tmdb_poster_path column. "
+            "Add it via the matching migration first "
+            "(films: #581, series: #582, tv_shows: #583)."
+        )
 
     select_sql = (
         f"SELECT {pk}, tmdb_id FROM {args.table} "
