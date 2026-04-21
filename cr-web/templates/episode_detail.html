@@ -648,7 +648,7 @@ function doSearch() {
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var rat = r.imdb_rating ? ' — TMDB ' + r.imdb_rating : '';
-                            return '<a href="/serialy-online/' + r.slug + '/" class="search-item" alt="' + r.title + '" title="' + r.title + '">'
+                            return '<a href="/serialy-online/' + r.slug + '/" class="search-item" title="' + r.title + '" aria-label="' + r.title + '">'
                                 + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
                         }).join('');
