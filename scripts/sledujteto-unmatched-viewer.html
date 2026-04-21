@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>sledujteto — nespárované filmy (issue #598)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1117;
+    --panel: #171923;
+    --border: #2a2e3d;
+    --text: #e4e6ee;
+    --muted: #8d94a7;
+    --accent: #4a9eff;
+    --accent-hover: #6bb0ff;
+    --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+  h1 { margin: 0; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 .meta { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+  .controls label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 4px; }
+  .controls input, .controls select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 4px; font-size: 13px; }
+  .controls input[type="search"] { width: 280px; }
+  .controls input[type="number"] { width: 70px; }
+  .stats { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .stats b { color: var(--text); }
+  main { padding: 0 20px 20px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th { text-align: left; padding: 8px 10px; background: var(--panel); border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  th:hover { color: var(--text); }
+  th .sort-arrow { display: inline-block; width: 10px; color: var(--accent); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: var(--panel); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.title { font-weight: 500; }
+  td.sample { color: var(--muted); font-size: 13px; }
+  td.actions { white-space: nowrap; }
+  a.btn { display: inline-block; padding: 3px 8px; margin-right: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; color: var(--accent); text-decoration: none; font-size: 12px; }
+  a.btn:hover { background: var(--accent); color: #000; border-color: var(--accent); }
+  a.btn.primary { background: var(--accent); color: #000; border-color: var(--accent); }
+  a.btn.primary:hover { background: var(--accent-hover); }
+  .pagination { display: flex; gap: 6px; align-items: center; margin-top: 16px; justify-content: center; }
+  .pagination button { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .pagination button:hover:not(:disabled) { background: var(--accent); color: #000; border-color: var(--accent); }
+  .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .pagination .page-info { color: var(--muted); font-size: 13px; padding: 0 8px; }
+  .empty { text-align: center; padding: 40px 0; color: var(--muted); }
+  .empty.error { color: var(--warn); }
+  code { background: var(--panel); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    sledujteto — nespárované filmy
+    <span class="meta" id="source-info">načítám…</span>
+  </h1>
+  <div class="controls">
+    <label>
+      datum:
+      <input type="date" id="date-picker">
+    </label>
+    <label>
+      hledat:
+      <input type="search" id="search" placeholder="název nebo sample…">
+    </label>
+    <label>
+      rok:
+      <input type="number" id="year-min" placeholder="od" min="1900" max="2100">
+      –
+      <input type="number" id="year-max" placeholder="do" min="1900" max="2100">
+    </label>
+    <label>
+      bez roku:
+      <select id="year-missing">
+        <option value="">zobrazit</option>
+        <option value="only">jen bez roku</option>
+        <option value="hide">skrýt</option>
+      </select>
+    </label>
+    <label>
+      per page:
+      <select id="page-size">
+        <option>25</option>
+        <option selected>50</option>
+        <option>100</option>
+        <option>250</option>
+      </select>
+    </label>
+    <span class="stats" id="stats"></span>
+  </div>
+</header>
+
+<main>
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="norm_title">Název <span class="sort-arrow"></span></th>
+        <th data-sort="sample_name">Sample upload <span class="sort-arrow"></span></th>
+        <th data-sort="year">Rok <span class="sort-arrow"></span></th>
+        <th data-sort="upload_count" class="num">Uploadů <span class="sort-arrow"></span></th>
+        <th>Odkazy</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none"></div>
+  <div class="pagination" id="pagination"></div>
+</main>
+
+<script>
+(function() {
+  const state = {
+    rows: [],
+    filtered: [],
+    sort: { col: "upload_count", dir: "desc" },
+    page: 1,
+    pageSize: 50,
+    search: "",
+    yearMin: null,
+    yearMax: null,
+    yearMissing: "",
+    date: new Date().toISOString().slice(0, 10),
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  function todayCsvPath(date) {
+    return `../data/sledujteto/sledujteto-films-unmatched-${date}.csv`;
+  }
+
+  // RFC 4180 CSV parser — handles quoted fields, embedded commas, and escaped quotes.
+  function parseCsv(text) {
+    const out = [];
+    let row = [];
+    let cur = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quoted) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { cur += '"'; i++; }
+          else quoted = false;
+        } else cur += c;
+      } else {
+        if (c === '"') quoted = true;
+        else if (c === ',') { row.push(cur); cur = ""; }
+        else if (c === '\n') { row.push(cur); out.push(row); row = []; cur = ""; }
+        else if (c === '\r') { /* skip */ }
+        else cur += c;
+      }
+    }
+    if (cur.length || row.length) { row.push(cur); out.push(row); }
+    return out;
+  }
+
+  async function loadCsv(date) {
+    state.date = date;
+    $("source-info").textContent = `načítám ${date}…`;
+    $("source-info").style.color = "";
+    try {
+      const url = todayCsvPath(date);
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+      const text = await r.text();
+      const rows = parseCsv(text);
+      if (!rows.length) throw new Error("CSV je prázdný");
+      const header = rows.shift();
+      const required = ["norm_title", "year", "upload_count", "sample_slug_id", "sample_name"];
+      const missing = required.filter(c => !header.includes(c));
+      if (missing.length) throw new Error(`CSV nemá sloupce: ${missing.join(", ")}`);
+      const iTitle = header.indexOf("norm_title");
+      const iYear = header.indexOf("year");
+      const iCount = header.indexOf("upload_count");
+      const iSlug = header.indexOf("sample_slug_id");
+      const iName = header.indexOf("sample_name");
+      state.rows = rows
+        .filter(r => r.length >= header.length && (r[iTitle] || r[iName]))
+        .map(r => ({
+          norm_title: r[iTitle] || "",
+          year: r[iYear] ? parseInt(r[iYear], 10) : null,
+          upload_count: parseInt(r[iCount] || "1", 10),
+          sample_slug_id: r[iSlug] || "",
+          sample_name: r[iName] || "",
+        }));
+      $("source-info").textContent = `zdroj: ${url} — ${state.rows.length.toLocaleString("cs-CZ")} záznamů`;
+      state.page = 1;
+      render();
+    } catch (e) {
+      state.rows = [];
+      render();
+      $("source-info").textContent = `CSV nenačteno: ${e.message}`;
+      $("source-info").style.color = "var(--warn)";
+      $("empty").style.display = "block";
+      $("empty").className = "empty error";
+      $("empty").innerHTML = `Soubor <code>${todayCsvPath(date)}</code> se nepodařilo načíst. Běží HTTP server z rootu repa? (<code>python3 -m http.server 8000</code>)`;
+    }
+  }
+
+  function applyFilters() {
+    const q = state.search.toLowerCase().trim();
+    const { yearMin, yearMax, yearMissing } = state;
+    state.filtered = state.rows.filter(r => {
+      if (q) {
+        const hay = (r.norm_title + " " + r.sample_name).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (yearMissing === "only" && r.year !== null) return false;
+      if (yearMissing === "hide" && r.year === null) return false;
+      if (yearMin !== null && (r.year === null || r.year < yearMin)) return false;
+      if (yearMax !== null && (r.year === null || r.year > yearMax)) return false;
+      return true;
+    });
+    const { col, dir } = state.sort;
+    const mul = dir === "asc" ? 1 : -1;
+    state.filtered.sort((a, b) => {
+      const va = a[col], vb = b[col];
+      if (va === vb) return 0;
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      return (va > vb ? 1 : -1) * mul;
+    });
+  }
+
+  function render() {
+    applyFilters();
+    const total = state.rows.length;
+    const filt = state.filtered.length;
+    const pages = Math.max(1, Math.ceil(filt / state.pageSize));
+    if (state.page > pages) state.page = pages;
+    const start = (state.page - 1) * state.pageSize;
+    const slice = state.filtered.slice(start, start + state.pageSize);
+
+    $("stats").innerHTML = `zobrazeno <b>${slice.length}</b> z <b>${filt.toLocaleString("cs-CZ")}</b> filtrovaných (celkem <b>${total.toLocaleString("cs-CZ")}</b>)`;
+
+    const tbody = $("tbody");
+    if (!slice.length) {
+      tbody.innerHTML = "";
+      $("empty").style.display = "block";
+      $("empty").className = "empty";
+      $("empty").textContent = total ? "Žádné záznamy neodpovídají filtru." : "Nenačtena žádná data.";
+    } else {
+      $("empty").style.display = "none";
+      tbody.innerHTML = slice.map(r => {
+        const year = r.year || "";
+        const title = escapeHtml(r.norm_title);
+        const sample = escapeHtml(r.sample_name);
+        const slug = encodeURIComponent(r.sample_slug_id);
+        const tmdbQuery = encodeURIComponent(r.norm_title + (r.year ? " " + r.year : ""));
+        const sledUrl = `https://www.sledujteto.cz/file/${slug}/`;
+        const tmdbUrl = `https://www.themoviedb.org/search?query=${tmdbQuery}`;
+        return `<tr>
+          <td class="title">${title}</td>
+          <td class="sample">${sample}</td>
+          <td class="num">${year}</td>
+          <td class="num">${r.upload_count}</td>
+          <td class="actions">
+            <a class="btn primary" href="${sledUrl}" target="_blank" rel="noopener">sledujteto ↗</a>
+            <a class="btn" href="${tmdbUrl}" target="_blank" rel="noopener">TMDB ↗</a>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+
+    renderPagination(pages);
+    renderSortArrows();
+  }
+
+  function renderPagination(pages) {
+    const el = $("pagination");
+    const p = state.page;
+    const btn = (label, pg, disabled = false, active = false) =>
+      `<button data-page="${pg}" ${disabled ? "disabled" : ""} ${active ? "style=\"background:var(--accent);color:#000;border-color:var(--accent)\"" : ""}>${label}</button>`;
+    const nums = [];
+    for (let i = Math.max(1, p - 2); i <= Math.min(pages, p + 2); i++) nums.push(i);
+    let html = "";
+    html += btn("«", 1, p === 1);
+    html += btn("‹", p - 1, p === 1);
+    if (nums[0] > 1) html += `<span class="page-info">…</span>`;
+    for (const n of nums) html += btn(String(n), n, false, n === p);
+    if (nums[nums.length - 1] < pages) html += `<span class="page-info">…</span>`;
+    html += btn("›", p + 1, p >= pages);
+    html += btn("»", pages, p >= pages);
+    html += `<span class="page-info">strana ${p} z ${pages}</span>`;
+    el.innerHTML = html;
+    el.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+      const pg = parseInt(b.dataset.page, 10);
+      if (!Number.isNaN(pg)) { state.page = pg; render(); window.scrollTo(0, 0); }
+    }));
+  }
+
+  function renderSortArrows() {
+    document.querySelectorAll("th[data-sort]").forEach(th => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (th.dataset.sort === state.sort.col) arrow.textContent = state.sort.dir === "asc" ? "▲" : "▼";
+      else arrow.textContent = "";
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  // Wire controls
+  $("date-picker").value = state.date;
+  $("date-picker").addEventListener("change", e => loadCsv(e.target.value));
+  $("search").addEventListener("input", e => { state.search = e.target.value; state.page = 1; render(); });
+  $("year-min").addEventListener("input", e => { state.yearMin = e.target.value ? parseInt(e.target.value, 10) : null; state.page = 1; render(); });
+  $("year-max").addEventListener("input", e => { state.yearMax = e.target.value ? parseInt(e.target.value, 10) : null; state.page = 1; render(); });
+  $("year-missing").addEventListener("change", e => { state.yearMissing = e.target.value; state.page = 1; render(); });
+  $("page-size").addEventListener("change", e => { state.pageSize = parseInt(e.target.value, 10); state.page = 1; render(); });
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.sort;
+      if (state.sort.col === col) state.sort.dir = state.sort.dir === "asc" ? "desc" : "asc";
+      else { state.sort.col = col; state.sort.dir = col === "upload_count" ? "desc" : "asc"; }
+      render();
+    });
+  });
+
+  loadCsv(state.date);
+})();
+</script>
+</body>
+</html>
