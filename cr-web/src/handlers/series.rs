@@ -32,6 +32,32 @@ pub struct SeriesRow {
     cover_filename: Option<String>,
     #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
+    /// `scripts/backfill-tmdb-poster-paths.py --table series`. When set, the
+    /// large-cover URL switches to the extension the path ends with
+    /// (`.jpg`/`.png`) and `series_cover_large_dynamic` proxies the TMDB
+    /// image. When None, the template keeps the legacy `-large.webp` URL
+    /// served from R2.
+    tmdb_poster_path: Option<String>,
+}
+
+impl SeriesRow {
+    /// Extension for the large-cover URL rendered in the detail template.
+    /// Derived from `tmdb_poster_path` when the series has been backfilled;
+    /// otherwise falls back to `webp` so the existing R2-backed route keeps
+    /// serving until the backfill completes.
+    pub fn large_url_ext(&self) -> &str {
+        match self.tmdb_poster_path.as_deref() {
+            Some(p) => {
+                if let Some(dot) = p.rfind('.') {
+                    &p[dot + 1..]
+                } else {
+                    "jpg"
+                }
+            }
+            None => "webp",
+        }
+    }
 }
 
 /// Episode card shown on list pages — one latest episode per series,
@@ -326,7 +352,8 @@ pub async fn series_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.imdb_rating, s.csfd_rating, \
-             s.season_count, s.episode_count, s.cover_filename, s.added_at \
+             s.season_count, s.episode_count, s.cover_filename, s.added_at, \
+             s.tmdb_poster_path \
              FROM series s \
              WHERE s.title ILIKE $1 OR s.original_title ILIKE $1 \
              ORDER BY {order} LIMIT $2 OFFSET $3"
@@ -612,6 +639,12 @@ pub async fn series_resolve(
     headers: axum::http::HeaderMap,
 ) -> WebResult<Response> {
     let state_clone = state.clone();
+    // Large cover dynamically proxied from TMDB — real extension in URL so
+    // the response content type matches what the template rendered. See
+    // `series_cover_large_dynamic` for the fallback chain.
+    if slug_raw.ends_with("-large.jpg") || slug_raw.ends_with("-large.png") {
+        return series_cover_large_dynamic(State(state), Path(slug_raw)).await;
+    }
     // WebP cover
     if slug_raw.ends_with(".webp") {
         return series_cover(State(state), Path(slug_raw)).await;
@@ -645,7 +678,7 @@ pub async fn series_resolve(
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at \
+         cover_filename, added_at, tmdb_poster_path \
          FROM series WHERE slug = $1",
     )
     .bind(&slug_raw)
@@ -659,7 +692,7 @@ pub async fn series_resolve(
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at FROM series WHERE old_slug = $1",
+                 cover_filename, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug_raw)
             .fetch_optional(&state.db)
@@ -788,7 +821,7 @@ pub async fn episode_detail(
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at FROM series WHERE slug = $1",
+         cover_filename, added_at, tmdb_poster_path FROM series WHERE slug = $1",
     )
     .bind(&slug)
     .fetch_optional(&state.db)
@@ -801,7 +834,7 @@ pub async fn episode_detail(
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at FROM series WHERE old_slug = $1",
+                 cover_filename, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug)
             .fetch_optional(&state.db)
@@ -1180,6 +1213,77 @@ pub async fn series_cover_large(
         }
     }
     Ok(placeholder_webp())
+}
+
+/// GET /serialy-online/{slug}-large.{jpg,png} — proxy TMDB poster on demand.
+///
+/// Mirrors `films_cover_large_dynamic` (see `handlers::films`): detail-page
+/// thumbnails get few hits, so we skip R2 storage and stream the TMDB image
+/// through. Cloudflare caches the response for a year. On any failure we
+/// serve a placeholder in the SAME format the URL advertises so browsers
+/// and OG scrapers decode without a MIME mismatch.
+pub async fn series_cover_large_dynamic(
+    State(state): State<AppState>,
+    Path(slug_ext): Path<String>,
+) -> WebResult<Response> {
+    use crate::handlers::cover_proxy::placeholder_for_ext;
+
+    let (slug, ext) = if let Some(s) = slug_ext.strip_suffix("-large.jpg") {
+        (s, "jpg")
+    } else if let Some(s) = slug_ext.strip_suffix("-large.png") {
+        (s, "png")
+    } else {
+        (slug_ext.as_str(), "jpg")
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct CoverRow {
+        tmdb_poster_path: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, CoverRow>("SELECT tmdb_poster_path FROM series WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let Some(path) = row.and_then(|r| r.tmdb_poster_path) else {
+        return Ok(placeholder_for_ext(ext));
+    };
+
+    let url = format!("https://image.tmdb.org/t/p/w780{path}");
+    let Ok(resp) = state
+        .http_client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    if !resp.status().is_success() {
+        return Ok(placeholder_for_ext(ext));
+    }
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let Ok(bytes) = resp.bytes().await else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, ct),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response())
 }
 
 /// Build pagination query string for series list views.

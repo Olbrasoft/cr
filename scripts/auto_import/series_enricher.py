@@ -138,8 +138,8 @@ def ensure_series(
         """INSERT INTO series
            (title, original_title, slug, first_air_year, last_air_year,
             description, imdb_id, tmdb_id,
-            season_count, episode_count, cover_filename, added_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            season_count, episode_count, cover_filename, tmdb_poster_path, added_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
            RETURNING id""",
         (
             name_cs, name_en if name_en != name_cs else None, slug,
@@ -147,7 +147,7 @@ def ensure_series(
             description,
             tv.imdb_id, tv.tmdb_id,
             tv.season_count, tv.episode_count,
-            cover_filename,
+            cover_filename, tv.poster_path,
         ),
     )
     series_id = cur.fetchone()[0]

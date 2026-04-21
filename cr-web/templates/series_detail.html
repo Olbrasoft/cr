@@ -6,8 +6,27 @@
 
 {% block og_title %}{{ series.title }}{% match series.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — seriál online{% endblock %}
 {% block og_description %}{% match series.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ series.title }} — seriál online zdarma{% endmatch %}{% endblock %}
-{% block og_image %}{% match series.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/serialy-online/{{ series.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+{% block og_image %}{% match series.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/serialy-online/{{ series.slug }}-large.{{ series.large_url_ext() }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
 {% block og_type %}video.tv_show{% endblock %}
+
+{# Portrait poster dimensions (780×1170, 2:3 aspect) trigger Discord's
+   "movie card" layout — cover on the LEFT, title/description on the RIGHT. #}
+{% block og_extra %}
+{% match series.cover_filename %}
+{% when Some with (c) %}
+<meta property="og:image:type" content="image/{% if series.large_url_ext() == "jpg" %}jpeg{% else %}{{ series.large_url_ext() }}{% endif %}">
+<meta property="og:image:width" content="780">
+<meta property="og:image:height" content="1170">
+<meta property="og:image:alt" content="{{ series.title }}{% match series.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %}">
+{% when None %}
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ series.title }} — ceskarepublika.wiki">
+{% endmatch %}
+<meta property="og:site_name" content="ceskarepublika.wiki">
+<meta name="twitter:card" content="summary">
+{% endblock %}
 
 {% block leaflet %}{% endblock %}
 
@@ -48,7 +67,7 @@
             {% match series.cover_filename %}
             {% when Some with (c) %}
             <div class="cover-zoom" data-gallery-open="series" data-index="0"
-                 data-gallery-photos="[&quot;/serialy-online/{{ series.slug }}-large.webp&quot;]">
+                 data-gallery-photos="[&quot;/serialy-online/{{ series.slug }}-large.{{ series.large_url_ext() }}&quot;]">
                 <img src="/serialy-online/{{ series.slug }}.webp" alt="{{ series.title }}" title="{{ series.title }}" width="200" height="300">
             </div>
             {% when None %}
