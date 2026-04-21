@@ -106,8 +106,9 @@ def process_tv_show_episode(
         try:
             cur.execute(
                 """INSERT INTO tv_shows (title, slug, tmdb_id, imdb_id,
-                       first_air_year, description, cover_filename, added_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                       first_air_year, description, cover_filename,
+                       tmdb_poster_path, added_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                    RETURNING id""",
                 (
                     title[:255],
@@ -117,6 +118,7 @@ def process_tv_show_episode(
                     tv.first_air_year,
                     description,
                     slug,  # cover_filename = slug — WebP fetched on demand
+                    tv.poster_path,
                 ),
             )
             tv_show_id = cur.fetchone()[0]

@@ -36,6 +36,37 @@ pub struct TvShowRow {
     cover_filename: Option<String>,
     #[allow(dead_code)]
     added_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
+    /// `scripts/backfill-tmdb-poster-paths.py --table tv_shows`. The detail
+    /// template only emits a large-cover URL when `cover_filename` is `Some`
+    /// (otherwise it renders a no-cover placeholder); in that branch
+    /// `large_url_ext()` consults this field and flips the extension to the
+    /// one the path ends with (`.jpg`/`.png`), which `tv_porad_cover_large_dynamic`
+    /// proxies from TMDB. When this field is `None` but `cover_filename` is
+    /// `Some`, the template keeps the legacy `-large.webp` URL served from R2.
+    tmdb_poster_path: Option<String>,
+}
+
+impl TvShowRow {
+    /// Extension for the large-cover URL rendered in the detail template.
+    /// Derived from `tmdb_poster_path` when the tv show has been backfilled;
+    /// otherwise falls back to `webp` so the existing R2-backed route keeps
+    /// serving until the backfill completes.
+    ///
+    /// Only `jpg` and `png` are whitelisted — `tv_porad_detail` dispatches
+    /// exactly those two large-cover extensions to the dynamic proxy, and
+    /// TMDB's in-practice storage is always JPG. Unknown/unexpected TMDB
+    /// suffixes (e.g. a future `jpeg`) get normalized to `jpg` rather than
+    /// falling through to the HTML handler with a mismatching URL.
+    pub fn large_url_ext(&self) -> &str {
+        match self.tmdb_poster_path.as_deref() {
+            Some(p) => match p.rsplit_once('.').map(|(_, ext)| ext) {
+                Some("png") => "png",
+                Some(_) | None => "jpg",
+            },
+            None => "webp",
+        }
+    }
 }
 
 /// Episode card shown on list page — one latest episode per TV pořad.
@@ -186,7 +217,8 @@ pub async fn tv_porady_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.imdb_rating, s.csfd_rating, \
-             s.season_count, s.episode_count, s.cover_filename, s.added_at \
+             s.season_count, s.episode_count, s.cover_filename, s.added_at, \
+             s.tmdb_poster_path \
              FROM tv_shows s \
              WHERE s.title ILIKE $1 OR s.original_title ILIKE $1 \
              ORDER BY {order} LIMIT $2 OFFSET $3"
@@ -337,6 +369,12 @@ pub async fn tv_porad_detail(
     State(state): State<AppState>,
     Path(slug_raw): Path<String>,
 ) -> WebResult<Response> {
+    // Large cover dynamically proxied from TMDB — real extension in URL so
+    // the response content type matches what the template rendered. See
+    // `tv_porad_cover_large_dynamic` for the fallback chain.
+    if slug_raw.ends_with("-large.jpg") || slug_raw.ends_with("-large.png") {
+        return tv_porad_cover_large_dynamic(State(state), Path(slug_raw)).await;
+    }
     // WebP cover variants routed here too (no genre routes on /tv-porady/)
     if slug_raw.ends_with(".webp") {
         return tv_porad_cover(State(state), Path(slug_raw)).await;
@@ -345,7 +383,7 @@ pub async fn tv_porad_detail(
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at FROM tv_shows WHERE slug = $1",
+         cover_filename, added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug_raw)
     .fetch_optional(&state.db)
@@ -357,7 +395,7 @@ pub async fn tv_porad_detail(
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at FROM tv_shows WHERE old_slug = $1",
+                 cover_filename, added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug_raw)
             .fetch_optional(&state.db)
@@ -430,7 +468,7 @@ pub async fn tv_epizoda_detail(
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at FROM tv_shows WHERE slug = $1",
+         cover_filename, added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug)
     .fetch_optional(&state.db)
@@ -442,7 +480,7 @@ pub async fn tv_epizoda_detail(
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at FROM tv_shows WHERE old_slug = $1",
+                 cover_filename, added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug)
             .fetch_optional(&state.db)
@@ -655,6 +693,78 @@ pub async fn tv_porad_cover_large(
         }
     }
     Ok(placeholder_webp())
+}
+
+/// GET /tv-porady/{slug}-large.{jpg,png} — proxy TMDB poster on demand.
+///
+/// Mirrors `films_cover_large_dynamic` / `series_cover_large_dynamic`:
+/// detail-page thumbnails get few hits, so we skip R2 storage and stream
+/// the TMDB image through. Cloudflare caches the response for a year.
+/// On any failure we serve a placeholder in the SAME format the URL
+/// advertises so browsers and OG scrapers decode without a MIME mismatch.
+pub async fn tv_porad_cover_large_dynamic(
+    State(state): State<AppState>,
+    Path(slug_ext): Path<String>,
+) -> WebResult<Response> {
+    use crate::handlers::cover_proxy::placeholder_for_ext;
+
+    let (slug, ext) = if let Some(s) = slug_ext.strip_suffix("-large.jpg") {
+        (s, "jpg")
+    } else if let Some(s) = slug_ext.strip_suffix("-large.png") {
+        (s, "png")
+    } else {
+        (slug_ext.as_str(), "jpg")
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct CoverRow {
+        tmdb_poster_path: Option<String>,
+    }
+
+    let row =
+        sqlx::query_as::<_, CoverRow>("SELECT tmdb_poster_path FROM tv_shows WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let Some(path) = row.and_then(|r| r.tmdb_poster_path) else {
+        return Ok(placeholder_for_ext(ext));
+    };
+
+    let url = format!("https://image.tmdb.org/t/p/w780{path}");
+    let Ok(resp) = state
+        .http_client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    if !resp.status().is_success() {
+        return Ok(placeholder_for_ext(ext));
+    }
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let Ok(bytes) = resp.bytes().await else {
+        return Ok(placeholder_for_ext(ext));
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, ct),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response())
 }
 
 fn build_query_string(params: &TvShowQuery) -> String {
