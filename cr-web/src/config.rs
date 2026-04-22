@@ -56,8 +56,16 @@ pub struct AppConfig {
     /// Optional sledujteto-specific proxy (SledujteToCzProxy on aspone) for
     /// calls that upstream rate-limits by ASN (search API). Separate from
     /// `cz_proxy` by design — different rate limits, different uploader
-    /// ecosystem, different incident blast radius. `None` when the env vars
-    /// aren't set; handlers then skip the aspone fallback path.
+    /// ecosystem, different incident blast radius.
+    ///
+    /// Convention (differs from `cz_proxy`): `SLEDUJTETO_PROXY_URL` is the
+    /// proxy **site root** (e.g. `http://sledujteto.aspfree.cz`), *not* a
+    /// specific `.ashx` endpoint URL. Handlers append the endpoint name
+    /// themselves (`/Search.ashx`, `/Hash.ashx`, …) because the proxy exposes
+    /// multiple endpoints. A trailing slash on the base URL is tolerated.
+    ///
+    /// `None` when the env vars aren't set; handlers then skip the aspone
+    /// fallback path.
     pub sledujteto_proxy: Option<CzProxyConfig>,
     /// Hard gate on the sledujteto.cz POC surface (issue #551): the
     /// `/admin/test-sledujteto/` diagnostic page and the `/api/sledujteto/*`
