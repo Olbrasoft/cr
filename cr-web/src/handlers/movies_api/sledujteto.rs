@@ -6,8 +6,10 @@
 //!     including Hetzner AS24940 — no CZ proxy needed.
 //!   - `GET /api/web/videos` (search) rate-limits known datacenter ASNs to
 //!     an empty result set — Hetzner and Oracle currently get `files: []`,
-//!     aspone AS43541 is allowed through. We fall back to an aspone mirror
-//!     (`http://sledujteto.aspfree.cz/search.ashx`) on an empty direct response.
+//!     aspone AS43541 is allowed through. We fall back to the SledujteToCzProxy
+//!     mirror (`SLEDUJTETO_PROXY_URL` + key, default `sledujteto.aspfree.cz`)
+//!     on an empty direct response. The fallback is skipped silently when the
+//!     proxy env vars aren't configured — useful in local dev.
 //!   - Playback hostname varies per upload: `www.sledujteto.cz/player/...`
 //!     serves 206 Partial Content from Hetzner; `data{N}.sledujteto.cz/...`
 //!     responds with a redirect to invalid-file for datacenter ASNs (and
@@ -147,6 +149,18 @@ pub async fn sledujteto_search(
 
     let direct = fetch_sledujteto_search(&state.http_client, &direct_url).await;
 
+    // Build the aspone fallback URL lazily — only when both the direct call
+    // comes back unhelpful AND the proxy is configured. Keeps local dev from
+    // firing blank requests at the aspone mirror.
+    let fallback_url = state.config.sledujteto_proxy.as_ref().map(|proxy| {
+        format!(
+            "{}/Search.ashx?q={}&key={}",
+            proxy.url.trim_end_matches('/'),
+            urlencoding::encode(q),
+            urlencoding::encode(&proxy.key),
+        )
+    });
+
     match direct {
         Ok(movies) if !movies.is_empty() => Json(SearchResponse {
             success: true,
@@ -155,12 +169,15 @@ pub async fn sledujteto_search(
         }),
         Ok(_empty) => {
             // Empty result might be a real zero-hit query or a silent ASN
-            // blocklist — the caller can't tell, so try aspone.
-            let fallback_url = format!(
-                "http://sledujteto.aspfree.cz/search.ashx?q={}",
-                urlencoding::encode(q)
-            );
-            match fetch_sledujteto_search(&state.http_client, &fallback_url).await {
+            // blocklist — the caller can't tell, so try the aspone mirror.
+            let Some(url) = fallback_url else {
+                return Json(SearchResponse {
+                    success: true,
+                    movies: vec![],
+                    error: None,
+                });
+            };
+            match fetch_sledujteto_search(&state.http_client, &url).await {
                 Ok(movies) => Json(SearchResponse {
                     success: true,
                     movies,
@@ -178,11 +195,14 @@ pub async fn sledujteto_search(
         }
         Err(e) => {
             tracing::warn!("sledujteto search direct failed: {e}");
-            let fallback_url = format!(
-                "http://sledujteto.aspfree.cz/search.ashx?q={}",
-                urlencoding::encode(q)
-            );
-            match fetch_sledujteto_search(&state.http_client, &fallback_url).await {
+            let Some(url) = fallback_url else {
+                return Json(SearchResponse {
+                    success: false,
+                    movies: vec![],
+                    error: Some(format!("direct={e}; no proxy configured")),
+                });
+            };
+            match fetch_sledujteto_search(&state.http_client, &url).await {
                 Ok(movies) => Json(SearchResponse {
                     success: true,
                     movies,
