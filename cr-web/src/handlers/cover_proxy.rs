@@ -2,8 +2,7 @@
 //! `/serialy-online/{slug}.webp` and `/tv-porady/{slug}.webp` cover
 //! routes (plus their `-large` variants).
 //!
-//! Post sub-issue #576 we stopped storing covers on the cr-web container
-//! and moved to an id-keyed R2 layout:
+//! Covers live on R2 under an id-keyed layout:
 //!
 //!     cr-images:films/{id}/cover.webp       (200×300)
 //!     cr-images:films/{id}/cover-large.webp (780×1170)
@@ -16,12 +15,6 @@
 //! proxies the worker response back to the browser. The small
 //! round-trip is paid only once per (edge, cover) — CF then caches the
 //! response for a year thanks to our `immutable` response header.
-//!
-//! During the rollout window we also fall back to the OLD layout
-//! (`{prefix}/{cover_filename}.webp` without the `{id}/` segment) so
-//! covers keep serving if a migration step fails or is in flight. Sub B
-//! (#577) removes the fallback once all three tables have been
-//! verified.
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -177,20 +170,11 @@ pub async fn try_fetch_r2(state: &AppState, key: &str) -> Option<Vec<u8>> {
     resp.bytes().await.ok().map(|b| b.to_vec())
 }
 
-/// Fetch a cover from R2 via the img-proxy worker, preferring the new
-/// id-keyed layout and falling back to the old name-keyed one.
-///
-/// `new_key` / `old_key` are R2 object keys like `films/29876/cover.webp`
-/// and `films/children-of-the-sea.webp`. Returns a ready `Response` —
-/// the placeholder 1×1 WebP when both keys miss, so clients never see a
-/// 404 for a cover URL.
-pub async fn fetch_cover(state: &AppState, new_key: &str, old_key: Option<&str>) -> Response {
-    if let Some(bytes) = try_fetch_r2(state, new_key).await {
-        return immutable_webp(bytes);
-    }
-    if let Some(old) = old_key
-        && let Some(bytes) = try_fetch_r2(state, old).await
-    {
+/// Fetch a cover from R2 via the img-proxy worker. Returns a ready
+/// `Response` — the placeholder 1×1 WebP when the key misses, so
+/// clients never see a 404 for a cover URL.
+pub async fn fetch_cover(state: &AppState, key: &str) -> Response {
+    if let Some(bytes) = try_fetch_r2(state, key).await {
         return immutable_webp(bytes);
     }
     placeholder_webp()
@@ -214,18 +198,4 @@ pub fn parse_cover_slug(slug_webp: &str) -> (String, bool) {
 pub fn new_r2_key(table_prefix: &str, id: i32, is_large: bool) -> String {
     let variant = if is_large { "cover-large" } else { "cover" };
     format!("{table_prefix}/{id}/{variant}.webp")
-}
-
-/// Old-layout key we try as a fallback when the new key isn't on R2
-/// yet. `cover_filename` is the pre-#576 slug-ish identifier stored in
-/// the `{table}.cover_filename` column. Large variants historically
-/// lived under `/large/` with either the row's `slug` or its
-/// `cover_filename` — we accept the `cover_filename` form here and let
-/// the handler try the slug as a second fallback if it wants.
-pub fn old_r2_key(table_prefix: &str, cover_filename: &str, is_large: bool) -> String {
-    if is_large {
-        format!("{table_prefix}/large/{cover_filename}.webp")
-    } else {
-        format!("{table_prefix}/{cover_filename}.webp")
-    }
 }

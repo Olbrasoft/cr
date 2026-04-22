@@ -183,12 +183,7 @@
         {% for f in films %}
         <a href="/filmy-online/{{ f.slug }}/" class="film-card">
             <div class="film-poster">
-                {% match f.cover_filename %}
-                {% when Some with (cover) %}
                 <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy" width="200" height="300">
-                {% when None %}
-                <div class="no-poster">{{ f.title }}</div>
-                {% endmatch %}
                 <div class="rating-badges">
                     {% match f.imdb_rating %}
                     {% when Some with (r) %}

@@ -6,24 +6,16 @@
 
 {% block og_title %}{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %} — TV pořad online{% endblock %}
 {% block og_description %}{% match show.description %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} — TV pořad online zdarma{% endmatch %}{% endblock %}
-{% block og_image %}{% match show.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}-large.{{ show.large_url_ext() }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+{% block og_image %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}-large.{{ show.large_url_ext() }}{% endblock %}
 {% block og_type %}video.tv_show{% endblock %}
 
 {# Portrait poster dimensions (780×1170, 2:3 aspect) trigger Discord's
    "movie card" layout — cover on the LEFT, title/description on the RIGHT. #}
 {% block og_extra %}
-{% match show.cover_filename %}
-{% when Some with (c) %}
 <meta property="og:image:type" content="image/{% if show.large_url_ext() == "jpg" %}jpeg{% else %}{{ show.large_url_ext() }}{% endif %}">
 <meta property="og:image:width" content="780">
 <meta property="og:image:height" content="1170">
 <meta property="og:image:alt" content="{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %}">
-{% when None %}
-<meta property="og:image:type" content="image/png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="{{ show.title }} — ceskarepublika.wiki">
-{% endmatch %}
 <meta property="og:site_name" content="ceskarepublika.wiki">
 <meta name="twitter:card" content="summary">
 {% endblock %}
@@ -63,15 +55,10 @@
 
     <div class="film-hero">
         <div class="film-cover">
-            {% match show.cover_filename %}
-            {% when Some with (c) %}
             <div class="cover-zoom" data-gallery-open="show" data-index="0"
                  data-gallery-photos="[&quot;/tv-porady/{{ show.slug }}-large.{{ show.large_url_ext() }}&quot;]">
                 <img src="/tv-porady/{{ show.slug }}.webp" alt="{{ show.title }}" title="{{ show.title }}" width="200" height="300">
             </div>
-            {% when None %}
-            <div class="no-cover">{{ show.title }}</div>
-            {% endmatch %}
         </div>
         <div class="film-meta">
             <h2>{{ show.title }}{% match show.first_air_year %}{% when Some with (y) %} <span class="year">({{ y }}{% match show.last_air_year %}{% when Some with (ly) %}{% if ly != y %}–{{ ly }}{% endif %}{% when None %}{% endmatch %})</span>{% when None %}{% endmatch %}</h2>

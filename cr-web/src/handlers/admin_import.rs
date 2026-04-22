@@ -542,7 +542,6 @@ struct NewFilmRow {
     slug: String,
     year: Option<i16>,
     runtime_min: Option<i16>,
-    cover_filename: Option<String>,
     imdb_id: Option<String>,
     sktorrent_title: String,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -567,7 +566,6 @@ struct UpdatedFilmRow {
     title: String,
     slug: String,
     year: Option<i16>,
-    cover_filename: Option<String>,
     sktorrent_title: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -586,7 +584,6 @@ struct NewSeriesRow {
     series_title: String,
     series_slug: String,
     first_air_year: Option<i16>,
-    cover_filename: Option<String>,
     imdb_id: Option<String>,
     episode_count: i64,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -607,8 +604,6 @@ impl NewSeriesRow {
 struct EpisodeForExistingRow {
     series_title: String,
     series_slug: String,
-    #[allow(dead_code)] // retained in SELECT for future "series cover" rendering
-    cover_filename: Option<String>,
     season: i16,
     episode: i16,
     episode_name: Option<String>,
@@ -679,7 +674,7 @@ struct AdminImportSummaryTemplate {
 pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Response> {
     // Films created by auto-import (joined via target_film_id).
     let new_films = sqlx::query_as::<_, NewFilmRow>(
-        "SELECT f.title, f.slug, f.year, f.runtime_min, f.cover_filename, \
+        "SELECT f.title, f.slug, f.year, f.runtime_min, \
          f.imdb_id, i.sktorrent_title, i.created_at \
          FROM import_items i JOIN films f ON f.id = i.target_film_id \
          WHERE i.action = 'added_film' \
@@ -690,7 +685,7 @@ pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Re
 
     // Films where we only attached a new SKT playback source.
     let updated_films = sqlx::query_as::<_, UpdatedFilmRow>(
-        "SELECT f.title, f.slug, f.year, f.cover_filename, i.sktorrent_title, i.created_at \
+        "SELECT f.title, f.slug, f.year, i.sktorrent_title, i.created_at \
          FROM import_items i JOIN films f ON f.id = i.target_film_id \
          WHERE i.action = 'updated_film' \
          ORDER BY i.created_at DESC LIMIT 200",
@@ -711,7 +706,7 @@ pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Re
             GROUP BY e.series_id \
          ) \
          SELECT s.title AS series_title, s.slug AS series_slug, \
-                s.first_air_year, s.cover_filename, s.imdb_id, \
+                s.first_air_year, s.imdb_id, \
                 ps.ep_cnt AS episode_count, \
                 ps.first_touch AS created_at \
          FROM per_series ps JOIN series s ON s.id = ps.series_id \
@@ -740,7 +735,7 @@ pub async fn admin_import_summary(State(state): State<AppState>) -> WebResult<Re
     .await?;
 
     let episodes_for_existing = sqlx::query_as::<_, EpisodeForExistingRow>(
-        "SELECT s.title AS series_title, s.slug AS series_slug, s.cover_filename, \
+        "SELECT s.title AS series_title, s.slug AS series_slug, \
          e.season, e.episode, e.episode_name, i.sktorrent_title, i.action, i.created_at \
          FROM import_items i \
          JOIN episodes e ON e.id = i.target_episode_id \

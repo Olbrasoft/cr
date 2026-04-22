@@ -6,7 +6,7 @@
 
 {% block og_title %}{{ series.title }} — {% match episode.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endblock %}
 {% block og_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ series.title }} — S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endmatch %}{% endblock %}
-{% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/serialy-online/still/{{ f }}{% when None %}{% match series.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/serialy-online/{{ series.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endmatch %}{% endblock %}
+{% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/serialy-online/still/{{ f }}{% when None %}https://ceskarepublika.wiki/serialy-online/{{ series.slug }}.webp{% endmatch %}{% endblock %}
 {% block og_type %}video.episode{% endblock %}
 
 {% block leaflet %}{% endblock %}
@@ -51,7 +51,7 @@
         </div>
         <div class="player-panel">
             <video id="series-player" controls preload="metadata" width="100%"
-                   {% match episode.still_filename %}{% when Some with (f) %}poster="/serialy-online/still/{{ f }}"{% when None %}{% match series.cover_filename %}{% when Some with (c) %}poster="/serialy-online/{{ series.slug }}-large.webp"{% when None %}{% endmatch %}{% endmatch %}></video>
+                   {% match episode.still_filename %}{% when Some with (f) %}poster="/serialy-online/still/{{ f }}"{% when None %}poster="/serialy-online/{{ series.slug }}-large.webp"{% endmatch %}></video>
             <div class="player-controls">
                 <div class="player-quality" id="source-quality"></div>
                 <div id="subtitle-controls" class="subtitle-controls" style="display:none;">

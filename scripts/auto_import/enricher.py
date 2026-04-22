@@ -167,20 +167,6 @@ def upsert_film(
     base_slug = _slugify(title_cs)
     slug = _unique_slug(cur, base_slug, movie.year)
 
-    # Cover (best-effort). TMDB first, then SK Torrent thumbnail as a
-    # low-res fallback for obscure CZ titles that TMDB doesn't have any
-    # poster for (e.g. 53-min ČT dramas). Better a 200×300 thumbnail than
-    # a black "no cover" placeholder.
-    cover_filename: str | None = None
-    if movie.poster_path:
-        result = download_cover(movie.poster_path, slug, cover_dir)
-        if result is not None:
-            cover_filename = slug
-    if cover_filename is None:
-        fallback = download_sktorrent_thumb(sktorrent_video_id, slug, cover_dir)
-        if fallback is not None:
-            cover_filename = slug
-
     # Gemma 4 unique CS text
     sources = []
     if movie.overview_cs:
@@ -199,18 +185,18 @@ def upsert_film(
     cur.execute(
         """INSERT INTO films
            (title, original_title, slug, year, description,
-            imdb_id, tmdb_id, runtime_min, cover_filename,
+            imdb_id, tmdb_id, runtime_min,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             tmdb_poster_path,
             added_at, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
             description,
-            movie.imdb_id, movie.tmdb_id, movie.runtime_min, cover_filename,
+            movie.imdb_id, movie.tmdb_id, movie.runtime_min,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             has_dub, has_subtitles,
@@ -218,6 +204,17 @@ def upsert_film(
         ),
     )
     film_id = cur.fetchone()[0]
+
+    # Cover (best-effort, id-keyed layout). TMDB first, then SK Torrent
+    # thumbnail as a low-res fallback for obscure CZ titles without a TMDB
+    # poster (e.g. 53-min ČT dramas). Better a 200×300 thumbnail than a
+    # placeholder. Failures are non-fatal — the handler serves a 1×1
+    # placeholder WebP when the R2 key is missing.
+    cover_result = "failed"
+    if movie.poster_path:
+        cover_result = download_cover(movie.poster_path, film_id, cover_dir)
+    if cover_result == "failed":
+        download_sktorrent_thumb(sktorrent_video_id, film_id, cover_dir)
 
     # Genre links
     if movie.genre_ids:

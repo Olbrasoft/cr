@@ -120,12 +120,6 @@ def ensure_series(
     base_slug = _slugify(name_cs)
     slug = _unique_series_slug(cur, base_slug, tv.first_air_year)
 
-    cover_filename: str | None = None
-    if tv.poster_path:
-        result = download_cover(tv.poster_path, slug, cover_dir)
-        if result is not None:
-            cover_filename = slug
-
     sources = []
     if tv.overview_cs:
         sources.append(("TMDB CS", tv.overview_cs))
@@ -138,8 +132,8 @@ def ensure_series(
         """INSERT INTO series
            (title, original_title, slug, first_air_year, last_air_year,
             description, imdb_id, tmdb_id,
-            season_count, episode_count, cover_filename, tmdb_poster_path, added_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            season_count, episode_count, tmdb_poster_path, added_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
            RETURNING id""",
         (
             name_cs, name_en if name_en != name_cs else None, slug,
@@ -147,10 +141,15 @@ def ensure_series(
             description,
             tv.imdb_id, tv.tmdb_id,
             tv.season_count, tv.episode_count,
-            cover_filename, tv.poster_path,
+            tv.poster_path,
         ),
     )
     series_id = cur.fetchone()[0]
+
+    # Cover (best-effort, id-keyed layout). Non-fatal if TMDB lacks a poster
+    # or the download fails — handler serves a placeholder WebP.
+    if tv.poster_path:
+        download_cover(tv.poster_path, series_id, cover_dir)
 
     # Series genres
     if tv.genre_ids:

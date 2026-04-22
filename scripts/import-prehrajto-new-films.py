@@ -12,7 +12,8 @@ Metadata comes from TMDB, never from prehraj.to upload titles:
   * `description`    = TMDB cs-CZ `.overview` (fallback to en-US `.overview`)
   * `year`           = `.release_date[:4]`
   * `runtime_min`    = `.runtime`
-  * `cover_filename` = downloaded via auto_import.cover_downloader.download_cover
+  * Cover   = downloaded via auto_import.cover_downloader.download_cover to
+              the id-keyed layout (`{covers_dir}/{id}/cover.webp` + `{id}/cover-large.webp`)
   * `description` = copied raw from TMDB overview (cs-CZ, en-US fallback).
     Post-migration-051 this is later overwritten by the Gemma rewrite pipeline
     `scripts/backfill_prehrajto_gemma.py` so the live site serves a unique text.
@@ -74,7 +75,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from scripts.auto_import.cover_downloader import download_cover  # noqa: E402
+from scripts.auto_import.cover_downloader import download_cover, _cover_paths  # noqa: E402
 from scripts.auto_import.enricher import TMDB_MOVIE_GENRE_MAP  # noqa: E402
 
 log = logging.getLogger("import-prehrajto-new-films")
@@ -407,16 +408,18 @@ def tmdb_get(path: str, params: dict,
     return None
 
 
-def _cover_worker(poster_path: str, slug: str,
-                  covers_dir: str) -> str | None:
-    """Thread-pool task for downloading a TMDB poster. Returns the R2 key
-    on success, None on failure. Logged failures do not raise — they're
+def _cover_worker(poster_path: str, film_id: int,
+                  covers_dir: Path) -> tuple[int, str]:
+    """Thread-pool task for downloading a TMDB poster. Returns
+    (film_id, outcome) where outcome is one of "written" /
+    "already_present" / "failed". Logged failures do not raise — they're
     tallied from the future's result."""
     try:
-        return download_cover(poster_path, slug, covers_dir)
+        outcome = download_cover(poster_path, film_id, covers_dir)
     except Exception as e:  # noqa: BLE001 — isolate per-film failures
-        log.warning("cover download raised for %s: %s", slug, e)
-        return None
+        log.warning("cover download raised for film_id=%d: %s", film_id, e)
+        outcome = "failed"
+    return film_id, outcome
 
 
 def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
@@ -493,8 +496,10 @@ def main() -> int:
                     help="Directory containing video-sitemap-*.xml files")
     ap.add_argument("--matches", required=True,
                     help="Path to matches-full.csv (from pilot)")
-    ap.add_argument("--r2-prefix", default="films",
-                    help="R2 object prefix for uploaded covers (default: films)")
+    ap.add_argument("--covers-dir", default="data/movies/covers-webp",
+                    help="Local directory for cover WebPs "
+                         "(default: data/movies/covers-webp). Layout is "
+                         "`{covers_dir}/{film_id}/cover{,-large}.webp`.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Run end-to-end but ROLLBACK at the end — no writes persisted "
                          "and no cover files left behind (covers are deleted if dry-run)")
@@ -533,7 +538,8 @@ def main() -> int:
         log.error("no video-sitemap-*.xml files in %s", sitemap_dir)
         return 2
 
-    covers_dir = args.r2_prefix  # R2 prefix string (e.g. "films"); no disk dir anymore
+    covers_dir = Path(args.covers_dir)
+    covers_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Load matches from pilot CSV ----
     log.info("Loading matches from %s ...", args.matches)
@@ -627,7 +633,7 @@ def main() -> int:
         insert_film_sql = """
         INSERT INTO films (
             title, original_title, slug, year, description,
-            imdb_id, tmdb_id, runtime_min, cover_filename,
+            imdb_id, tmdb_id, runtime_min,
             imdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
@@ -637,7 +643,7 @@ def main() -> int:
             created_at, added_at
         ) VALUES (
             %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
-            %(imdb_id)s, %(tmdb_id)s, %(runtime_min)s, %(cover_filename)s,
+            %(imdb_id)s, %(tmdb_id)s, %(runtime_min)s,
             NULL, NULL,
             NULL, NULL, NULL,
             false, false,
@@ -807,15 +813,10 @@ def main() -> int:
             has_sk_dub = any(u["lang_class"] == "SK_DUB" for u in per_upload)
             has_sk_subs = any(u["lang_class"] == "SK_SUB" for u in per_upload)
 
-            # ---- Decide cover optimistically, but only submit AFTER INSERT ----
-            # `cover_filename` goes into the films row at INSERT time so the
-            # detail page can render `{slug}.webp` as soon as the WebP lands.
-            # The actual HTTP download is deferred until we know the FINAL
-            # slug — if slug-retry kicks in mid-insert, submitting the cover
-            # task too early would write `{old_slug}.webp` while the row
-            # holds `{new_slug}`, leaving a permanent mismatch + orphan file.
+            # Covers land at `{covers_dir}/{film_id}/cover{,-large}.webp`
+            # after the INSERT returns the id, so slug changes (post-retry)
+            # have no effect on the file layout.
             want_cover = bool(movie["poster_path"]) and not args.skip_covers
-            cover_filename: str | None = None  # set after successful INSERT
 
             # ---- INSERT film (savepoint + retry on slug collision) ----
             # `unique_slug()` is a SELECT-then-INSERT check: if a concurrent
@@ -838,7 +839,6 @@ def main() -> int:
                         "imdb_id": imdb,
                         "tmdb_id": tmdb_id,
                         "runtime_min": runtime_min,
-                        "cover_filename": slug if want_cover else None,
                         "has_cz_audio": has_cz_audio,
                         "has_cz_subs": has_cz_subs,
                         "primary_upload": primary_upload_id,
@@ -875,14 +875,12 @@ def main() -> int:
             film_id = row[0]
             inserted_films += 1
 
-            # ---- Submit cover download (AFTER INSERT, with final slug) ----
-            # We now know the slug the INSERT actually used (post-retry).
-            # The WebP filename matches the `cover_filename` we persisted, so
-            # no orphan-mismatch can happen.
+            # ---- Submit cover download (AFTER INSERT, with final film_id) ----
+            # File layout is id-keyed so the slug used by the INSERT (incl.
+            # any post-retry regeneration) has no effect on the cover path.
             if want_cover:
-                cover_filename = slug
                 cover_futures.append(cover_pool.submit(
-                    _cover_worker, movie["poster_path"], slug, covers_dir,
+                    _cover_worker, movie["poster_path"], film_id, covers_dir,
                 ))
             else:
                 no_poster += 1
@@ -930,14 +928,20 @@ def main() -> int:
             cover_fail = 0
             for done_n, fut in enumerate(as_completed(cover_futures), 1):
                 try:
-                    paths = fut.result()
+                    result = fut.result()
                 except Exception as e:  # noqa: BLE001
                     log.warning("cover future raised: %s", e)
-                    paths = None
-                if paths:
+                    result = None
+                if result and result[1] in ("written", "already_present"):
                     cover_ok += 1
-                    if args.dry_run:
-                        dry_run_covers_created.extend(paths)
+                    # Dry-run cleanup records only files THIS run actually
+                    # wrote — pre-existing `{id}/cover*.webp` files (from a
+                    # prior partial or live run) stay untouched.
+                    if args.dry_run and result[1] == "written":
+                        film_id, _outcome = result
+                        small, large = _cover_paths(covers_dir, film_id)
+                        dry_run_covers_created.append(small)
+                        dry_run_covers_created.append(large)
                 else:
                     cover_fail += 1
                 if done_n % 1000 == 0:
@@ -947,10 +951,8 @@ def main() -> int:
                              cover_ok, cover_fail)
             log.info("Phase 3 done in %.1fs: %d covers ok, %d failed",
                      time.time() - t_cov, cover_ok, cover_fail)
-            # If a cover future failed, the films row still has cover_filename
-            # set (optimistic). The web handler already falls back to a
-            # placeholder when the WebP is missing, so this is a display
-            # issue, not data corruption.
+            # A cover-download failure leaves the films row with no cover
+            # on R2; the handler then serves the 1×1 placeholder WebP.
         cover_pool.shutdown(wait=True)
 
         # ---- Row-count invariant ----
@@ -1019,16 +1021,20 @@ def main() -> int:
             if cover_futures:
                 for fut in cover_futures:
                     try:
-                        paths = fut.result(timeout=0)
+                        result = fut.result(timeout=0)
                     except Exception:  # noqa: BLE001
                         continue
-                    if not paths:
+                    # Only files THIS run actually wrote are candidates for
+                    # cleanup. "already_present" files belong to some
+                    # earlier completed run and must not be touched.
+                    if not result or result[1] != "written":
                         continue
-                    for p in paths:
+                    film_id, _outcome = result
+                    for p in _cover_paths(covers_dir, film_id):
                         if p in recorded_paths:
                             continue
                         try:
-                            if p and p.exists():
+                            if p.exists():
                                 p.unlink()
                         except OSError:
                             pass

@@ -77,12 +77,7 @@
     {% for ep in episodes %}
     <a href="/tv-porady/{{ ep.tv_show_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" title="{{ ep.tv_show_title }} — S{{ ep.season }}E{{ ep.episode }}">
         <div class="film-poster">
-            {% match ep.tv_show_cover_filename %}
-            {% when Some with (c) %}
             <img src="/tv-porady/{{ ep.tv_show_slug }}.webp" alt="{{ ep.tv_show_title }}" title="{{ ep.tv_show_title }}" loading="lazy" width="200" height="300">
-            {% when None %}
-            <div class="no-poster">{{ ep.tv_show_title }}</div>
-            {% endmatch %}
             <div class="rating-badges">
                 {% match ep.tv_show_imdb_rating %}
                 {% when Some with (r) %}<span class="rating-badge imdb" title="TMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
@@ -116,12 +111,7 @@
     {% for s in shows %}
     <a href="/tv-porady/{{ s.slug }}/" class="film-card" alt="{{ s.title }}" title="{{ s.title }}">
         <div class="film-poster">
-            {% match s.cover_filename %}
-            {% when Some with (cover) %}
             <img src="/tv-porady/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
-            {% when None %}
-            <div class="no-poster">{{ s.title }}</div>
-            {% endmatch %}
             <div class="rating-badges">
                 {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="TMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
                 {% match s.csfd_rating %}{% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}

@@ -48,12 +48,7 @@
         <div class="cards">
             {% for f in new_films %}
             <a class="card" href="/filmy-online/{{ f.slug }}/" title="Detail filmu">
-                {% match f.cover_filename %}
-                {% when Some with (_cf) %}
                 <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy">
-                {% when None %}
-                <div class="no-cover">{{ f.title }}</div>
-                {% endmatch %}
                 <div class="card-info">
                     <div class="card-title">{{ f.title }}{{ f.year_str() }}</div>
                     <div class="card-meta">{{ f.runtime_str() }} · {{ f.when_str() }}</div>
@@ -78,12 +73,7 @@
         <div class="cards">
             {% for f in updated_films %}
             <a class="card" href="/filmy-online/{{ f.slug }}/" title="Detail filmu">
-                {% match f.cover_filename %}
-                {% when Some with (_cf) %}
                 <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy">
-                {% when None %}
-                <div class="no-cover">{{ f.title }}</div>
-                {% endmatch %}
                 <div class="card-info">
                     <div class="card-title">{{ f.title }}{{ f.year_str() }}</div>
                     <div class="card-meta">Doplněn SK Torrent · {{ f.when_str() }}</div>
@@ -103,12 +93,7 @@
         <div class="cards">
             {% for s in new_series %}
             <a class="card" href="/serialy-online/{{ s.series_slug }}/" title="Detail seriálu">
-                {% match s.cover_filename %}
-                {% when Some with (_cf) %}
                 <img src="/serialy-online/{{ s.series_slug }}.webp" alt="{{ s.series_title }}" loading="lazy">
-                {% when None %}
-                <div class="no-cover">{{ s.series_title }}</div>
-                {% endmatch %}
                 <div class="card-info">
                     <div class="card-title">{{ s.series_title }}{{ s.year_str() }}</div>
                     <div class="card-meta">+ {{ s.episode_count }} epizod · {{ s.when_str() }}</div>
