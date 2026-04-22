@@ -6,8 +6,12 @@
 //!     including Hetzner AS24940 — no CZ proxy needed.
 //!   - `GET /api/web/videos` (search) rate-limits known datacenter ASNs to
 //!     an empty result set — Hetzner and Oracle currently get `files: []`,
-//!     aspone AS43541 is allowed through. We fall back to an aspone mirror
-//!     (`http://sledujteto.aspfree.cz/search.ashx`) on an empty direct response.
+//!     aspone AS43541 is allowed through. We fall back to the SledujteToCzProxy
+//!     mirror (`SLEDUJTETO_PROXY_URL` + `SLEDUJTETO_PROXY_KEY`; no built-in
+//!     default, prod currently points at `sledujteto.aspfree.cz`). Behaviour
+//!     when the proxy env vars aren't configured: empty-direct returns an
+//!     empty result silently (useful in local dev), direct-failure returns
+//!     an explicit error so callers can tell why search broke.
 //!   - Playback hostname varies per upload: `www.sledujteto.cz/player/...`
 //!     serves 206 Partial Content from Hetzner; `data{N}.sledujteto.cz/...`
 //!     responds with a redirect to invalid-file for datacenter ASNs (and
@@ -147,6 +151,20 @@ pub async fn sledujteto_search(
 
     let direct = fetch_sledujteto_search(&state.http_client, &direct_url).await;
 
+    // Build the aspone fallback URL whenever the proxy is configured so both
+    // the empty-direct and direct-error branches below have it ready. `None`
+    // when no proxy is configured — local dev then skips the fallback entirely.
+    // `SLEDUJTETO_PROXY_URL` is the site root; we append `/Search.ashx` here
+    // (IIS is case-insensitive, but we match the file casing we actually ship).
+    let fallback_url = state.config.sledujteto_proxy.as_ref().map(|proxy| {
+        format!(
+            "{}/Search.ashx?q={}&key={}",
+            proxy.url.trim_end_matches('/'),
+            urlencoding::encode(q),
+            urlencoding::encode(&proxy.key),
+        )
+    });
+
     match direct {
         Ok(movies) if !movies.is_empty() => Json(SearchResponse {
             success: true,
@@ -155,12 +173,15 @@ pub async fn sledujteto_search(
         }),
         Ok(_empty) => {
             // Empty result might be a real zero-hit query or a silent ASN
-            // blocklist — the caller can't tell, so try aspone.
-            let fallback_url = format!(
-                "http://sledujteto.aspfree.cz/search.ashx?q={}",
-                urlencoding::encode(q)
-            );
-            match fetch_sledujteto_search(&state.http_client, &fallback_url).await {
+            // blocklist — the caller can't tell, so try the aspone mirror.
+            let Some(url) = fallback_url else {
+                return Json(SearchResponse {
+                    success: true,
+                    movies: vec![],
+                    error: None,
+                });
+            };
+            match fetch_sledujteto_search(&state.http_client, &url).await {
                 Ok(movies) => Json(SearchResponse {
                     success: true,
                     movies,
@@ -178,21 +199,37 @@ pub async fn sledujteto_search(
         }
         Err(e) => {
             tracing::warn!("sledujteto search direct failed: {e}");
-            let fallback_url = format!(
-                "http://sledujteto.aspfree.cz/search.ashx?q={}",
-                urlencoding::encode(q)
-            );
-            match fetch_sledujteto_search(&state.http_client, &fallback_url).await {
+            let Some(url) = fallback_url else {
+                return Json(SearchResponse {
+                    success: false,
+                    movies: vec![],
+                    // `e` is from the upstream www.sledujteto.cz URL (no
+                    // secrets), so echoing it to the client is fine.
+                    error: Some(format!("direct={e}; no proxy configured")),
+                });
+            };
+            match fetch_sledujteto_search(&state.http_client, &url).await {
                 Ok(movies) => Json(SearchResponse {
                     success: true,
                     movies,
                     error: None,
                 }),
-                Err(fallback_err) => Json(SearchResponse {
-                    success: false,
-                    movies: vec![],
-                    error: Some(format!("direct={e}; fallback={fallback_err}")),
-                }),
+                Err(fallback_err) => {
+                    // Log full detail server-side — fallback_err can contain
+                    // the proxy URL with `key=…` because `reqwest::Error`'s
+                    // Display includes the request URL on transport failures.
+                    tracing::warn!(
+                        "sledujteto search fallback (aspone) failed after direct failure: direct={e}; fallback={fallback_err}"
+                    );
+                    Json(SearchResponse {
+                        success: false,
+                        movies: vec![],
+                        // Client-facing error is intentionally sanitized to
+                        // avoid leaking `SLEDUJTETO_PROXY_KEY`. Operators read
+                        // the full reason from the log line above.
+                        error: Some("upstream search failed and proxy fallback unavailable".into()),
+                    })
+                }
             }
         }
     }

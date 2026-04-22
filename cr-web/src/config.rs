@@ -53,6 +53,20 @@ pub struct AppConfig {
     /// Optional CZ-hosted proxy for scraping geo-blocked sources (prehraj.to,
     /// SK Torrent). None if unconfigured.
     pub cz_proxy: Option<CzProxyConfig>,
+    /// Optional sledujteto-specific proxy (SledujteToCzProxy on aspone) for
+    /// calls that upstream rate-limits by ASN (search API). Separate from
+    /// `cz_proxy` by design — different rate limits, different uploader
+    /// ecosystem, different incident blast radius.
+    ///
+    /// Convention (differs from `cz_proxy`): `SLEDUJTETO_PROXY_URL` is the
+    /// proxy **site root** (e.g. `http://sledujteto.aspfree.cz`), *not* a
+    /// specific `.ashx` endpoint URL. Handlers append the endpoint name
+    /// themselves (`/Search.ashx`, `/Hash.ashx`, …) because the proxy exposes
+    /// multiple endpoints. A trailing slash on the base URL is tolerated.
+    ///
+    /// `None` when the env vars aren't set; handlers then skip the aspone
+    /// fallback path.
+    pub sledujteto_proxy: Option<CzProxyConfig>,
     /// Hard gate on the sledujteto.cz POC surface (issue #551): the
     /// `/admin/test-sledujteto/` diagnostic page and the `/api/sledujteto/*`
     /// endpoints it consumes. Both register only when
@@ -133,6 +147,18 @@ impl AppConfig {
             _ => None,
         };
 
+        let sledujteto_proxy = match (
+            std::env::var("SLEDUJTETO_PROXY_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            std::env::var("SLEDUJTETO_PROXY_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        ) {
+            (Some(url), Some(key)) => Some(CzProxyConfig { url, key }),
+            _ => None,
+        };
+
         let prehrajto_sources_from_db = matches!(
             std::env::var("PREHRAJTO_SOURCES_FROM_DB").as_deref(),
             Ok("1")
@@ -165,6 +191,7 @@ impl AppConfig {
             admin_import_run_enabled,
             admin_cache_purge_enabled,
             cz_proxy,
+            sledujteto_proxy,
             prehrajto_sources_from_db,
             sledujteto_poc_enabled,
             cf_cache_purge,
