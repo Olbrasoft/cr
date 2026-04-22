@@ -75,7 +75,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from scripts.auto_import.cover_downloader import download_cover  # noqa: E402
+from scripts.auto_import.cover_downloader import download_cover, _cover_paths  # noqa: E402
 from scripts.auto_import.enricher import TMDB_MOVIE_GENRE_MAP  # noqa: E402
 
 log = logging.getLogger("import-prehrajto-new-films")
@@ -409,16 +409,17 @@ def tmdb_get(path: str, params: dict,
 
 
 def _cover_worker(poster_path: str, film_id: int,
-                  covers_dir: str) -> tuple[int, bool]:
+                  covers_dir: Path) -> tuple[int, str]:
     """Thread-pool task for downloading a TMDB poster. Returns
-    (film_id, success). Logged failures do not raise — they're tallied
-    from the future's result."""
+    (film_id, outcome) where outcome is one of "written" /
+    "already_present" / "failed". Logged failures do not raise — they're
+    tallied from the future's result."""
     try:
-        ok = download_cover(poster_path, film_id, covers_dir)
+        outcome = download_cover(poster_path, film_id, covers_dir)
     except Exception as e:  # noqa: BLE001 — isolate per-film failures
         log.warning("cover download raised for film_id=%d: %s", film_id, e)
-        ok = False
-    return film_id, ok
+        outcome = "failed"
+    return film_id, outcome
 
 
 def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
@@ -495,8 +496,10 @@ def main() -> int:
                     help="Directory containing video-sitemap-*.xml files")
     ap.add_argument("--matches", required=True,
                     help="Path to matches-full.csv (from pilot)")
-    ap.add_argument("--r2-prefix", default="films",
-                    help="R2 object prefix for uploaded covers (default: films)")
+    ap.add_argument("--covers-dir", default="data/movies/covers-webp",
+                    help="Local directory for cover WebPs "
+                         "(default: data/movies/covers-webp). Layout is "
+                         "`{covers_dir}/{film_id}/cover{,-large}.webp`.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Run end-to-end but ROLLBACK at the end — no writes persisted "
                          "and no cover files left behind (covers are deleted if dry-run)")
@@ -535,7 +538,8 @@ def main() -> int:
         log.error("no video-sitemap-*.xml files in %s", sitemap_dir)
         return 2
 
-    covers_dir = args.r2_prefix  # R2 prefix string (e.g. "films"); no disk dir anymore
+    covers_dir = Path(args.covers_dir)
+    covers_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Load matches from pilot CSV ----
     log.info("Loading matches from %s ...", args.matches)
@@ -928,13 +932,16 @@ def main() -> int:
                 except Exception as e:  # noqa: BLE001
                     log.warning("cover future raised: %s", e)
                     result = None
-                if result and result[1]:
+                if result and result[1] in ("written", "already_present"):
                     cover_ok += 1
-                    if args.dry_run:
-                        film_id, _ok = result
-                        entity_dir = Path(covers_dir) / str(film_id)
-                        dry_run_covers_created.append(entity_dir / "cover.webp")
-                        dry_run_covers_created.append(entity_dir / "cover-large.webp")
+                    # Dry-run cleanup records only files THIS run actually
+                    # wrote — pre-existing `{id}/cover*.webp` files (from a
+                    # prior partial or live run) stay untouched.
+                    if args.dry_run and result[1] == "written":
+                        film_id, _outcome = result
+                        small, large = _cover_paths(covers_dir, film_id)
+                        dry_run_covers_created.append(small)
+                        dry_run_covers_created.append(large)
                 else:
                     cover_fail += 1
                 if done_n % 1000 == 0:
@@ -1017,12 +1024,13 @@ def main() -> int:
                         result = fut.result(timeout=0)
                     except Exception:  # noqa: BLE001
                         continue
-                    if not result or not result[1]:
+                    # Only files THIS run actually wrote are candidates for
+                    # cleanup. "already_present" files belong to some
+                    # earlier completed run and must not be touched.
+                    if not result or result[1] != "written":
                         continue
-                    film_id, _ok = result
-                    entity_dir = Path(covers_dir) / str(film_id)
-                    for p in (entity_dir / "cover.webp",
-                              entity_dir / "cover-large.webp"):
+                    film_id, _outcome = result
+                    for p in _cover_paths(covers_dir, film_id):
                         if p in recorded_paths:
                             continue
                         try:

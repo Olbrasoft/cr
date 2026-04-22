@@ -210,10 +210,10 @@ def upsert_film(
     # poster (e.g. 53-min ČT dramas). Better a 200×300 thumbnail than a
     # placeholder. Failures are non-fatal — the handler serves a 1×1
     # placeholder WebP when the R2 key is missing.
-    covered = False
+    cover_result = "failed"
     if movie.poster_path:
-        covered = download_cover(movie.poster_path, film_id, cover_dir)
-    if not covered:
+        cover_result = download_cover(movie.poster_path, film_id, cover_dir)
+    if cover_result == "failed":
         download_sktorrent_thumb(sktorrent_video_id, film_id, cover_dir)
 
     # Genre links
