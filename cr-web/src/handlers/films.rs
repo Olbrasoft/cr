@@ -6,7 +6,7 @@ const FILMS_PER_PAGE: i64 = 24;
 /// SELECT column list for `FilmRow` queries. Kept as a const to avoid
 /// duplication across `films_list`, `films_by_genre`, and `films_detail`.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-    f.imdb_rating, f.csfd_rating, f.runtime_min, \
+    f.imdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
     f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
     f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path, \
     f.sledujteto_primary_file_id";
