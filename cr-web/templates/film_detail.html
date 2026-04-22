@@ -68,11 +68,27 @@
            Bombuj providers (Filemoon/Streamtape/Mixdrop) removed — CDN URLs
            are session-bound, proxy-streaming doesn't scale (#407).
            Přehraj.to section below provides additional sources. #}
-        {# Same "Zdroj 1 / Zdroj 2" pattern as episode_detail.html.
-           "Zdroj 1" = primary (SK Torrent, or cached Přehraj.to when SKT missing);
-           "Zdroj 2" appears when the user picks an alternative from "Další zdroje". #}
+        {# Source tabs — one per known provider attached to this film.
+           The first available (in priority order SK Torrent → Přehraj.to →
+           Sledujteto) renders with `.active` so the auto-play IIFE picks
+           it up. Additional live-search results from "Další zdroje"
+           continue to append a dynamic prehraj.to-tagged tab on click. #}
         <div class="source-tabs" id="source-tabs">
-            <button class="source-tab active" id="tab-source-1" onclick="switchBackToSource1()">Zdroj 1</button>
+            {% match film.sktorrent_video_id %}
+            {% when Some with (_vid) %}
+            <button class="source-tab source-sktorrent active" data-provider="sktorrent" onclick="switchSource(this)">online.sktorrent.eu</button>
+            {% when None %}
+            {% endmatch %}
+            {% match film.prehrajto_url %}
+            {% when Some with (_u) %}
+            <button class="source-tab source-prehrajto {% match film.sktorrent_video_id %}{% when Some with (_) %}{% when None %}active{% endmatch %}" data-provider="prehrajto" onclick="switchSource(this)">prehraj.to</button>
+            {% when None %}
+            {% endmatch %}
+            {% match film.sledujteto_primary_file_id %}
+            {% when Some with (_f) %}
+            <button class="source-tab source-sledujteto {% match film.sktorrent_video_id %}{% when Some with (_) %}{% when None %}{% match film.prehrajto_url %}{% when Some with (_) %}{% when None %}active{% endmatch %}{% endmatch %}" data-provider="sledujteto" onclick="switchSource(this)">sledujteto.cz</button>
+            {% when None %}
+            {% endmatch %}
         </div>
 
         {# Video player — auto-select best available quality #}
@@ -314,6 +330,20 @@ function showSource(provider, btn) {
     document.getElementById('source-status').textContent = '';
 }
 
+/* Click handler for provider tabs (rendered statically per film's known
+   providers). Delegates to the provider-specific playback function. */
+function switchSource(btn) {
+    var provider = btn.dataset.provider;
+    showSource(provider, btn);
+    if (provider === 'sktorrent') {
+        resolveAndPlaySktorrent('Načítám zdroj...');
+    } else if (provider === 'prehrajto') {
+        playCachedPrehrajto();
+    } else if (provider === 'sledujteto') {
+        playSledujteto();
+    }
+}
+
 /* --- Resolve & play from bombuj.si providers --- */
 var resolveCache = {};
 
@@ -374,19 +404,18 @@ function showSktorrent(btn) {
     }
 }
 
-/* --- Cached Přehraj.to URL: primary source when SK Torrent is absent --- */
+/* --- Cached Přehraj.to URL: plays on page load when SK Torrent is
+       absent, and any time the user clicks the prehraj.to provider tab. --- */
 var cachedPrehrajtoPlayed = false;
-(function() {
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
-    if (hasSktorrent) return;                      // SK Torrent owns primary
-    if (!cachedPrehrajtoUrl) return;               // Nothing to play
+function playCachedPrehrajto() {
+    if (!cachedPrehrajtoUrl) return;
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
     if (!player) return;
 
     cachedPrehrajtoPlayed = true;
     status.textContent = 'Načítání Přehraj.to...';
-    fetch('/api/movies/video-url?url=' + encodeURIComponent(cachedPrehrajtoUrl))
+    return fetch('/api/movies/video-url?url=' + encodeURIComponent(cachedPrehrajtoUrl))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.success || !data.video_url) {
@@ -405,41 +434,50 @@ var cachedPrehrajtoPlayed = false;
             status.textContent = 'Zdroj nedostupný';
             cachedPrehrajtoPlayed = false;
         });
+}
+
+(function() {
+    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
+    if (hasSktorrent) return;                      // SK Torrent owns primary
+    if (!cachedPrehrajtoUrl) return;               // Nothing to play
+    playCachedPrehrajto();
 })();
 
-/* --- Sledujteto.cz fallback playback.
-       Runs when sktorrent is absent AND either (a) there's no cached Přehraj.to
-       URL, or (b) the cached Přehraj.to IIFE above ran but failed (it flips
-       `cachedPrehrajtoPlayed` back to false on error). Polls that flag briefly
-       so we don't race ahead of the in-flight prehrajto fetch when one is in
-       progress. `sledujtetoPrimaryFileId` is the best-ranked upload from
-       `film_sledujteto_uploads` (cdn=www > lang priority > resolution).
-       Resolves via /api/sledujteto/resolve → sledujteto `add-file-link`, which
-       returns a short-lived URL streamable from www.sledujteto.cz. --- */
+/* --- Sledujteto.cz playback. Plays the primary upload (best-ranked by
+       cdn=www > lang priority > resolution — stored in
+       `films.sledujteto_primary_file_id`). Resolves via
+       /api/sledujteto/resolve → sledujteto `add-file-link`, which returns a
+       short-lived URL streamable from www.sledujteto.cz. --- */
+function playSledujteto() {
+    if (sledujtetoPrimaryFileId === null) return;
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+    if (!player) return;
+
+    status.textContent = 'Načítání sledujteto...';
+    return fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.video_url) {
+                status.textContent = 'Zdroj nedostupný';
+                return;
+            }
+            playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+            status.textContent = 'Sledujteto';
+        })
+        .catch(function() {
+            status.textContent = 'Zdroj nedostupný';
+        });
+}
+
+/* Auto-play fallback: when neither sktorrent nor cached prehrajto is
+   available (or prehrajto failed), sledujteto takes over as primary. */
 (function() {
     if (sledujtetoPrimaryFileId === null) return;
     var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
     if (hasSktorrent) return;                         // SK Torrent owns primary
     var player = document.getElementById('film-player');
-    var status = document.getElementById('source-status');
     if (!player) return;
-
-    function playSledujteto() {
-        status.textContent = 'Načítání sledujteto...';
-        fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data.success || !data.video_url) {
-                    status.textContent = 'Zdroj nedostupný';
-                    return;
-                }
-                playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-                status.textContent = 'Sledujteto';
-            })
-            .catch(function() {
-                status.textContent = 'Zdroj nedostupný';
-            });
-    }
 
     if (!cachedPrehrajtoUrl) {
         // No prehrajto to wait on — play sledujteto immediately.
@@ -711,56 +749,28 @@ var cachedPrehrajtoPlayed = false;
     }
 })();
 
-/* Tabs & active-source helpers — mirror of episode_detail.html */
-function setActiveTab(n) {
-    var t1 = document.getElementById('tab-source-1');
-    var t2 = document.getElementById('tab-source-2');
-    if (t1) t1.classList.toggle('active', n === 1);
-    if (t2) t2.classList.toggle('active', n === 2);
-}
-function ensureSource2Tab() {
-    if (document.getElementById('tab-source-2')) return;
+/* Dynamic tab for the "Další zdroje" live prehrajto search results.
+   When the film has a statically-rendered `prehraj.to` provider tab
+   (cached URL), we reuse it; otherwise a new tab is appended so the
+   user can see which source they just clicked. */
+function ensureLivePrehrajtoTab() {
+    var existing = document.querySelector('.source-tab[data-provider="prehrajto"]');
+    if (existing) return existing;
     var tabs = document.getElementById('source-tabs');
-    if (!tabs) return;
+    if (!tabs) return null;
     var btn = document.createElement('button');
-    btn.className = 'source-tab';
-    btn.id = 'tab-source-2';
-    btn.textContent = 'Zdroj 2';
+    btn.className = 'source-tab source-prehrajto';
+    btn.dataset.provider = 'prehrajto';
+    btn.textContent = 'prehraj.to';
     btn.onclick = function() {
-        // Clicking Zdroj 2 tab re-activates the last-played prehrajto item
+        // Clicking the prehraj.to tab re-activates the last-clicked
+        // "Další zdroje" item (if any) so its URL is resolved again.
         var last = document.querySelector('.prehrajto-item.active');
         if (last && last._movie) playPrehrajto(last._movie, last);
+        else if (cachedPrehrajtoUrl) playCachedPrehrajto();
     };
     tabs.appendChild(btn);
-}
-function switchBackToSource1() {
-    // Hide "Zdroj 1" tab click handler: replay the primary source.
-    // Primary is either SK Torrent (cachedPrehrajtoPlayed=false) or cached
-    // prehrajto_url (cachedPrehrajtoPlayed=true).
-    setActiveTab(1);
-    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
-    var sktQ = document.getElementById('sktorrent-quality');
-    if (typeof sktorrentSources !== 'undefined' && sktorrentSources.length) {
-        if (sktQ) sktQ.style.display = '';
-        playSktorrent(0, sktQ ? sktQ.querySelector('.quality-btn') : null);
-    } else if (cachedPrehrajtoUrl) {
-        // Re-resolve the cached URL (token-bound, short TTL)
-        var player = document.getElementById('film-player');
-        var status = document.getElementById('source-status');
-        status.textContent = 'Načítání Přehraj.to...';
-        fetch('/api/movies/video-url?url=' + encodeURIComponent(cachedPrehrajtoUrl))
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.success && data.video_url) {
-                    var url = data.video_url.replace(/&amp;/g, '&');
-                    playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-                    status.textContent = 'Přehraj.to';
-                    if (data.subtitles && data.subtitles.length) {
-                        addSubtitles(player, data.subtitles);
-                    }
-                } else { status.textContent = 'Zdroj nedostupný'; }
-            });
-    }
+    return btn;
 }
 
 function playPrehrajto(movie, item) {
@@ -768,14 +778,15 @@ function playPrehrajto(movie, item) {
     var status = document.getElementById('source-status');
     if (!player) return;
 
-    // Mark clicked item as the active source (gold + play arrow);
-    // append "Zdroj 2" tab and switch focus to it so the user sees which
-    // source is playing. Mirror of episode_detail.html behaviour.
+    // Mark clicked item as the active source (gold + play arrow); make
+    // the prehraj.to provider tab the current active tab so the user can
+    // see which provider is playing. If this film had no cached prehrajto
+    // URL, `ensureLivePrehrajtoTab` creates the tab on demand.
     document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
     item.classList.add('active');
     item._movie = movie;
-    ensureSource2Tab();
-    setActiveTab(2);
+    var prehrajtoTab = ensureLivePrehrajtoTab();
+    if (prehrajtoTab) showSource('prehrajto', prehrajtoTab);
     var sktQ = document.getElementById('sktorrent-quality');
     if (sktQ) sktQ.style.display = 'none';
 
