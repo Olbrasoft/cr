@@ -18,15 +18,19 @@
 //!     occasionally also from CZ IPs when an upload has been deleted).
 //!
 //! Routes:
-//!   GET /api/sledujteto/search?q=<query>     — search upstream, aspone fallback
+//!   GET /api/sledujteto/search?q=<query>     — search upstream, aspone fallback (POC-gated)
 //!   GET /api/sledujteto/resolve?id=<filesId> — turn files_id into playback URL
+//!   GET /api/films/{film_id}/sledujteto-sources — list alive uploads from DB
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::FromRow;
 
 use crate::state::AppState;
 
@@ -350,4 +354,79 @@ pub async fn sledujteto_resolve(
         download_url: data.download_url,
         error: None,
     })
+}
+
+/// One row in the "Další zdroje" listing for sledujteto.cz. Mirrors the
+/// prehraj.to shape so the detail-page template can reuse the same JS
+/// rendering path. `file_id` is an INT (vs prehraj.to's hex upload_id),
+/// and `cdn` is first-class because the data{N} copies are blocked from
+/// datacenter ASNs (#549).
+#[derive(Serialize, FromRow)]
+pub struct SledujtetoSourceRow {
+    pub file_id: i32,
+    pub title: String,
+    pub duration_sec: Option<i32>,
+    pub resolution_hint: Option<String>,
+    pub filesize_bytes: Option<i64>,
+    pub lang_class: String,
+    pub cdn: String,
+}
+
+/// `GET /api/films/{film_id}/sledujteto-sources` — ranked list of alive
+/// uploads from `film_sledujteto_uploads`. Ranking mirrors the primary-
+/// upload picker in the import script:
+///
+///   1. `cdn = 'www'` first (datacenter-ASN streamable).
+///   2. Then by language priority (CZ_DUB > CZ_NATIVE > CZ_SUB > SK_DUB >
+///      SK_SUB > UNKNOWN > EN).
+///   3. Then by rough resolution score parsed from `resolution_hint`.
+///
+/// The template calls this on film detail render and drives the player
+/// via `/api/sledujteto/resolve?id=<file_id>`.
+pub async fn sledujteto_sources(
+    State(state): State<AppState>,
+    Path(film_id): Path<i32>,
+) -> Response {
+    let sql = r#"
+        SELECT file_id, title, duration_sec, resolution_hint, filesize_bytes,
+               lang_class, cdn
+        FROM film_sledujteto_uploads
+        WHERE film_id = $1 AND is_alive = TRUE
+        ORDER BY
+            CASE cdn WHEN 'www' THEN 0 ELSE 1 END,
+            CASE lang_class
+                WHEN 'CZ_DUB'    THEN 0
+                WHEN 'CZ_NATIVE' THEN 1
+                WHEN 'CZ_SUB'    THEN 2
+                WHEN 'SK_DUB'    THEN 3
+                WHEN 'SK_SUB'    THEN 4
+                WHEN 'UNKNOWN'   THEN 5
+                ELSE 6
+            END,
+            CASE
+                WHEN resolution_hint ILIKE '%2160%' OR resolution_hint ILIKE '%4k%' THEN 0
+                WHEN resolution_hint ILIKE '%1080%' THEN 1
+                WHEN resolution_hint ILIKE '%720%'  THEN 2
+                WHEN resolution_hint ILIKE '%480%'  THEN 3
+                ELSE 4
+            END,
+            file_id
+    "#;
+
+    match sqlx::query_as::<_, SledujtetoSourceRow>(sql)
+        .bind(film_id)
+        .fetch_all(&state.db)
+        .await
+    {
+        Ok(rows) => Json(json!({
+            "film_id": film_id,
+            "count": rows.len(),
+            "sources": rows,
+        }))
+        .into_response(),
+        Err(e) => {
+            tracing::error!(film_id, error = ?e, "sledujteto_sources DB query failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
+        }
+    }
 }
