@@ -18,15 +18,19 @@
 //!     occasionally also from CZ IPs when an upload has been deleted).
 //!
 //! Routes:
-//!   GET /api/sledujteto/search?q=<query>     — search upstream, aspone fallback
+//!   GET /api/sledujteto/search?q=<query>     — search upstream, aspone fallback (POC-gated)
 //!   GET /api/sledujteto/resolve?id=<filesId> — turn files_id into playback URL
+//!   GET /api/films/{film_id}/sledujteto-sources — list alive uploads from DB
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::FromRow;
 
 use crate::state::AppState;
 
@@ -255,6 +259,39 @@ pub async fn sledujteto_resolve(
     State(state): State<AppState>,
     Query(params): Query<ResolveQuery>,
 ) -> Json<ResolveResponse> {
+    // Abuse guard: the endpoint is CORS-`Any` (same policy as the rest
+    // of /api), so without a DB check it would act as a free
+    // `add-file-link` hash generator for any integer. Only accept ids
+    // present in `film_sledujteto_uploads` — that bounds traffic to
+    // files the import pipeline has already classified, and turns any
+    // drive-by into a DB read with no upstream side effect.
+    let known = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM film_sledujteto_uploads WHERE file_id = $1)",
+    )
+    .bind(params.id as i32)
+    .fetch_one(&state.db)
+    .await;
+    match known {
+        Ok(true) => {}
+        Ok(false) => {
+            return Json(ResolveResponse {
+                success: false,
+                video_url: None,
+                download_url: None,
+                error: Some("unknown file_id".into()),
+            });
+        }
+        Err(e) => {
+            tracing::error!("sledujteto resolve DB check failed: {e}");
+            return Json(ResolveResponse {
+                success: false,
+                video_url: None,
+                download_url: None,
+                error: Some("db error".into()),
+            });
+        }
+    }
+
     let body = json!({ "params": { "id": params.id } });
 
     let resp = state
@@ -350,4 +387,132 @@ pub async fn sledujteto_resolve(
         download_url: data.download_url,
         error: None,
     })
+}
+
+/// One row in the "Další zdroje" listing for sledujteto.cz. Mirrors the
+/// prehraj.to shape so the detail-page template can reuse the same JS
+/// rendering path. `file_id` is an INT (vs prehraj.to's hex upload_id),
+/// and `cdn` is first-class because the data{N} copies are blocked from
+/// datacenter ASNs (#549).
+#[derive(Serialize, FromRow)]
+pub struct SledujtetoSourceRow {
+    pub file_id: i32,
+    pub title: String,
+    pub duration_sec: Option<i32>,
+    pub resolution_hint: Option<String>,
+    pub filesize_bytes: Option<i64>,
+    pub lang_class: String,
+    pub cdn: String,
+}
+
+/// `GET /api/films/{film_id}/sledujteto-sources` — ranked list of alive
+/// uploads from `film_sledujteto_uploads`. Ranking mirrors the primary-
+/// upload picker in the import script:
+///
+///   1. `cdn = 'www'` first (datacenter-ASN streamable).
+///   2. Then by language priority (CZ_DUB > CZ_NATIVE > CZ_SUB > SK_DUB >
+///      SK_SUB > UNKNOWN > EN).
+///   3. Then by rough resolution score parsed from `resolution_hint`.
+///
+/// Exposes the DB-backed "Další zdroje" source list for follow-up UI/API
+/// consumers. The current film detail template does not fetch this
+/// endpoint on render — it uses the server-rendered
+/// `film.sledujteto_primary_file_id` and calls `/api/sledujteto/resolve`
+/// directly. This endpoint lands ahead of the unified source-picker UI
+/// so API consumers can already enumerate alternatives.
+pub async fn sledujteto_sources(
+    State(state): State<AppState>,
+    Path(film_id): Path<i32>,
+) -> Response {
+    let sql = r#"
+        SELECT file_id, title, duration_sec, resolution_hint, filesize_bytes,
+               lang_class, cdn
+        FROM film_sledujteto_uploads
+        WHERE film_id = $1 AND is_alive = TRUE
+        ORDER BY
+            CASE cdn WHEN 'www' THEN 0 ELSE 1 END,
+            CASE lang_class
+                WHEN 'CZ_DUB'    THEN 0
+                WHEN 'CZ_NATIVE' THEN 1
+                WHEN 'CZ_SUB'    THEN 2
+                WHEN 'SK_DUB'    THEN 3
+                WHEN 'SK_SUB'    THEN 4
+                WHEN 'UNKNOWN'   THEN 5
+                ELSE 6
+            END,
+            CASE
+                WHEN resolution_hint ILIKE '%2160%' OR resolution_hint ILIKE '%4k%' THEN 0
+                WHEN resolution_hint ILIKE '%1080%' THEN 1
+                WHEN resolution_hint ILIKE '%720%'  THEN 2
+                WHEN resolution_hint ILIKE '%480%'  THEN 3
+                ELSE 4
+            END,
+            file_id
+    "#;
+
+    match sqlx::query_as::<_, SledujtetoSourceRow>(sql)
+        .bind(film_id)
+        .fetch_all(&state.db)
+        .await
+    {
+        Ok(rows) => Json(json!({
+            "film_id": film_id,
+            "count": rows.len(),
+            "sources": rows,
+        }))
+        .into_response(),
+        Err(e) => {
+            tracing::error!(film_id, error = ?e, "sledujteto_sources DB query failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- `SledujtetoSourceRow` JSON contract -----------------------------
+    // Locks the field names/types the `/api/films/{id}/sledujteto-sources`
+    // endpoint exposes. Any rename or drop here breaks downstream API
+    // consumers (and the eventual unified source-picker UI in #548). Same
+    // pattern as the `PrehrajtoSourceRow` contract tests above.
+
+    #[test]
+    fn source_row_serializes_with_expected_fields() {
+        let row = SledujtetoSourceRow {
+            file_id: 16824,
+            title: "Vecirek 2017 CZ titulky HD".to_string(),
+            duration_sec: Some(4242),
+            resolution_hint: Some("1280x534".to_string()),
+            filesize_bytes: Some(562_047_221),
+            lang_class: "CZ_SUB".to_string(),
+            cdn: "www".to_string(),
+        };
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert_eq!(json["file_id"], 16824);
+        assert_eq!(json["title"], "Vecirek 2017 CZ titulky HD");
+        assert_eq!(json["duration_sec"], 4242);
+        assert_eq!(json["resolution_hint"], "1280x534");
+        assert_eq!(json["filesize_bytes"], 562_047_221_i64);
+        assert_eq!(json["lang_class"], "CZ_SUB");
+        assert_eq!(json["cdn"], "www");
+    }
+
+    #[test]
+    fn source_row_serializes_optional_nulls_as_json_null() {
+        let row = SledujtetoSourceRow {
+            file_id: 1,
+            title: "Unknown".to_string(),
+            duration_sec: None,
+            resolution_hint: None,
+            filesize_bytes: None,
+            lang_class: "UNKNOWN".to_string(),
+            cdn: "unknown".to_string(),
+        };
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert!(json["duration_sec"].is_null());
+        assert!(json["resolution_hint"].is_null());
+        assert!(json["filesize_bytes"].is_null());
+    }
 }

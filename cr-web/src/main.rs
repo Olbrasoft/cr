@@ -216,6 +216,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::movies_api::prehrajto_sources),
         )
         .route(
+            "/films/{film_id}/sledujteto-sources",
+            axum::routing::get(handlers::movies_api::sledujteto_sources),
+        )
+        .route(
             "/movies/thumb",
             axum::routing::get(handlers::movies_api::movies_thumb),
         )
@@ -249,22 +253,25 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::sktorrent_resolve),
         );
 
-    // #551 POC surface: both endpoints are public and hit sledujteto.cz on
-    // every call, which is acceptable for the low-traffic
-    // /admin/test-sledujteto/ diagnostic page but NOT the shape we want for
-    // production. Gate behind SLEDUJTETO_POC_ENABLED so an unattended deploy
-    // can't drive uncached upstream load. The proper cached handler lands
-    // in #547 and replaces these.
+    // The `/sledujteto/resolve` endpoint is always registered — it's the
+    // production playback path that turns a `file_id` stored in
+    // `film_sledujteto_uploads` into a hashed streaming URL via
+    // `POST /services/add-file-link`. That call works from any ASN
+    // (including Hetzner AS24940) so no proxy is needed and traffic is
+    // driven by real user clicks, not a diagnostic page.
+    let api_routes = api_routes.route(
+        "/sledujteto/resolve",
+        axum::routing::get(handlers::movies_api::sledujteto_resolve),
+    );
+
+    // `/sledujteto/search` hits the sledujteto.cz search API on every call
+    // and has no cache; keep it behind SLEDUJTETO_POC_ENABLED so only the
+    // `/admin/test-sledujteto/` diagnostic page drives that upstream load.
     let api_routes = if state.config.sledujteto_poc_enabled {
-        api_routes
-            .route(
-                "/sledujteto/search",
-                axum::routing::get(handlers::movies_api::sledujteto_search),
-            )
-            .route(
-                "/sledujteto/resolve",
-                axum::routing::get(handlers::movies_api::sledujteto_resolve),
-            )
+        api_routes.route(
+            "/sledujteto/search",
+            axum::routing::get(handlers::movies_api::sledujteto_search),
+        )
     } else {
         api_routes
     }

@@ -8,7 +8,8 @@ const FILMS_PER_PAGE: i64 = 24;
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
     f.imdb_rating, f.csfd_rating, f.runtime_min, \
     f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path";
+    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path, \
+    f.sledujteto_primary_file_id";
 
 // --- DB row types ---
 
@@ -47,6 +48,12 @@ struct FilmRow {
     /// `films_cover_large_dynamic` proxies the TMDB image. When None, the
     /// template keeps the legacy `-large.webp` URL served from R2.
     tmdb_poster_path: Option<String>,
+    /// Best sledujteto upload for this film — written by the sledujteto
+    /// import script. When `Some`, the detail-page JS calls
+    /// `/api/sledujteto/resolve?id=<file_id>` at render time and points
+    /// the video element at the returned playback URL. Fallback chain is
+    /// sktorrent → prehrajto (cached) → sledujteto.
+    pub sledujteto_primary_file_id: Option<i32>,
 }
 
 impl FilmRow {
