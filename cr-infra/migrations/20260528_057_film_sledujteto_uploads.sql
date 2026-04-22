@@ -2,9 +2,9 @@
 -- can have many uploads (observed in pilot: 1-5× the same film) with different
 -- language markers, resolutions, and CDN hosts. Import source is a
 -- title-first search crawl via the SledujteToCzProxy (issue #545/#597);
--- audio-language is detected separately by whisper on a short sample
--- (scripts/sledujteto-detect-audio.py), because sledujteto title strings
--- frequently miss dubbing hints.
+-- audio-language is detected separately by whisper on a short sample in a
+-- dedicated audio-detection step, because sledujteto title strings frequently
+-- miss dubbing hints.
 --
 -- Serves three consumers (mirrors the prehrajto.cz model in
 -- 20260508_048_film_prehrajto_uploads.sql):
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS film_sledujteto_uploads (
     -- rewritten by the uploader.
     file_id          INTEGER     NOT NULL,
     -- Raw title from the uploader — used as the input for language
-    -- classification below (scripts/sledujteto-detect-audio.py combines
-    -- this with a whisper sample of the actual audio track).
+    -- classification below (combined with a whisper sample of the actual
+    -- audio track).
     title            TEXT        NOT NULL,
     duration_sec     INTEGER,
     -- Detected language class. Sledujteto uploads are less disciplined
@@ -58,11 +58,11 @@ CREATE TABLE IF NOT EXISTS film_sledujteto_uploads (
     -- returned an error / missing video_url". The primary-upload picker
     -- skips these; the reconciliation job sweeps them to cross-check
     -- against upstream before permanent delete.
-    is_alive         BOOLEAN     NOT NULL DEFAULT TRUE,
+    is_alive         BOOLEAN     NOT NULL DEFAULT true,
     last_seen        TIMESTAMPTZ,
     last_checked     TIMESTAMPTZ,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (film_id, file_id),
     CONSTRAINT film_sledujteto_uploads_lang_check CHECK (
@@ -79,18 +79,25 @@ CREATE INDEX IF NOT EXISTS idx_fsu_film_alive
     WHERE is_alive;
 
 -- Secondary: reconciliation job hunts uploads that haven't been seen in a
--- while (WHERE last_seen < NOW() - INTERVAL '30 days'). Index helps this
+-- while (WHERE last_seen < now() - INTERVAL '30 days'). Index helps this
 -- periodic full-table scan stay fast as the table grows.
 CREATE INDEX IF NOT EXISTS idx_fsu_last_seen
     ON film_sledujteto_uploads (last_seen)
     WHERE is_alive;
+
+-- Stream endpoint (/api/movies/stream/sledujteto/<file_id>, #547) looks
+-- uploads up by `file_id` alone; enforce uniqueness so a given upload
+-- can only map to one film and resolution never becomes ambiguous.
+-- Mirrors `uq_fpu_upload_id` in the prehrajto.cz table.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fsu_file_id
+    ON film_sledujteto_uploads (file_id);
 
 -- Rollup flags and preferred upload per film. Unlike prehraj.to (where CZ
 -- flags were already present from migration #032), sledujteto introduces
 -- the whole column family fresh — both CZ and SK flavors.
 ALTER TABLE films
     ADD COLUMN IF NOT EXISTS sledujteto_primary_file_id INTEGER,
-    ADD COLUMN IF NOT EXISTS sledujteto_has_dub     BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS sledujteto_has_subs    BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS sledujteto_has_sk_dub  BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS sledujteto_has_sk_subs BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS sledujteto_has_dub     BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS sledujteto_has_subs    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS sledujteto_has_sk_dub  BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS sledujteto_has_sk_subs BOOLEAN NOT NULL DEFAULT false;
