@@ -25,9 +25,14 @@ Reads the four prepared data files from the sledujteto crawler pipeline
       over raw TMDB `overview_cs` for SEO.
 
 For every tmdb_id present in the sources file:
-  1. `INSERT INTO films ...` (ON CONFLICT (tmdb_id) DO NOTHING) when the
-     film doesn't already exist — metadata from the TMDB overview file,
-     description from Gemma (fallback to TMDB `overview_cs`).
+  1. Pre-lookup `SELECT id FROM films WHERE tmdb_id = %s` — if a row
+     exists (possibly imported earlier by another source like prehrajto),
+     reuse it; otherwise `INSERT INTO films ...` with metadata from the
+     TMDB overview file and description from Gemma (fallback to TMDB
+     `overview_cs`). `films.tmdb_id` is not UNIQUE at the schema level
+     (there is no UNIQUE index), so we cannot rely on `ON CONFLICT
+     (tmdb_id)` — the pre-lookup is what enforces "one film per tmdb_id"
+     within this import.
   2. `INSERT ... ON CONFLICT (film_id, file_id) DO UPDATE` into
      `film_sledujteto_uploads` for every upload, merging title-regex +
      whisper audio-language hints into `lang_class`.
@@ -37,10 +42,9 @@ For every tmdb_id present in the sources file:
 
 Safety guarantees (matches scripts/import-prehrajto-new-films.py):
   * Never DELETE — this script only inserts and UPDATE-rolls.
-  * `films` inserts use `ON CONFLICT (tmdb_id) DO NOTHING` where a
-     partial UNIQUE index exists; manually enforced by a pre-lookup
-     otherwise (TMDB id isn't globally UNIQUE on `films` today, only
-     used as a DISTINCT key by the existing crawlers).
+  * Pre-lookup on `tmdb_id` detects existing rows; duplicates (multiple
+     rows with the same `tmdb_id`) are treated as a hard error so the
+     importer does not silently attach uploads to an arbitrary film.
   * `--dry-run` wraps the entire transaction in ROLLBACK.
   * Row-count monotonicity is asserted at the end.
 
@@ -272,7 +276,7 @@ def unique_slug(cur, base: str, year: int | None, reserved: set[str]) -> str:
 def load_sources(path: Path) -> dict[int, dict]:
     """Return {tmdb_id: {tmdb_title, tmdb_release_date, sources: [...]}}."""
     out: dict[int, dict] = {}
-    with path.open() as f:
+    with path.open(encoding="utf-8", errors="replace") as f:
         for line in f:
             row = json.loads(line)
             out[int(row["tmdb_id"])] = row
@@ -282,7 +286,7 @@ def load_sources(path: Path) -> dict[int, dict]:
 def load_audio(path: Path) -> dict[int, dict]:
     """Return {upload_id: {audio_language, cdn, duration_seconds, ...}}."""
     out: dict[int, dict] = {}
-    with path.open() as f:
+    with path.open(encoding="utf-8", errors="replace") as f:
         for line in f:
             row = json.loads(line)
             out[int(row["upload_id"])] = row
@@ -292,7 +296,7 @@ def load_audio(path: Path) -> dict[int, dict]:
 def load_jsonl_by_tmdb(path: Path) -> dict[int, dict]:
     """Generic by-tmdb_id loader for TMDB / Gemma overviews."""
     out: dict[int, dict] = {}
-    with path.open() as f:
+    with path.open(encoding="utf-8", errors="replace") as f:
         for line in f:
             row = json.loads(line)
             out[int(row["tmdb_id"])] = row
@@ -426,13 +430,19 @@ def build_film_row(
     tmdb_meta: dict | None,
     gemma_meta: dict | None,
     slug: str,
+    src_row: dict | None = None,
 ) -> dict:
     """Shape a film row from TMDB + Gemma data. Description falls back to
-    TMDB `overview_cs` (then `overview_en`) when Gemma is missing."""
+    TMDB `overview_cs` (then `overview_en`) when Gemma is missing. When
+    TMDB metadata is absent, title/year fall back to the sources file
+    (`tmdb_title`, `tmdb_release_date`) rather than a literal
+    "Unknown" — those fields are populated by the crawler for every row."""
+    src = src_row or {}
     title = (
         (tmdb_meta or {}).get("title_cs")
         or (tmdb_meta or {}).get("original_title")
-        or "Unknown"
+        or src.get("tmdb_title")
+        or f"tmdb-{tmdb_id}"
     )
     original_title = None
     t_en = (tmdb_meta or {}).get("title_en")
@@ -448,7 +458,10 @@ def build_film_row(
         or (tmdb_meta or {}).get("overview_en")
     )
 
-    release_date = (tmdb_meta or {}).get("release_date")
+    release_date = (
+        (tmdb_meta or {}).get("release_date")
+        or src.get("tmdb_release_date")
+    )
     year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
 
     return {
@@ -504,10 +517,18 @@ def run_import(args: argparse.Namespace) -> int:
             gemma_meta = gemma_by_id.get(tmdb_id)
             orig_lang = (tmdb_meta or {}).get("original_language")
 
-            cur.execute("SELECT id FROM films WHERE tmdb_id = %s", (tmdb_id,))
-            existing = cur.fetchone()
-            if existing:
-                film_id = existing[0]
+            cur.execute(
+                "SELECT id FROM films WHERE tmdb_id = %s ORDER BY id",
+                (tmdb_id,),
+            )
+            existing_rows = cur.fetchall()
+            if len(existing_rows) > 1:
+                raise RuntimeError(
+                    f"duplicate films rows for tmdb_id={tmdb_id}: "
+                    f"{', '.join(str(row[0]) for row in existing_rows)}"
+                )
+            if existing_rows:
+                film_id = existing_rows[0][0]
                 stats["existing_films"] += 1
             else:
                 title = (
@@ -528,7 +549,9 @@ def run_import(args: argparse.Namespace) -> int:
                 slug = unique_slug(cur, base, year, reserved_slugs)
                 reserved_slugs.add(slug)
 
-                film_row = build_film_row(tmdb_id, tmdb_meta, gemma_meta, slug)
+                film_row = build_film_row(
+                    tmdb_id, tmdb_meta, gemma_meta, slug, src_row=src_row
+                )
                 cur.execute(INSERT_FILM_SQL, film_row)
                 film_id = cur.fetchone()[0]
                 stats["inserted_films"] += 1

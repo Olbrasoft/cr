@@ -100,9 +100,7 @@ def upload_cover_to_r2(
             text=True,
             cwd=wrangler_cwd,
         )
-        # Wrangler prints "Upload complete!" on success and non-zero
-        # return on failure. Capture stderr for debuggable log output.
-        if result.returncode != 0 or "Upload complete" not in result.stdout:
+        if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
             return False, f"wrangler put failed for {key}: {' | '.join(tail)}"
 
@@ -134,20 +132,21 @@ def fetch_candidate_films(dsn: str, limit: int | None) -> list[tuple[int, str]]:
     conn = psycopg2.connect(dsn)
     try:
         cur = conn.cursor()
-        # ORDER BY added_at DESC: freshly-imported sledujteto films are at
-        # the top of /filmy-online/ (default sort by `added_at DESC`), so
-        # processing them first fills visible thumbnails before older rows.
-        # Covers backfilled for never-visited films are equally cached on R2
-        # either way.
+        # ORDER BY added_at DESC NULLS LAST: freshly-imported sledujteto
+        # films are at the top of /filmy-online/ (default sort by
+        # `added_at DESC`), so processing them first fills visible
+        # thumbnails before older rows. Keep NULL added_at rows behind
+        # genuinely recent films; `id DESC` is a stable tiebreaker.
         sql = (
             "SELECT id, tmdb_poster_path FROM films "
             "WHERE sledujteto_primary_file_id IS NOT NULL "
             "AND tmdb_poster_path IS NOT NULL "
-            "ORDER BY added_at DESC, id DESC"
+            "ORDER BY added_at DESC NULLS LAST, id DESC"
         )
-        if limit:
-            sql += f" LIMIT {int(limit)}"
-        cur.execute(sql)
+        if limit is not None:
+            cur.execute(sql + " LIMIT %s", (int(limit),))
+        else:
+            cur.execute(sql)
         return list(cur.fetchall())
     finally:
         conn.close()
@@ -215,7 +214,12 @@ def main() -> int:
                 )
 
     log.info("DONE: %s", stats)
-    return 0 if stats["ok"] > 0 else 1
+    # Exit 0 on "nothing to do" (idempotent re-run after full backfill)
+    # and when every outcome was a success. Only fail on any upload or
+    # download error — those warrant investigation.
+    if stats["download_failed"] == 0 and stats["upload_failed"] == 0:
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
