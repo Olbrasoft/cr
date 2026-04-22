@@ -6,7 +6,7 @@
 
 {% block og_title %}{{ show.title }} — {% match episode.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }} {% endif %}{% when None %}{% endmatch %}S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endblock %}
 {% block og_description %}{% match episode.overview %}{% when Some with (d) %}{{ d }}{% when None %}{{ show.title }} — S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}{% endmatch %}{% endblock %}
-{% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/tv-porady/still/{{ f }}{% when None %}{% match show.cover_filename %}{% when Some with (c) %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}.webp{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endmatch %}{% endblock %}
+{% block og_image %}{% match episode.still_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/tv-porady/still/{{ f }}{% when None %}https://ceskarepublika.wiki/tv-porady/{{ show.slug }}.webp{% endmatch %}{% endblock %}
 {% block og_type %}video.episode{% endblock %}
 
 {% block leaflet %}{% endblock %}
@@ -50,7 +50,7 @@
         </div>
         <div class="player-panel">
             <video id="tv-player" controls preload="metadata" width="100%"
-                   {% match episode.still_filename %}{% when Some with (f) %}poster="/tv-porady/still/{{ f }}"{% when None %}{% match show.cover_filename %}{% when Some with (c) %}poster="/tv-porady/{{ show.slug }}-large.webp"{% when None %}{% endmatch %}{% endmatch %}></video>
+                   {% match episode.still_filename %}{% when Some with (f) %}poster="/tv-porady/still/{{ f }}"{% when None %}poster="/tv-porady/{{ show.slug }}-large.webp"{% endmatch %}></video>
             <div class="player-controls">
                 <div class="player-quality" id="source-quality"></div>
                 <div id="subtitle-controls" class="subtitle-controls" style="display:none;">

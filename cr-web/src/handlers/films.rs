@@ -6,7 +6,7 @@ const FILMS_PER_PAGE: i64 = 24;
 /// SELECT column list for `FilmRow` queries. Kept as a const to avoid
 /// duplication across `films_list`, `films_by_genre`, and `films_detail`.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-    f.imdb_rating, f.csfd_rating, f.runtime_min, f.cover_filename, \
+    f.imdb_rating, f.csfd_rating, f.runtime_min, \
     f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
     f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path";
 
@@ -23,7 +23,6 @@ struct FilmRow {
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     runtime_min: Option<i16>,
-    cover_filename: Option<String>,
     sktorrent_video_id: Option<i32>,
     // `sktorrent_cdn` is used as a first-try hint by `sktorrent_resolve`
     // (see docs/sktorrent-cdn-stability.md) — ~80 % of films still live on
@@ -310,7 +309,6 @@ struct SearchRow {
     title: String,
     year: Option<i16>,
     imdb_rating: Option<f32>,
-    cover_filename: Option<String>,
 }
 
 // --- Handlers ---
@@ -679,7 +677,7 @@ pub async fn films_search(
             title: r.title,
             year: r.year,
             imdb_rating: r.imdb_rating,
-            cover: r.cover_filename.is_some(),
+            cover: true,
         })
         .collect();
 
@@ -690,7 +688,7 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, imdb_rating, cover_filename \
+        "SELECT slug, title, year, imdb_rating \
          FROM films \
          WHERE title ILIKE $1 OR original_title ILIKE $1 \
          ORDER BY \
@@ -714,7 +712,7 @@ async fn search_films_by_title_year(
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, imdb_rating, cover_filename \
+        "SELECT slug, title, year, imdb_rating \
          FROM films \
          WHERE CONCAT_WS(' ', title, year::text) ILIKE $1 \
             OR CONCAT_WS(' ', original_title, year::text) ILIKE $1 \
@@ -878,7 +876,7 @@ pub async fn films_cover(
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
     use crate::handlers::cover_proxy::{
-        fetch_cover, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp,
+        fetch_cover, new_r2_key, parse_cover_slug, placeholder_webp,
     };
 
     let (slug, _is_large) = parse_cover_slug(&slug_webp);
@@ -886,10 +884,9 @@ pub async fn films_cover(
     #[derive(sqlx::FromRow)]
     struct CoverRow {
         id: i32,
-        cover_filename: Option<String>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM films WHERE slug = $1")
+    let row = sqlx::query_as::<_, CoverRow>("SELECT id FROM films WHERE slug = $1")
         .bind(&slug)
         .fetch_optional(&state.db)
         .await?;
@@ -898,14 +895,8 @@ pub async fn films_cover(
         return Ok(placeholder_webp());
     };
 
-    // Try the new id-keyed layout first, then the pre-migration name-keyed
-    // one. See handlers::cover_proxy for the rollout story.
     let new_key = new_r2_key("films", row.id, false);
-    let old_key = row
-        .cover_filename
-        .as_deref()
-        .map(|cf| old_r2_key("films", cf, false));
-    Ok(fetch_cover(&state, &new_key, old_key.as_deref()).await)
+    Ok(fetch_cover(&state, &new_key).await)
 }
 
 /// GET /filmy-online/{slug}-large.webp — large (780×1170) cover.
@@ -918,19 +909,16 @@ pub async fn films_cover_large(
     State(state): State<AppState>,
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
-    use crate::handlers::cover_proxy::{
-        new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp,
-    };
+    use crate::handlers::cover_proxy::{new_r2_key, parse_cover_slug, placeholder_webp};
 
     let (slug, _is_large) = parse_cover_slug(&slug_webp);
 
     #[derive(sqlx::FromRow)]
     struct CoverRow {
         id: i32,
-        cover_filename: Option<String>,
     }
 
-    let row = sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM films WHERE slug = $1")
+    let row = sqlx::query_as::<_, CoverRow>("SELECT id FROM films WHERE slug = $1")
         .bind(&slug)
         .fetch_optional(&state.db)
         .await?;
@@ -944,18 +932,11 @@ pub async fn films_cover_large(
     // for a year (`immutable`); small-variant fallbacks are `no-store`
     // so a later-imported large cover can unseat them without a manual
     // CF purge.
-    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("films", row.id, true), false)];
-    candidates.push((format!("films/large/{slug}.webp"), false));
-    if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push((old_r2_key("films", cf, true), false));
-    }
-    // Small-variant fallbacks — inlined to avoid async recursion with
-    // films_cover. Marked `is_small_fallback=true` so they get served
-    // with `no-store`.
-    candidates.push((new_r2_key("films", row.id, false), true));
-    if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push((old_r2_key("films", cf, false), true));
-    }
+    let candidates: Vec<(String, bool)> = vec![
+        (new_r2_key("films", row.id, true), false),
+        (format!("films/large/{slug}.webp"), false),
+        (new_r2_key("films", row.id, false), true),
+    ];
     for (key, is_small_fallback) in &candidates {
         if let Some(bytes) = try_fetch_r2(&state, key).await {
             return Ok(if *is_small_fallback {

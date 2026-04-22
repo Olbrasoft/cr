@@ -154,8 +154,8 @@ def main():
                 else:
                     cur.execute("""
                         INSERT INTO tv_shows (title, slug, tmdb_id, imdb_id,
-                          first_air_year, description, cover_filename, added_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                          first_air_year, description, added_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, now())
                         RETURNING id
                     """, (
                         tmdb_name[:255],
@@ -164,7 +164,6 @@ def main():
                         show["imdb_id"],
                         first_year,
                         show["tmdb_overview"],
-                        tv_show_slug,  # cover_filename = slug; actual WebP fetched on demand
                     ))
                     tv_show_id = cur.fetchone()[0]
                     conn.commit()

@@ -29,17 +29,13 @@ pub struct SeriesRow {
     season_count: Option<i16>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     episode_count: Option<i16>,
-    cover_filename: Option<String>,
     #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
     /// TMDB poster_path (e.g. `/mqlg…uJ.jpg`), backfilled by
-    /// `scripts/backfill-tmdb-poster-paths.py --table series`. The detail
-    /// template only emits a large-cover URL when `cover_filename` is `Some`
-    /// (otherwise it renders a no-cover placeholder); in that branch
-    /// `large_url_ext()` consults this field and flips the extension to the
-    /// one the path ends with (`.jpg`/`.png`), which `series_cover_large_dynamic`
-    /// proxies from TMDB. When this field is `None` but `cover_filename` is
-    /// `Some`, the template keeps the legacy `-large.webp` URL served from R2.
+    /// `scripts/backfill-tmdb-poster-paths.py --table series`. When set,
+    /// `large_url_ext()` flips the extension to `.jpg`/`.png`, which
+    /// `series_cover_large_dynamic` proxies from TMDB. Otherwise falls back
+    /// to the R2-backed `-large.webp` URL.
     tmdb_poster_path: Option<String>,
 }
 
@@ -75,7 +71,6 @@ pub struct EpisodeCardRow {
     pub series_slug: String,
     pub series_title: String,
     pub series_original_title: Option<String>,
-    pub series_cover_filename: Option<String>,
     pub series_first_air_year: Option<i16>,
     pub series_imdb_rating: Option<f32>,
     pub series_csfd_rating: Option<i16>,
@@ -356,7 +351,7 @@ pub async fn series_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.imdb_rating, s.csfd_rating, \
-             s.season_count, s.episode_count, s.cover_filename, s.added_at, \
+             s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM series s \
              WHERE s.title ILIKE $1 OR s.original_title ILIKE $1 \
@@ -506,7 +501,6 @@ async fn fetch_latest_episode_cards(
             s.slug AS series_slug, \
             s.title AS series_title, \
             s.original_title AS series_original_title, \
-            s.cover_filename AS series_cover_filename, \
             s.first_air_year AS series_first_air_year, \
             s.imdb_rating AS series_imdb_rating, \
             s.csfd_rating AS series_csfd_rating, \
@@ -684,7 +678,7 @@ pub async fn series_resolve(
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at, tmdb_poster_path \
+         added_at, tmdb_poster_path \
          FROM series WHERE slug = $1",
     )
     .bind(&slug_raw)
@@ -698,7 +692,7 @@ pub async fn series_resolve(
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
+                 added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug_raw)
             .fetch_optional(&state.db)
@@ -827,7 +821,7 @@ pub async fn episode_detail(
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-         cover_filename, added_at, tmdb_poster_path FROM series WHERE slug = $1",
+         added_at, tmdb_poster_path FROM series WHERE slug = $1",
     )
     .bind(&slug)
     .fetch_optional(&state.db)
@@ -840,7 +834,7 @@ pub async fn episode_detail(
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, imdb_rating, csfd_rating, season_count, episode_count, \
-                 cover_filename, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
+                 added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug)
             .fetch_optional(&state.db)
@@ -1085,7 +1079,6 @@ struct SeriesSearchRow {
     title: String,
     first_air_year: Option<i16>,
     imdb_rating: Option<f32>,
-    cover_filename: Option<String>,
 }
 
 /// GET /api/series/search?q=...
@@ -1100,7 +1093,7 @@ pub async fn series_search(
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     let rows = sqlx::query_as::<_, SeriesSearchRow>(
-        "SELECT slug, title, first_air_year, imdb_rating, cover_filename \
+        "SELECT slug, title, first_air_year, imdb_rating \
          FROM series \
          WHERE title ILIKE $1 OR original_title ILIKE $1 \
          ORDER BY \
@@ -1123,7 +1116,7 @@ pub async fn series_search(
             title: r.title,
             year: r.first_air_year,
             imdb_rating: r.imdb_rating,
-            cover: r.cover_filename.is_some(),
+            cover: true,
         })
         .collect();
 
@@ -1135,7 +1128,7 @@ pub async fn series_cover(
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
     use crate::handlers::cover_proxy::{
-        fetch_cover, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp,
+        fetch_cover, new_r2_key, parse_cover_slug, placeholder_webp,
     };
 
     if slug_webp.ends_with("-large.webp") {
@@ -1148,25 +1141,19 @@ pub async fn series_cover(
     #[derive(sqlx::FromRow)]
     struct CoverRow {
         id: i32,
-        cover_filename: Option<String>,
     }
 
-    let row =
-        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM series WHERE slug = $1")
-            .bind(&slug)
-            .fetch_optional(&state.db)
-            .await?;
+    let row = sqlx::query_as::<_, CoverRow>("SELECT id FROM series WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?;
 
     let Some(row) = row else {
         return Ok(placeholder_webp());
     };
 
     let new_key = new_r2_key("series", row.id, false);
-    let old_key = row
-        .cover_filename
-        .as_deref()
-        .map(|cf| old_r2_key("series", cf, false));
-    Ok(fetch_cover(&state, &new_key, old_key.as_deref()).await)
+    Ok(fetch_cover(&state, &new_key).await)
 }
 
 /// GET /serialy-online/{slug}-large.webp — large (780×1170) cover.
@@ -1176,7 +1163,7 @@ pub async fn series_cover_large(
     Path(slug_webp): Path<String>,
 ) -> WebResult<Response> {
     use crate::handlers::cover_proxy::{
-        immutable_webp, new_r2_key, old_r2_key, parse_cover_slug, placeholder_webp, try_fetch_r2,
+        immutable_webp, new_r2_key, parse_cover_slug, placeholder_webp, try_fetch_r2,
     };
 
     let (slug, _is_large) = parse_cover_slug(&slug_webp);
@@ -1184,14 +1171,12 @@ pub async fn series_cover_large(
     #[derive(sqlx::FromRow)]
     struct CoverRow {
         id: i32,
-        cover_filename: Option<String>,
     }
 
-    let row =
-        sqlx::query_as::<_, CoverRow>("SELECT id, cover_filename FROM series WHERE slug = $1")
-            .bind(&slug)
-            .fetch_optional(&state.db)
-            .await?;
+    let row = sqlx::query_as::<_, CoverRow>("SELECT id FROM series WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?;
 
     let Some(row) = row else {
         return Ok(placeholder_webp());
@@ -1200,15 +1185,11 @@ pub async fn series_cover_large(
     use crate::handlers::cover_proxy::no_store_webp;
     // (R2 key, is_small_fallback) — small variants served under the
     // `-large.webp` URL must be `no-store` (see films_cover_large).
-    let mut candidates: Vec<(String, bool)> = vec![(new_r2_key("series", row.id, true), false)];
-    candidates.push((format!("series/large/{slug}.webp"), false));
-    if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push((old_r2_key("series", cf, true), false));
-    }
-    candidates.push((new_r2_key("series", row.id, false), true));
-    if let Some(cf) = row.cover_filename.as_deref() {
-        candidates.push((old_r2_key("series", cf, false), true));
-    }
+    let candidates: Vec<(String, bool)> = vec![
+        (new_r2_key("series", row.id, true), false),
+        (format!("series/large/{slug}.webp"), false),
+        (new_r2_key("series", row.id, false), true),
+    ];
     for (key, is_small_fallback) in &candidates {
         if let Some(bytes) = try_fetch_r2(&state, key).await {
             return Ok(if *is_small_fallback {

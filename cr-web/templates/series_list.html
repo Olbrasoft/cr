@@ -170,12 +170,7 @@
         {% for ep in episodes %}
         <a href="/serialy-online/{{ ep.series_slug }}/{% match ep.episode_slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/" class="film-card" title="{{ ep.series_title }} — S{{ ep.season }}E{{ ep.episode }}">
             <div class="film-poster">
-                {% match ep.series_cover_filename %}
-                {% when Some with (c) %}
                 <img src="/serialy-online/{{ ep.series_slug }}.webp" alt="{{ ep.series_title }}" title="{{ ep.series_title }}" loading="lazy" width="200" height="300">
-                {% when None %}
-                <div class="no-poster">{{ ep.series_title }}</div>
-                {% endmatch %}
                 <div class="rating-badges">
                     {% match ep.series_imdb_rating %}
                     {% when Some with (r) %}<span class="rating-badge imdb" title="TMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
@@ -210,12 +205,7 @@
         {% for s in series %}
         <a href="/serialy-online/{{ s.slug }}/" class="film-card" title="{{ s.title }}">
             <div class="film-poster">
-                {% match s.cover_filename %}
-                {% when Some with (cover) %}
                 <img src="/serialy-online/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
-                {% when None %}
-                <div class="no-poster">{{ s.title }}</div>
-                {% endmatch %}
                 <div class="rating-badges">
                     {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="TMDB hodnocení">{{ r }}</span>{% when None %}{% endmatch %}
                     {% match s.csfd_rating %}{% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% when None %}{% endmatch %}

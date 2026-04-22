@@ -51,7 +51,6 @@ SERIES_COPY_COLUMNS = [
     "csfd_rating",
     "season_count",
     "episode_count",
-    "cover_filename",
     "has_dub",
     "has_subtitles",
     "old_slug",
