@@ -48,11 +48,11 @@ struct FilmRow {
     /// `films_cover_large_dynamic` proxies the TMDB image. When None, the
     /// template keeps the legacy `-large.webp` URL served from R2.
     tmdb_poster_path: Option<String>,
-    /// Best sledujteto upload for this film — written by
-    /// `scripts/import-sledujteto-films.py`. When `Some`, the detail-page
-    /// JS calls `/api/sledujteto/resolve?id=<file_id>` at render time and
-    /// points the video element at the returned playback URL. Fallback
-    /// chain is sktorrent → prehrajto (cached) → sledujteto.
+    /// Best sledujteto upload for this film — written by the sledujteto
+    /// import script. When `Some`, the detail-page JS calls
+    /// `/api/sledujteto/resolve?id=<file_id>` at render time and points
+    /// the video element at the returned playback URL. Fallback chain is
+    /// sktorrent → prehrajto (cached) → sledujteto.
     pub sledujteto_primary_file_id: Option<i32>,
 }
 

@@ -407,34 +407,68 @@ var cachedPrehrajtoPlayed = false;
         });
 })();
 
-/* --- Sledujteto.cz: primary playback when SK Torrent + cached Přehraj.to both absent.
-       `sledujtetoPrimaryFileId` is the best-ranked upload from `film_sledujteto_uploads`
-       (cdn=www > lang priority > resolution). We resolve it via /api/sledujteto/resolve
-       which calls sledujteto's add-file-link endpoint — that returns a short-lived
-       playback URL that Hetzner can stream from the `www.sledujteto.cz` CDN. --- */
+/* --- Sledujteto.cz fallback playback.
+       Runs when sktorrent is absent AND either (a) there's no cached Přehraj.to
+       URL, or (b) the cached Přehraj.to IIFE above ran but failed (it flips
+       `cachedPrehrajtoPlayed` back to false on error). Polls that flag briefly
+       so we don't race ahead of the in-flight prehrajto fetch when one is in
+       progress. `sledujtetoPrimaryFileId` is the best-ranked upload from
+       `film_sledujteto_uploads` (cdn=www > lang priority > resolution).
+       Resolves via /api/sledujteto/resolve → sledujteto `add-file-link`, which
+       returns a short-lived URL streamable from www.sledujteto.cz. --- */
 (function() {
     if (sledujtetoPrimaryFileId === null) return;
     var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
     if (hasSktorrent) return;                         // SK Torrent owns primary
-    if (cachedPrehrajtoUrl) return;                   // Cached prehrajto IIFE already acted
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
     if (!player) return;
 
-    status.textContent = 'Načítání sledujteto...';
-    fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.success || !data.video_url) {
+    function playSledujteto() {
+        status.textContent = 'Načítání sledujteto...';
+        fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success || !data.video_url) {
+                    status.textContent = 'Zdroj nedostupný';
+                    return;
+                }
+                playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+                status.textContent = 'Sledujteto';
+            })
+            .catch(function() {
                 status.textContent = 'Zdroj nedostupný';
-                return;
-            }
-            playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-            status.textContent = 'Sledujteto';
-        })
-        .catch(function() {
-            status.textContent = 'Zdroj nedostupný';
-        });
+            });
+    }
+
+    if (!cachedPrehrajtoUrl) {
+        // No prehrajto to wait on — play sledujteto immediately.
+        playSledujteto();
+        return;
+    }
+
+    // cachedPrehrajtoPlayed was set to true by the prehrajto IIFE right
+    // before it kicked off its fetch; it resets to false if that fetch
+    // fails. Poll briefly for that signal and fall through to sledujteto
+    // once prehrajto gives up. The 5-second ceiling matches the
+    // prehrajto resolve timeout in /api/movies/video-url.
+    var elapsed = 0;
+    var interval = setInterval(function() {
+        // Player already has a src → some source won; we're done.
+        if (player.src && !player.paused) { clearInterval(interval); return; }
+        // Prehrajto gave up (cachedPrehrajtoPlayed flipped false) → take over.
+        if (cachedPrehrajtoPlayed === false) {
+            clearInterval(interval);
+            playSledujteto();
+            return;
+        }
+        elapsed += 200;
+        if (elapsed >= 5000) {
+            // Prehrajto hung; take over anyway.
+            clearInterval(interval);
+            playSledujteto();
+        }
+    }, 200);
 })();
 
 /* --- Přehraj.to: search, validate (direct vs proxy), auto-play if no SK Torrent --- */
