@@ -73,22 +73,21 @@
            Sledujteto) renders with `.active` so the auto-play IIFE picks
            it up. Additional live-search results from "Další zdroje"
            continue to append a dynamic prehraj.to-tagged tab on click. #}
+        {# Active-tab rule, computed once so nested match blocks stay simple:
+           the first available provider in SKT → Přehraj.to → Sledujteto
+           priority order matches the auto-play waterfall below. #}
+        {% let has_skt = film.sktorrent_video_id.is_some() %}
+        {% let has_prh = film.prehrajto_url.is_some() %}
         <div class="source-tabs" id="source-tabs">
-            {% match film.sktorrent_video_id %}
-            {% when Some with (_vid) %}
+            {% if has_skt %}
             <button class="source-tab source-sktorrent active" data-provider="sktorrent" onclick="switchSource(this)">online.sktorrent.eu</button>
-            {% when None %}
-            {% endmatch %}
-            {% match film.prehrajto_url %}
-            {% when Some with (_u) %}
-            <button class="source-tab source-prehrajto {% match film.sktorrent_video_id %}{% when Some with (_) %}{% when None %}active{% endmatch %}" data-provider="prehrajto" onclick="switchSource(this)">prehraj.to</button>
-            {% when None %}
-            {% endmatch %}
-            {% match film.sledujteto_primary_file_id %}
-            {% when Some with (_f) %}
-            <button class="source-tab source-sledujteto {% match film.sktorrent_video_id %}{% when Some with (_) %}{% when None %}{% match film.prehrajto_url %}{% when Some with (_) %}{% when None %}active{% endmatch %}{% endmatch %}" data-provider="sledujteto" onclick="switchSource(this)">sledujteto.cz</button>
-            {% when None %}
-            {% endmatch %}
+            {% endif %}
+            {% if has_prh %}
+            <button class="source-tab source-prehrajto{% if !has_skt %} active{% endif %}" data-provider="prehrajto" onclick="onPrehrajtoTabClick(this)">prehraj.to</button>
+            {% endif %}
+            {% if film.sledujteto_primary_file_id.is_some() %}
+            <button class="source-tab source-sledujteto{% if !has_skt && !has_prh %} active{% endif %}" data-provider="sledujteto" onclick="switchSource(this)">sledujteto.cz</button>
+            {% endif %}
         </div>
 
         {# Video player — auto-select best available quality #}
@@ -327,6 +326,15 @@ function showSource(provider, btn) {
     // Hide sktorrent quality buttons when on other source
     var sktQ = document.getElementById('sktorrent-quality');
     if (sktQ) sktQ.style.display = (provider === 'sktorrent') ? 'flex' : 'none';
+    // Drop any stale "currently playing" highlight from the live
+    // prehraj.to list whenever the user moves to a different provider —
+    // the gold highlight means "this is the active playback", so leaving
+    // it set on e.g. a prehrajto row while sledujteto actually plays is
+    // misleading.
+    if (provider !== 'prehrajto') {
+        document.querySelectorAll('.prehrajto-item.active, .prehrajto-item.loading')
+            .forEach(function(el) { el.classList.remove('active', 'loading'); });
+    }
     document.getElementById('source-status').textContent = '';
 }
 
@@ -341,6 +349,19 @@ function switchSource(btn) {
         playCachedPrehrajto();
     } else if (provider === 'sledujteto') {
         playSledujteto();
+    }
+}
+
+/* Static prehraj.to tab onclick — prefers replaying the user's last
+   click in "Další zdroje" over the cached URL, so clicking the tab
+   after picking a specific upload doesn't snap back to the default. */
+function onPrehrajtoTabClick(btn) {
+    var lastItem = document.querySelector('.prehrajto-item.active');
+    if (lastItem && lastItem._movie) {
+        // playPrehrajto handles tab activation internally via showSource.
+        playPrehrajto(lastItem._movie, lastItem);
+    } else {
+        switchSource(btn);
     }
 }
 
@@ -453,6 +474,12 @@ function playSledujteto() {
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
     if (!player) return;
+
+    // Make sure the sledujteto tab reflects what's actually playing —
+    // relevant when this runs via the prehrajto-fallback path rather
+    // than a direct user click on the sledujteto tab.
+    var tab = document.querySelector('.source-tab[data-provider="sledujteto"]');
+    if (tab && !tab.classList.contains('active')) showSource('sledujteto', tab);
 
     status.textContent = 'Načítání sledujteto...';
     return fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
@@ -762,9 +789,12 @@ function ensureLivePrehrajtoTab() {
     btn.className = 'source-tab source-prehrajto';
     btn.dataset.provider = 'prehrajto';
     btn.textContent = 'prehraj.to';
+    // Same behaviour as the statically-rendered prehraj.to tab: mark
+    // active / hide sktorrent qualities via showSource, then replay
+    // whichever prehraj.to source the user last clicked, or fall
+    // through to the cached URL.
     btn.onclick = function() {
-        // Clicking the prehraj.to tab re-activates the last-clicked
-        // "Další zdroje" item (if any) so its URL is resolved again.
+        showSource('prehrajto', btn);
         var last = document.querySelector('.prehrajto-item.active');
         if (last && last._movie) playPrehrajto(last._movie, last);
         else if (cachedPrehrajtoUrl) playCachedPrehrajto();
