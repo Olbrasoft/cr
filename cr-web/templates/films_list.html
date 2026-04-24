@@ -172,11 +172,55 @@
                 <option value="">Všechny roky</option>
             </select>
         </div>
+        {# Audio-language multi-select (#612). Chips follow the same CSS as
+           genre chips; the picker is AND-semantic — checking `cs` + `en`
+           narrows to films that have BOTH audio tracks. Values are ISO 639
+           short codes so the query param stays short and canonical. #}
+        <div class="filter-section">
+            <label>Jazyk zvuku (vyberte jeden nebo více):</label>
+            <div class="filter-genres" id="filter-audio">
+                <label class="filter-chip"><input type="checkbox" value="cs" data-filter="audio"{% if self.is_audio_selected("cs") %} checked{% endif %}> Čeština</label>
+                <label class="filter-chip"><input type="checkbox" value="sk" data-filter="audio"{% if self.is_audio_selected("sk") %} checked{% endif %}> Slovenština</label>
+                <label class="filter-chip"><input type="checkbox" value="en" data-filter="audio"{% if self.is_audio_selected("en") %} checked{% endif %}> Angličtina</label>
+            </div>
+        </div>
+        {# "Má titulky" toggle. Off by default; `titulky=any` in URL. #}
+        <div class="filter-section">
+            <label>Titulky:</label>
+            <div class="filter-genres" id="filter-subs">
+                <label class="filter-chip"><input type="checkbox" value="any" data-filter="subs"{% if self.is_subs_any() %} checked{% endif %}> Má titulky (jakékoliv)</label>
+                <label class="filter-chip"><input type="checkbox" value="cs" data-filter="subs"{% if self.is_subs_selected("cs") %} checked{% endif %}> České titulky</label>
+                <label class="filter-chip"><input type="checkbox" value="sk" data-filter="subs"{% if self.is_subs_selected("sk") %} checked{% endif %}> Slovenské titulky</label>
+            </div>
+        </div>
         <div class="filter-actions">
             <button class="btn-apply" onclick="applyFilters()">Použít filtr</button>
             <button class="btn-reset" onclick="resetFilters()">Zrušit filtry</button>
         </div>
     </div>
+
+    {# Active filter chips — one per applied audio/subs filter. Clicking
+       removes that single filter from the URL while keeping the rest. #}
+    {% if self.has_lang_filters() %}
+    <div class="active-filters" id="active-filters">
+        <span class="active-filters-label">Aktivní filtry:</span>
+        {% for lang in self.audio_chips() %}
+        <a class="active-filter-chip" href="{{ self.remove_audio_url(lang) }}" title="Odebrat filtr zvuku">
+            🎧 {{ self.lang_display(lang) }} <span class="chip-x">✕</span>
+        </a>
+        {% endfor %}
+        {% if self.is_subs_any_without_lang() %}
+        <a class="active-filter-chip" href="{{ self.remove_subs_url() }}" title="Zrušit filtr titulků">
+            📝 Titulky <span class="chip-x">✕</span>
+        </a>
+        {% endif %}
+        {% for lang in self.subs_chips() %}
+        <a class="active-filter-chip" href="{{ self.remove_subs_lang_url(lang) }}" title="Odebrat filtr titulků">
+            📝 {{ self.lang_display(lang) }} <span class="chip-x">✕</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
 
     {# Films grid/list #}
     <div class="films-grid" id="films-container">
@@ -221,6 +265,15 @@
         </a>
         {% endfor %}
     </div>
+    {# Empty-state — shown when the combination of filters yields no films.
+       Rendered under the (empty) grid so pagination is suppressed and the
+       user has a single-click reset path back to the full catalog. #}
+    {% if total_count == 0 %}
+    <div class="empty-filter-state">
+        <p class="empty-filter-title">Žádný film neodpovídá zvoleným filtrům.</p>
+        <a href="/filmy-online/" class="btn-reset-filters">Zrušit všechny filtry</a>
+    </div>
+    {% endif %}
 
     {% if total_pages > 1 %}
     <nav class="pagination">
@@ -302,6 +355,19 @@ a.filter-chip-link:hover { background: #11457E; color: white; }
 .filter-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
 .btn-apply { padding: 0.4rem 1.2rem; background: #D7141A; color: white; border: none; border-radius: 6px; font-size: 0.85rem; cursor: pointer; font-weight: 600; transition: background 0.2s; }
 .btn-apply:hover { background: #11457E; }
+
+/* Active filter chips + empty state (#612). Rendered only when lang
+   filters are applied; each chip is a link that removes that one filter
+   from the URL while keeping the rest. */
+.active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.6rem 0; margin: 0 0 0.8rem 0; }
+.active-filters-label { color: #666; font-size: 0.82rem; font-weight: 600; }
+.active-filter-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.7rem; border-radius: 999px; background: #11457E; color: #fff; font-size: 0.82rem; text-decoration: none; transition: background 0.15s; }
+.active-filter-chip:hover { background: #0c3561; }
+.active-filter-chip .chip-x { font-size: 0.75rem; opacity: 0.75; }
+.empty-filter-state { text-align: center; padding: 3rem 1rem; background: #f8f8f8; border-radius: 12px; margin-bottom: 1rem; }
+.empty-filter-title { font-size: 1.05rem; color: #555; margin: 0 0 1rem 0; }
+.btn-reset-filters { display: inline-block; padding: 0.5rem 1.4rem; background: #11457E; color: #fff; border-radius: 8px; text-decoration: none; font-size: 0.9rem; font-weight: 600; transition: background 0.15s; }
+.btn-reset-filters:hover { background: #0c3561; }
 
 /* Filter counter badge on toggle button */
 #btn-filter-toggle { position: relative; }
@@ -576,9 +642,28 @@ function applyFilters() {
         if (extras.length > 1) u.searchParams.set('zanry', extras.join(','));
         if (extras.length > 1 && rezim === 'and') u.searchParams.set('rezim', 'and');
     }
+    // Multi-value audio / subs filters (#612) — read the new chip pickers.
+    var audioEls = document.querySelectorAll('#filter-audio input:checked');
+    var subsEls = document.querySelectorAll('#filter-subs input:checked');
+    var audioLangs = Array.from(audioEls).map(function(el) { return el.value; });
+    var subsValues = Array.from(subsEls).map(function(el) { return el.value; });
+    // `any` is an exclusive toggle — if the user picked both `any` and a
+    // specific language, let the specific language win (more restrictive).
+    var subsSpecific = subsValues.filter(function(v) { return v !== 'any'; });
+    var subsParam = null;
+    if (subsSpecific.length > 0) {
+        subsParam = subsSpecific.join(',');
+    } else if (subsValues.includes('any')) {
+        subsParam = 'any';
+    }
+
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
     if (langParam) u.searchParams.set('jazyk', langParam);
+    if (audioLangs.length > 0) u.searchParams.set('audio', audioLangs.join(','));
+    else u.searchParams.delete('audio');
+    if (subsParam) u.searchParams.set('titulky', subsParam);
+    else u.searchParams.delete('titulky');
     if (sort && sort !== 'pridano:desc') {
         var parts = sort.split(':');
         u.searchParams.set('razeni', parts[0]);

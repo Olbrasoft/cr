@@ -133,6 +133,34 @@
         {# Cached Přehraj.to URL — primary source when SK Torrent is absent.
            filmRuntime is used to filter out mismatched-duration candidates
            in the "Další zdroje" live search. #}
+        {# Per-source badges (#613). Lists every alive video_sources row for
+           this film, grouped visually by provider, with audio-lang + subtitle
+           chips and a `primary` marker on the auto-play choice. Order matches
+           `video_providers.sort_priority` so badges follow the tab row above. #}
+        {% if !video_sources_for_badges.is_empty() %}
+        <div class="source-badges" id="source-badges">
+            {% for vs in video_sources_for_badges %}
+            <div class="source-badge source-badge-{{ vs.provider_slug }}{% if vs.is_primary %} is-primary{% endif %}"
+                 data-provider="{{ vs.provider_slug }}"
+                 data-external-id="{{ vs.external_id }}">
+                <span class="source-badge-provider">{{ vs.provider_host }}</span>
+                <span class="source-badge-audio" title="Jazyk zvuku">🎧 {{ vs.audio_label() }}{% match vs.confidence_display() %}{% when Some with (c) %} <span class="confidence">({{ c }})</span>{% when None %}{% endmatch %}</span>
+                {% if !vs.subtitle_langs.is_empty() %}
+                <span class="source-badge-subs" title="Titulky">📝 {{ vs.subtitle_display() }}</span>
+                {% endif %}
+                {% match vs.resolution_hint %}
+                {% when Some with (r) %}
+                <span class="source-badge-res">{{ r }}</span>
+                {% when None %}
+                {% endmatch %}
+                {% if vs.is_primary %}
+                <span class="source-badge-primary-tag" title="Primární zdroj — přehraje se automaticky">primary</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
         <script>
         var cachedPrehrajtoUrl = {% match film.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
         var filmRuntime = {% match film.runtime_min %}{% when Some with (m) %}{{ m }}{% when None %}null{% endmatch %};
@@ -240,6 +268,21 @@
 .quality-btn:hover { background: #444; }
 .quality-btn.active { background: #D7141A; color: white; }
 .source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
+
+/* Per-source badges (#613). Rendered under the player; one row per alive
+   video_sources entry, grouped visually by provider via color accents. */
+.source-badges { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.8rem; padding: 0.6rem; background: #1a1a1a; border-radius: 8px; }
+.source-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; background: #2a2a2a; border-left: 3px solid #555; border-radius: 4px; font-size: 0.8rem; color: #ccc; }
+.source-badge.source-badge-sktorrent { border-left-color: #D7141A; }
+.source-badge.source-badge-prehrajto { border-left-color: #4a7cc3; }
+.source-badge.source-badge-sledujteto { border-left-color: #6aa84f; }
+.source-badge.is-primary { background: linear-gradient(to right, #3d2f14 0%, #2a2a2a 40%); box-shadow: 0 0 0 1px #a6841266 inset; }
+.source-badge-provider { font-weight: 600; color: #e6d89b; font-size: 0.78rem; min-width: 9rem; }
+.source-badge-audio { background: #1f3a1f; color: #bfe9a4; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.78rem; }
+.source-badge-audio .confidence { color: #7aa86a; font-size: 0.7rem; margin-left: 0.2rem; }
+.source-badge-subs { background: #1f2d3a; color: #a4c7e9; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.78rem; }
+.source-badge-res { background: #333; color: #888; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.72rem; }
+.source-badge-primary-tag { margin-left: auto; background: #a68412; color: #1a1a1a; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 
 /* Subtitle controls */
 .subtitle-controls { display: flex; align-items: center; gap: 0.4rem; }
