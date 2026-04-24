@@ -62,31 +62,24 @@
         <span>›</span> <span>{{ film.title }}</span>
     </nav>
 
-    {# Video player section — always shown (Přehraj.to auto-play needs it even without SK Torrent) #}
+    {# Video player section — always shown. Player sources come from the
+       unified `video_sources` table via `video_sources_for_badges`. #}
     <div class="player-section">
-        {# SK Torrent — direct CDN MP4 (no server load, scalable).
-           Bombuj providers (Filemoon/Streamtape/Mixdrop) removed — CDN URLs
-           are session-bound, proxy-streaming doesn't scale (#407).
-           Přehraj.to section below provides additional sources. #}
-        {# Source tabs — one per known provider attached to this film.
-           The first available (in priority order SK Torrent → Přehraj.to →
-           Sledujteto) renders with `.active` so the auto-play IIFE picks
-           it up. Additional live-search results from "Další zdroje"
-           continue to append a dynamic prehraj.to-tagged tab on click. #}
-        {# Active-tab rule, computed once so nested match blocks stay simple:
-           the first available provider in SKT → Přehraj.to → Sledujteto
-           priority order matches the auto-play waterfall below. #}
-        {% let has_skt = film.sktorrent_video_id.is_some() %}
-        {% let has_prh = film.prehrajto_url.is_some() %}
+        {# Provider tabs are numbered (1 = sktorrent, 2 = prehraj.to, 3 = sledujteto).
+           Visible label is just the number so the tab stays compact; the
+           accessible name (`aria-label`) spells out the provider for screen
+           readers. Rendering is driven by which providers have at least one
+           row in `video_sources_for_badges` — the unified source of truth —
+           so the tabs never drift from the list below. #}
         <div class="source-tabs" id="source-tabs">
-            {% if has_skt %}
-            <button class="source-tab source-sktorrent active" data-provider="sktorrent" onclick="switchSource(this)">online.sktorrent.eu</button>
+            {% if has_source_sktorrent %}
+            <button class="source-tab source-tab-sktorrent active" data-provider="sktorrent" onclick="onTabClick(this)" aria-label="Zdroj 1: online.sktorrent.eu">1</button>
             {% endif %}
-            {% if has_prh %}
-            <button class="source-tab source-prehrajto{% if !has_skt %} active{% endif %}" data-provider="prehrajto" onclick="onPrehrajtoTabClick(this)">prehraj.to</button>
+            {% if has_source_prehrajto %}
+            <button class="source-tab source-tab-prehrajto{% if !has_source_sktorrent %} active{% endif %}" data-provider="prehrajto" onclick="onTabClick(this)" aria-label="Zdroj 2: Přehraj.to">2</button>
             {% endif %}
-            {% if film.sledujteto_primary_file_id.is_some() %}
-            <button class="source-tab source-sledujteto{% if !has_skt && !has_prh %} active{% endif %}" data-provider="sledujteto" onclick="switchSource(this)">sledujteto.cz</button>
+            {% if has_source_sledujteto %}
+            <button class="source-tab source-tab-sledujteto{% if !has_source_sktorrent && !has_source_prehrajto %} active{% endif %}" data-provider="sledujteto" onclick="onTabClick(this)" aria-label="Zdroj 3: sledujteto.cz">3</button>
             {% endif %}
         </div>
 
@@ -130,42 +123,6 @@
         </script>
         {% when None %}
         {% endmatch %}
-        {# Cached Přehraj.to URL — primary source when SK Torrent is absent.
-           filmRuntime is used to filter out mismatched-duration candidates
-           in the "Další zdroje" live search. #}
-        {# Per-source badges (#613). Lists every alive video_sources row for
-           this film, grouped visually by provider, with audio-lang + subtitle
-           chips and a `primary` marker on the auto-play choice. Order matches
-           `video_providers.sort_priority` so badges follow the tab row above. #}
-        {% if !video_sources_for_badges.is_empty() %}
-        <div class="source-badges" id="source-badges">
-            {% for vs in video_sources_for_badges %}
-            <div class="source-badge source-badge-{{ vs.provider_slug }}{% if vs.is_primary %} is-primary{% endif %}"
-                 data-provider="{{ vs.provider_slug }}"
-                 data-external-id="{{ vs.external_id }}">
-                <span class="source-badge-provider">{{ vs.provider_host }}</span>
-                <span class="source-badge-audio" title="Jazyk zvuku">🎧 {{ vs.audio_label() }}{% match vs.confidence_display() %}{% when Some with (c) %} <span class="confidence">({{ c }})</span>{% when None %}{% endmatch %}</span>
-                {% if !vs.subtitle_langs.is_empty() %}
-                <span class="source-badge-subs" title="Titulky">📝 {{ vs.subtitle_display() }}</span>
-                {% endif %}
-                {% match vs.resolution_hint %}
-                {% when Some with (r) %}
-                <span class="source-badge-res">{{ r }}</span>
-                {% when None %}
-                {% endmatch %}
-                {% if vs.is_primary %}
-                <span class="source-badge-primary-tag" title="Primární zdroj — přehraje se automaticky">primary</span>
-                {% endif %}
-            </div>
-            {% endfor %}
-        </div>
-        {% endif %}
-
-        <script>
-        var cachedPrehrajtoUrl = {% match film.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
-        var filmRuntime = {% match film.runtime_min %}{% when Some with (m) %}{{ m }}{% when None %}null{% endmatch %};
-        var sledujtetoPrimaryFileId = {% match film.sledujteto_primary_file_id %}{% when Some with (f) %}{{ f }}{% when None %}null{% endmatch %};
-        </script>
     </div>
 
     <div class="film-hero">
@@ -225,11 +182,59 @@
         </div>
     </div>
 
-    {# Přehraj.to additional sources — loaded asynchronously #}
-    <div class="prehrajto-section" id="prehrajto-section" style="display:none;">
-        <h3>Další zdroje</h3>
-        <div id="prehrajto-results" class="prehrajto-results"></div>
+    {# Unified source list. One row per alive `video_sources` entry, ordered
+       by provider priority then is_primary DESC. Each row has a colored
+       left stripe by provider; the currently-playing row gets a gold
+       background (`.active`) and clicking a row switches the player. #}
+    {% if !video_sources_for_badges.is_empty() %}
+    <div class="sources-section" id="sources-section">
+        <h3>Zdroje</h3>
+        <div class="sources-list" id="sources-list">
+            {% for vs in video_sources_for_badges %}
+            <div class="source-row source-row-{{ vs.provider_slug }}{% if vs.is_primary %} is-primary{% endif %}"
+                 data-provider="{{ vs.provider_slug }}"
+                 data-external-id="{{ vs.external_id }}"
+                 data-playback-id="{{ vs.playback_id }}"
+                 role="button"
+                 tabindex="0"
+                 onclick="playSource(this)"
+                 onkeydown="onSourceRowKeydown(event, this)">
+                <div class="source-row-main">
+                    {% match vs.title %}
+                    {% when Some with (t) %}
+                    <span class="source-row-title">{{ t }}</span>
+                    {% when None %}
+                    {# Fallback to the film's own title (typically from TMDB).
+                       sktorrent rows don't carry an upload-specific title;
+                       without this fallback the row would just say "(bez názvu)"
+                       and give the user nothing to anchor on. #}
+                    <span class="source-row-title">{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %}</span>
+                    {% endmatch %}
+                    <span class="source-row-badges">
+                        {# Only show the audio chip when we actually know the
+                           language — a bare "🎧 —" is visual noise. #}
+                        {% if vs.audio_lang.is_some() %}
+                        <span class="source-row-audio" title="Jazyk zvuku">🎧 {{ vs.audio_label() }}{% match vs.confidence_display() %}{% when Some with (c) %} <span class="confidence">({{ c }})</span>{% when None %}{% endmatch %}</span>
+                        {% endif %}
+                        {% if !vs.subtitle_langs.is_empty() %}
+                        <span class="source-row-subs" title="Titulky">📝 {{ vs.subtitle_display() }}</span>
+                        {% endif %}
+                        {% match vs.resolution_hint %}
+                        {% when Some with (r) %}
+                        <span class="source-row-res">{{ r }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                        {% if vs.is_primary %}
+                        <span class="source-row-primary" title="Primární zdroj">primary</span>
+                        {% endif %}
+                    </span>
+                </div>
+                <span class="source-row-play" aria-hidden="true">&#9654;</span>
+            </div>
+            {% endfor %}
+        </div>
     </div>
+    {% endif %}
 </main>
 
 <style>
@@ -255,10 +260,21 @@
 
 /* Player section */
 .player-section { margin-bottom: 1.5rem; }
-.source-tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; background: #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 10px 10px 0 0; }
-.source-tab { background: #333; color: #ccc; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; transition: background 0.15s; }
-.source-tab:hover { background: #444; }
-.source-tab.active { background: #D7141A; color: white; }
+/* Numbered provider tabs. Each tab shows just a digit (1/2/3); the
+   active tab gets the provider's accent color so the number visually
+   maps to the colored stripe on each row in the Zdroje list below. */
+.source-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; background: #1a1a1a; padding: 0.5rem 0.6rem; border-radius: 10px 10px 0 0; }
+.source-tab {
+    background: #333; color: #ccc; border: none;
+    width: 2rem; height: 2rem; border-radius: 50%;
+    cursor: pointer; font-size: 0.95rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+.source-tab:hover { background: #444; color: #fff; transform: scale(1.05); }
+.source-tab.active.source-tab-sktorrent { background: #11457E; color: #fff; }
+.source-tab.active.source-tab-prehrajto { background: #D7141A; color: #fff; }
+.source-tab.active.source-tab-sledujteto { background: #C5A059; color: #1a1a1a; }
 .source-tab.loading { background: #555; cursor: wait; }
 .player-panel { background: #000; border-radius: 0 0 10px 10px; overflow: hidden; }
 .player-panel video { display: block; width: 100%; max-height: 540px; background: #000; }
@@ -268,21 +284,6 @@
 .quality-btn:hover { background: #444; }
 .quality-btn.active { background: #D7141A; color: white; }
 .source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
-
-/* Per-source badges (#613). Rendered under the player; one row per alive
-   video_sources entry, grouped visually by provider via color accents. */
-.source-badges { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.8rem; padding: 0.6rem; background: #1a1a1a; border-radius: 8px; }
-.source-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; background: #2a2a2a; border-left: 3px solid #555; border-radius: 4px; font-size: 0.8rem; color: #ccc; }
-.source-badge.source-badge-sktorrent { border-left-color: #D7141A; }
-.source-badge.source-badge-prehrajto { border-left-color: #4a7cc3; }
-.source-badge.source-badge-sledujteto { border-left-color: #6aa84f; }
-.source-badge.is-primary { background: linear-gradient(to right, #3d2f14 0%, #2a2a2a 40%); box-shadow: 0 0 0 1px #a6841266 inset; }
-.source-badge-provider { font-weight: 600; color: #e6d89b; font-size: 0.78rem; min-width: 9rem; }
-.source-badge-audio { background: #1f3a1f; color: #bfe9a4; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.78rem; }
-.source-badge-audio .confidence { color: #7aa86a; font-size: 0.7rem; margin-left: 0.2rem; }
-.source-badge-subs { background: #1f2d3a; color: #a4c7e9; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.78rem; }
-.source-badge-res { background: #333; color: #888; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.72rem; }
-.source-badge-primary-tag { margin-left: auto; background: #a68412; color: #1a1a1a; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 
 /* Subtitle controls */
 .subtitle-controls { display: flex; align-items: center; gap: 0.4rem; }
@@ -330,120 +331,198 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
 .film-description { line-height: 1.6; color: #333; }
 .film-description p { margin: 0; }
 
-/* Přehraj.to section */
-.prehrajto-section { margin-top: 2rem; }
-.prehrajto-section h3 { font-size: 1.1rem; margin: 0 0 0.8rem; color: #555; }
-.prehrajto-results { display: flex; flex-direction: column; gap: 0.5rem; }
-.prehrajto-item { display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem; background: #fafafa; border: 1px solid #eee; border-radius: 8px; cursor: pointer; text-decoration: none; color: inherit; transition: background 0.15s; }
-.prehrajto-item:hover { background: #f0f0f0; }
-.prehrajto-item img { width: 80px; height: 50px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
-.prehrajto-item .pt-info { flex: 1; min-width: 0; }
-.prehrajto-item .pt-title { font-weight: 500; font-size: 0.9rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prehrajto-item .pt-meta { font-size: 0.8rem; color: #888; }
-.prehrajto-item.loading { opacity: 0.5; cursor: wait; }
+/* Unified "Zdroje" list under the film hero. Light theme — matches the
+   original "Další zdroje" card look so the section stays readable on the
+   white page. Each row gets a colored left stripe identifying the
+   provider (blue=sktorrent, red=prehrajto, gold=sledujteto — loosely
+   Czech-flag palette; white→gold so it stays visible on white). The
+   currently-playing row has a gold background. */
+.sources-section { margin-top: 2rem; }
+.sources-section h3 { font-size: 1.1rem; margin: 0 0 0.6rem; color: #555; }
+.sources-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.source-row {
+    display: flex; align-items: center; gap: 0.8rem;
+    padding: 0.6rem 0.8rem;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-left: 5px solid #ccc;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: #333;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.source-row:hover { background: #f0f0f0; }
+.source-row:focus-visible { outline: 2px solid #11457E; outline-offset: 2px; }
+.source-row.source-row-sktorrent { border-left-color: #11457E; }
+.source-row.source-row-prehrajto { border-left-color: #D7141A; }
+.source-row.source-row-sledujteto { border-left-color: #C5A059; }
+.source-row.loading { opacity: 0.55; cursor: wait; }
+.source-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.source-row-title {
+    font-weight: 500; font-size: 0.9rem; color: #222;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.source-row-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.source-row-audio { background: #dcfce7; color: #065f46; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
+.source-row-audio .confidence { color: #16a34a; font-size: 0.7rem; margin-left: 0.2rem; }
+.source-row-subs { background: #dbeafe; color: #1e40af; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
+.source-row-res { background: #f3f4f6; color: #6b7280; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.72rem; font-weight: 500; }
+.source-row-primary { background: #a68412; color: #fff; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.source-row-play {
+    flex-shrink: 0; width: 1.75rem; height: 1.75rem;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.06); border-radius: 50%; font-size: 0.8rem; color: #888;
+}
 
-/* Active-source highlight — same gold treatment as episode_detail.html.
-   Gold background + play arrow means: "THIS is what you're watching right now." */
-.prehrajto-item.active { background: #C5A059; border-color: #C5A059; color: white; }
-.prehrajto-item.active .pt-title { color: white; }
-.prehrajto-item .play-indicator { display: none; flex-shrink: 0; width: 22px; height: 22px; align-items: center; justify-content: center; background: rgba(255,255,255,0.2); border-radius: 50%; color: white; font-size: 0.7rem; margin-left: 0.3rem; }
-.prehrajto-item.active .play-indicator { display: inline-flex; }
-.prehrajto-item.active .pt-badge { background: rgba(255,255,255,0.25); color: white; }
-
-.pt-badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; margin-right: 0.3rem; }
-.pt-badge.direct { background: #d1fae5; color: #065f46; }
-.pt-badge.proxy { background: #fee2e2; color: #991b1b; }
-.pt-badge.quality-hd { background: #dbeafe; color: #1e40af; }
-.pt-badge.quality-sd { background: #fef3c7; color: #92400e; }
-.pt-badge.quality-low { background: #f3f4f6; color: #6b7280; }
-.pt-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.7rem; font-weight: 600; margin-left: 0.3rem; }
-.pt-badge.direct { background: #27ae60; color: white; }
-.pt-badge.proxy { background: #f39c12; color: white; }
+/* Active playing row — gold highlight (same tone as the episode-detail
+   page used to have) means "this is what you're watching right now". */
+.source-row.active {
+    background: #C5A059;
+    border-color: #C5A059;
+    color: #1a1a1a;
+}
+.source-row.active .source-row-title { color: #fff; }
+.source-row.active .source-row-audio,
+.source-row.active .source-row-subs,
+.source-row.active .source-row-res { background: rgba(255,255,255,0.35); color: #1a1a1a; }
+.source-row.active .source-row-audio .confidence { color: #3a2a00; }
+.source-row.active .source-row-primary { background: #1a1a1a; color: #e0c47c; }
+.source-row.active .source-row-play { background: rgba(0,0,0,0.25); color: #fff; }
 </style>
 
 <script>
-/* --- Source switcher --- */
-function showSource(provider, btn) {
+/* --- Source-row / tab state helpers ------------------------------------- */
+
+/* Find the DOM node for a (provider, externalId) pair. Rows are indexed by
+   these two attributes because a URL can contain characters that would
+   need escaping in a querySelector attribute selector. */
+function findSourceRow(provider, externalId) {
+    var rows = document.querySelectorAll('.source-row[data-provider="' + provider + '"]');
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].dataset.externalId === externalId) return rows[i];
+    }
+    return null;
+}
+
+/* Move the gold "now playing" highlight to (provider, externalId). Pass
+   null/undefined externalId to just clear the highlight. */
+function markActiveRow(provider, externalId) {
+    document.querySelectorAll('.source-row.active').forEach(function(r) { r.classList.remove('active'); });
+    document.querySelectorAll('.source-row.loading').forEach(function(r) { r.classList.remove('loading'); });
+    if (externalId) {
+        var row = findSourceRow(provider, externalId);
+        if (row) row.classList.add('active');
+    }
+    // Whichever row is now active should reflect the player's current
+    // state (paused → ▶, playing → ⏸); rows that just lost .active get
+    // their ▶ back via the same pass.
+    syncPlayIcons();
+}
+
+/* Activate the numbered tab for a provider. Clears active state on the
+   other tabs. Also toggles sktorrent quality button visibility since it's
+   rendered only when the sktorrent provider is the current one. */
+function setActiveTab(provider) {
     document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
-    btn.classList.add('active');
-    // Hide sktorrent quality buttons when on other source
+    var tab = document.querySelector('.source-tab[data-provider="' + provider + '"]');
+    if (tab) tab.classList.add('active');
     var sktQ = document.getElementById('sktorrent-quality');
     if (sktQ) sktQ.style.display = (provider === 'sktorrent') ? 'flex' : 'none';
-    // Drop any stale "currently playing" highlight from the live
-    // prehraj.to list whenever the user moves to a different provider —
-    // the gold highlight means "this is the active playback", so leaving
-    // it set on e.g. a prehrajto row while sledujteto actually plays is
-    // misleading.
-    if (provider !== 'prehrajto') {
-        document.querySelectorAll('.prehrajto-item.active, .prehrajto-item.loading')
-            .forEach(function(el) { el.classList.remove('active', 'loading'); });
-    }
-    document.getElementById('source-status').textContent = '';
-}
-
-/* Click handler for provider tabs (rendered statically per film's known
-   providers). Delegates to the provider-specific playback function. */
-function switchSource(btn) {
-    var provider = btn.dataset.provider;
-    showSource(provider, btn);
-    if (provider === 'sktorrent') {
-        resolveAndPlaySktorrent('Načítám zdroj...');
-    } else if (provider === 'prehrajto') {
-        playCachedPrehrajto();
-    } else if (provider === 'sledujteto') {
-        playSledujteto();
-    }
-}
-
-/* Static prehraj.to tab onclick — prefers replaying the user's last
-   click in "Další zdroje" over the cached URL, so clicking the tab
-   after picking a specific upload doesn't snap back to the default. */
-function onPrehrajtoTabClick(btn) {
-    var lastItem = document.querySelector('.prehrajto-item.active');
-    if (lastItem && lastItem._movie) {
-        // playPrehrajto handles tab activation internally via showSource.
-        playPrehrajto(lastItem._movie, lastItem);
-    } else {
-        switchSource(btn);
-    }
-}
-
-/* --- Resolve & play from bombuj.si providers --- */
-var resolveCache = {};
-
-function resolveAndPlay(provider, code, btn) {
-    var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
+    if (status) status.textContent = '';
+}
 
-    // Activate tab
-    showSource(provider, btn);
+/* --- User interactions ------------------------------------------------- */
 
-    // Check cache
-    var cacheKey = provider + ':' + code;
-    if (resolveCache[cacheKey]) {
-        playUrl(resolveCache[cacheKey].url, resolveCache[cacheKey].format);
+/* Clicking a numbered tab jumps to that provider's primary row (rows are
+   server-sorted with `is_primary DESC`, so the first row of a provider IS
+   the primary one). */
+function onTabClick(btn) {
+    var provider = btn.dataset.provider;
+    var row = document.querySelector('.source-row[data-provider="' + provider + '"]');
+    if (row) playSource(row);
+    else setActiveTab(provider);
+}
+
+/* Keyboard handler for source rows. Source rows are `<div role="button">`
+   rather than real `<button>` elements (they need to hold a multi-line
+   layout: title + badges row + play arrow), so we implement the standard
+   button keyboard semantics — Enter and Space both activate the row. */
+function onSourceRowKeydown(e, row) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        playSource(row);
+    }
+}
+
+/* Clicking a source row: switch provider tab, mark the row as playing,
+   and delegate to the provider-specific playback function. If the same
+   row is clicked again while it's already the active playback, we toggle
+   pause/resume instead of reloading — the row's play icon is also kept
+   in sync with the <video> element's paused/playing state (see
+   `syncPlayIcons` below). The row carries two IDs: `externalId` is the
+   stable identity used to locate the row in the DOM (matches
+   video_sources.external_id), while `playbackId` is the handle that the
+   provider-specific playback API expects — for prehraj.to the full upload
+   URL, for sktorrent the video_id, for sledujteto the file_id. */
+function playSource(row) {
+    var player = document.getElementById('film-player');
+    // Re-click on the active row → pause/resume, don't reload.
+    if (row.classList.contains('active') && player && player.src) {
+        if (player.paused) player.play().catch(function(){});
+        else player.pause();
         return;
     }
 
-    // Show loading state
-    btn.classList.add('loading');
-    status.textContent = 'Načítání streamu...';
-    player.pause();
-    player.removeAttribute('src');
-    player.load();
+    var provider = row.dataset.provider;
+    var externalId = row.dataset.externalId;
+    var playbackId = row.dataset.playbackId || externalId;
+    setActiveTab(provider);
+    markActiveRow(provider, externalId);
+    row.classList.add('loading');
+    var onDone = function() { row.classList.remove('loading'); };
 
-    // Use proxy-stream — server resolves AND streams bytes (CDN URLs are IP-bound to server)
-    var proxyUrl = '/api/movies/proxy-stream?provider=' + provider + '&code=' + encodeURIComponent(code);
-    resolveCache[cacheKey] = { url: proxyUrl, format: 'mp4' };
-    playUrl(proxyUrl, 'mp4');
-    btn.classList.remove('loading');
-    status.textContent = provider;
+    if (provider === 'sktorrent') {
+        resolveAndPlaySktorrent('Načítání...', onDone);
+    } else if (provider === 'prehrajto') {
+        playPrehrajtoUrl(playbackId, onDone);
+    } else if (provider === 'sledujteto') {
+        playSledujtetoFile(playbackId, onDone);
+    } else {
+        onDone();
+    }
 }
+
+/* Sync the icon on each row's play button with the <video> element's
+   state: while the player is actively playing, the active row shows a
+   pause glyph (so clicking it pauses); all other rows keep the play
+   glyph (clicking them switches source). When paused or ended, the
+   active row shows play again so re-clicking resumes. */
+var PLAY_GLYPH = '▶';    // ▶
+var PAUSE_GLYPH = '⏸';   // ⏸
+function syncPlayIcons() {
+    var player = document.getElementById('film-player');
+    var playing = player && !player.paused && !player.ended && player.readyState > 0;
+    document.querySelectorAll('.source-row').forEach(function(row) {
+        var icon = row.querySelector('.source-row-play');
+        if (!icon) return;
+        icon.textContent = (playing && row.classList.contains('active')) ? PAUSE_GLYPH : PLAY_GLYPH;
+    });
+}
+(function() {
+    var player = document.getElementById('film-player');
+    if (!player) return;
+    ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function(ev) {
+        player.addEventListener(ev, syncPlayIcons);
+    });
+})();
+
+/* --- Player core ------------------------------------------------------- */
 
 function playUrl(url, format) {
     var player = document.getElementById('film-player');
     if (format === 'hls' && window.Hls && Hls.isSupported()) {
-        // HLS playback via hls.js
         if (window._hls) window._hls.destroy();
         var hls = new Hls();
         hls.loadSource(url);
@@ -457,443 +536,146 @@ function playUrl(url, format) {
     }
 }
 
-/* --- Sktorrent source button --- */
-function showSktorrent(btn) {
-    showSource('sktorrent', btn);
-    var player = document.getElementById('film-player');
-    // Restore sktorrent source if it was changed
-    if (player.dataset.sktorrentSrc && player.src !== player.dataset.sktorrentSrc) {
-        if (window._hls) { window._hls.destroy(); window._hls = null; }
-        player.src = player.dataset.sktorrentSrc;
+/* --- Per-provider playback -------------------------------------------- */
+
+/* SK Torrent rotates videos across online{N}.sktorrent.eu CDN servers, so
+   we never trust a stored CDN value — every resolve call picks the live
+   CDN host. Backend caches resolver results in BoundedTtlCache (6h TTL). */
+var sktorrentSources = [];
+
+function renderSktorrentSources(data) {
+    var status = document.getElementById('source-status');
+    if (!data || !data.sources || !data.sources.length) {
+        if (status) status.textContent = 'Zdroj nedostupný';
+        return false;
     }
+    sktorrentSources = data.sources.map(function(s) {
+        return { url: s.url, quality: s.quality, res: s.res };
+    });
+    sktorrentSources.sort(function(a, b) { return b.res - a.res; });
+
+    var qualDiv = document.getElementById('sktorrent-quality');
+    if (qualDiv) {
+        qualDiv.innerHTML = '';
+        sktorrentSources.forEach(function(s, i) {
+            var btn = document.createElement('button');
+            btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
+            btn.textContent = s.quality;
+            btn.onclick = function() { playSktorrent(i, btn); };
+            qualDiv.appendChild(btn);
+        });
+    }
+    return true;
 }
 
-/* --- Cached Přehraj.to URL: plays on page load when SK Torrent is
-       absent, and any time the user clicks the prehraj.to provider tab. --- */
-var cachedPrehrajtoPlayed = false;
-function playCachedPrehrajto() {
-    if (!cachedPrehrajtoUrl) return;
-    var player = document.getElementById('film-player');
+function resolveAndPlaySktorrent(statusText, onDone) {
     var status = document.getElementById('source-status');
-    if (!player) return;
-
-    cachedPrehrajtoPlayed = true;
-    status.textContent = 'Načítání Přehraj.to...';
-    return fetch('/api/movies/video-url?url=' + encodeURIComponent(cachedPrehrajtoUrl))
+    if (status && statusText) status.textContent = statusText;
+    if (typeof sktorrentVideoId === 'undefined') {
+        if (onDone) onDone();
+        return;
+    }
+    return fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            if (onDone) onDone();
+            if (!renderSktorrentSources(data)) return;
+            var qualDiv = document.getElementById('sktorrent-quality');
+            playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
+        })
+        .catch(function() {
+            if (onDone) onDone();
+            if (status) status.textContent = 'Chyba obnovy zdroje';
+        });
+}
+
+function playSktorrent(index, btn) {
+    var player = document.getElementById('film-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    var source = sktorrentSources[index];
+    if (!source) return;
+    player.src = source.url;
+    player.dataset.sktorrentSrc = source.url;
+    player.dataset.sktorrentQuality = source.quality;
+    document.querySelectorAll('#sktorrent-quality .quality-btn').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    document.getElementById('source-status').textContent = '';
+}
+
+function playPrehrajtoUrl(url, onDone) {
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+    if (!player) { if (onDone) onDone(); return; }
+
+    if (status) status.textContent = 'Načítání Přehraj.to...';
+    return fetch('/api/movies/video-url?url=' + encodeURIComponent(url))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (onDone) onDone();
             if (!data.success || !data.video_url) {
-                status.textContent = 'Zdroj nedostupný';
-                cachedPrehrajtoPlayed = false;     // let live-search take over
+                if (status) status.textContent = 'Zdroj nedostupný';
                 return;
             }
-            var url = data.video_url.replace(/&amp;/g, '&');
-            playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-            status.textContent = 'Přehraj.to';
+            var streamUrl = data.video_url.replace(/&amp;/g, '&');
+            playUrl(streamUrl, streamUrl.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+            if (status) status.textContent = 'Přehraj.to';
             if (data.subtitles && data.subtitles.length) {
                 addSubtitles(player, data.subtitles);
             }
         })
         .catch(function() {
-            status.textContent = 'Zdroj nedostupný';
-            cachedPrehrajtoPlayed = false;
+            if (onDone) onDone();
+            if (status) status.textContent = 'Zdroj nedostupný';
         });
 }
 
-(function() {
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
-    if (hasSktorrent) return;                      // SK Torrent owns primary
-    if (!cachedPrehrajtoUrl) return;               // Nothing to play
-    playCachedPrehrajto();
-})();
-
-/* --- Sledujteto.cz playback. Plays the primary upload (best-ranked by
-       cdn=www > lang priority > resolution — stored in
-       `films.sledujteto_primary_file_id`). Resolves via
-       /api/sledujteto/resolve → sledujteto `add-file-link`, which returns a
-       short-lived URL streamable from www.sledujteto.cz. --- */
-function playSledujteto() {
-    if (sledujtetoPrimaryFileId === null) return;
+function playSledujtetoFile(fileId, onDone) {
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
-    if (!player) return;
+    if (!player) { if (onDone) onDone(); return; }
 
-    // Make sure the sledujteto tab reflects what's actually playing —
-    // relevant when this runs via the prehrajto-fallback path rather
-    // than a direct user click on the sledujteto tab.
-    var tab = document.querySelector('.source-tab[data-provider="sledujteto"]');
-    if (tab && !tab.classList.contains('active')) showSource('sledujteto', tab);
-
-    status.textContent = 'Načítání sledujteto...';
-    return fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoPrimaryFileId))
+    if (status) status.textContent = 'Načítání sledujteto...';
+    return fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(fileId))
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            if (onDone) onDone();
             if (!data.success || !data.video_url) {
-                status.textContent = 'Zdroj nedostupný';
+                if (status) status.textContent = 'Zdroj nedostupný';
                 return;
             }
             playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-            status.textContent = 'Sledujteto';
+            if (status) status.textContent = 'Sledujteto';
         })
         .catch(function() {
-            status.textContent = 'Zdroj nedostupný';
+            if (onDone) onDone();
+            if (status) status.textContent = 'Zdroj nedostupný';
         });
 }
 
-/* Auto-play fallback: when neither sktorrent nor cached prehrajto is
-   available (or prehrajto failed), sledujteto takes over as primary. */
+/* --- Auto-play on load ------------------------------------------------- */
+/* Click the first source row (highest-priority provider's primary entry).
+   Rows are already server-sorted: sktorrent → prehrajto → sledujteto, and
+   within a provider is_primary=TRUE comes first. */
 (function() {
-    if (sledujtetoPrimaryFileId === null) return;
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
-    if (hasSktorrent) return;                         // SK Torrent owns primary
-    var player = document.getElementById('film-player');
-    if (!player) return;
-
-    if (!cachedPrehrajtoUrl) {
-        // No prehrajto to wait on — play sledujteto immediately.
-        playSledujteto();
-        return;
-    }
-
-    // cachedPrehrajtoPlayed was set to true by the prehrajto IIFE right
-    // before it kicked off its fetch; it resets to false if that fetch
-    // fails. Poll briefly for that signal and fall through to sledujteto
-    // once prehrajto gives up. The 5-second ceiling matches the
-    // prehrajto resolve timeout in /api/movies/video-url.
-    var elapsed = 0;
-    var interval = setInterval(function() {
-        // Player already has a src → some source won; we're done.
-        if (player.src && !player.paused) { clearInterval(interval); return; }
-        // Prehrajto gave up (cachedPrehrajtoPlayed flipped false) → take over.
-        if (cachedPrehrajtoPlayed === false) {
-            clearInterval(interval);
-            playSledujteto();
-            return;
-        }
-        elapsed += 200;
-        if (elapsed >= 5000) {
-            // Prehrajto hung; take over anyway.
-            clearInterval(interval);
-            playSledujteto();
-        }
-    }, 200);
+    var first = document.querySelector('.source-row');
+    if (first) playSource(first);
 })();
 
-/* --- Přehraj.to: search, validate (direct vs proxy), auto-play if no SK Torrent --- */
+/* Defence against mid-play CDN rotation on SK Torrent — if the URL fails
+   while we were already playing, try resolving once more. */
 (function() {
-    var filmTitle = "{{ film.title }}";
-    var filmId = {{ film.id }};
-    var section = document.getElementById('prehrajto-section');
-    var container = document.getElementById('prehrajto-results');
-    var hasSktorrent = typeof sktorrentVideoId !== 'undefined';
-    if (!section || !container || !filmTitle) return;
-
-    {% if prehrajto_sources_from_db %}
-    // DB-backed flow (issue #521). No outbound prehraj.to calls on render;
-    // the list is served directly from `film_prehrajto_uploads`. `is_direct`
-    // is `true`/`false` once the stream endpoint has resolved the upload at
-    // least once, otherwise `null` — we optimistically render unknowns as
-    // "direct" so existing playback flows keep working the first time a
-    // user tries an upload.
-    fetch('/api/films/' + filmId + '/prehrajto-sources')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data || !data.sources || !data.sources.length) return;
-
-            section.style.display = '';
-            var autoPlayed = false;
-            data.sources.forEach(function(src) {
-                var movie = {
-                    url: src.url,
-                    title: src.title,
-                    // Thumbnails aren't in the DB — placeholder until we
-                    // either persist them at import or proxy them lazily.
-                    thumbnail: '',
-                    year: '',
-                };
-                var height = parseResolutionHint(src.resolution_hint);
-                var isDirect = src.is_direct !== false; // null → optimistic direct
-                var item = createItem(movie, isDirect, src.duration_sec, height);
-                if (!isDirect) item.classList.add('proxy-item');
-                // The server already ranked the list (lang-class →
-                // resolution → views), so appending in order matches the
-                // same ordering the stream endpoint uses for fallback —
-                // no client-side runtime-diff sort needed.
-                container.appendChild(item);
-
-                // Autoplay the first direct entry we encounter, not just
-                // the top-ranked row. If the top row is a proxy upload
-                // (e.g. `is_direct=false` already learned by the stream
-                // endpoint), we still want a later direct row to trigger
-                // playback — mirrors the legacy flow's "first direct
-                // wins" behaviour.
-                if (isDirect && !autoPlayed && !hasSktorrent && !cachedPrehrajtoPlayed) {
-                    autoPlayed = true;
-                    setTimeout(function() { item.click(); }, 500);
-                }
-            });
-        })
-        .catch(function() {});
-    {% else %}
-    fetch('/api/movies/search?q=' + encodeURIComponent(filmTitle))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.success || !data.movies || !data.movies.length) return;
-
-            section.style.display = '';
-            var movies = data.movies;
-            var checked = 0;
-            var autoPlayed = false;
-            var autoplayTimer = null;
-
-            // Autoplay strategy: collect direct candidates for a short window
-            // (800 ms after first hit), then pick the highest-resolution one.
-            // This beats "first direct wins" because a 1080p candidate often
-            // validates a beat later than a 480p one.
-            function scheduleAutoplay() {
-                if (autoPlayed || hasSktorrent || cachedPrehrajtoPlayed) return;
-                if (autoplayTimer) return;
-                autoplayTimer = setTimeout(function() {
-                    if (autoPlayed || hasSktorrent || cachedPrehrajtoPlayed) return;
-                    var best = container.querySelector('.prehrajto-item:not(.proxy-item)');
-                    if (!best) return;
-                    autoPlayed = true;
-                    // Simulate click to reuse playPrehrajto logic
-                    best.click();
-                }, 800);
-            }
-
-            // Validate each result (direct vs proxy) in batches of 3
-            function validateBatch(startIdx) {
-                var batch = movies.slice(startIdx, startIdx + 3);
-                if (!batch.length) return;
-
-                batch.forEach(function(movie) {
-                    fetch('/api/movies/validate?url=' + encodeURIComponent(movie.url))
-                        .then(function(r) { return r.json(); })
-                        .then(function(vdata) {
-                            checked++;
-                            // Runtime mismatch guard — if we know the film's
-                            // runtime, drop anything farther than max(5 min, 10 %).
-                            // Example: 53-min film tolerates 48–58 min; a 78-min
-                            // "Žabák Ribit" from 2014 is clearly a different film.
-                            // Small absolute floor handles short films where 10 %
-                            // is unrealistically tight.
-                            var diffSec = 0;
-                            if (filmRuntime && vdata.duration_sec) {
-                                var expected = filmRuntime * 60;
-                                diffSec = Math.abs(vdata.duration_sec - expected);
-                                var toleranceSec = Math.max(5 * 60, expected * 0.10);
-                                if (diffSec > toleranceSec) {
-                                    if (checked >= movies.length || checked >= 15) return;
-                                    if (checked === startIdx + batch.length) validateBatch(startIdx + 3);
-                                    return; // skip — wrong film
-                                }
-                            }
-
-                            if (vdata.valid) {
-                                var item = createItem(movie, true, vdata.duration_sec, vdata.height);
-                                // Sort: runtime-closeness first, then height. A
-                                // 1-minute-off 720p beats a 12-minute-off 1080p
-                                // because the second candidate is almost certainly
-                                // the wrong cut / wrong film.
-                                item.dataset.runtimeDiff = diffSec;
-                                insertSortedByRuntimeThenHeight(container, item, diffSec, vdata.height || 0);
-                                // Store movie reference on the DOM node so the
-                                // autoplay simulated-click can find it back.
-                                item._movie = movie;
-                                scheduleAutoplay();
-                            } else {
-                                // Proxy needed — add at end
-                                var item = createItem(movie, false, vdata.duration_sec, vdata.height);
-                                item.classList.add('proxy-item');
-                                container.appendChild(item);
-                            }
-
-                            if (checked >= movies.length || checked >= 15) return;
-                            if (checked === startIdx + batch.length) validateBatch(startIdx + 3);
-                        })
-                        .catch(function() { checked++; });
-                });
-            }
-
-            validateBatch(0);
-        })
-        .catch(function() {});
-    {% endif %}
-
-    /* Map a `resolution_hint` string ("1080p", "bluray", "hdrip", …) to a
-       height in pixels so the badge CSS (`quality-hd` / `sd` / `low`)
-       picks the right color. Mirrors the SQL ranking in
-       `PREHRAJTO_SOURCES_SQL` — keep the two in sync. */
-    function parseResolutionHint(hint) {
-        if (!hint) return 0;
-        var h = hint.toLowerCase();
-        if (h === '2160p') return 2160;
-        if (h === '1080p' || h === 'bluray') return 1080;
-        if (h === '720p' || h === 'bdrip' || h === 'webrip' || h === 'web-dl') return 720;
-        if (h === 'hdrip' || h === 'hdtv') return 540;
-        if (h === '480p' || h === 'dvdrip' || h === 'tvrip') return 480;
-        return 0;
-    }
-
-    function createItem(movie, isDirect, durationSec, height) {
-        var item = document.createElement('div');
-        item.className = 'prehrajto-item';
-        item.dataset.height = height || 0;
-        item.onclick = function() { playPrehrajto(movie, item); };
-
-        var thumb = movie.thumbnail
-            ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="">'
-            : '';
-        var year = movie.year ? ' (' + movie.year + ')' : '';
-        var badge = isDirect ? '<span class="pt-badge direct">přímý</span>' : '<span class="pt-badge proxy">proxy</span>';
-        // Real resolution from prehraj.to microdata — unlike the name ("1080p"
-        // in the filename is often a lie), this is the actual stream height.
-        var qualityLabel = '';
-        if (height) {
-            var cls = height >= 1080 ? 'quality-hd' : (height >= 720 ? 'quality-sd' : 'quality-low');
-            qualityLabel = ' <span class="pt-badge ' + cls + '">' + height + 'p</span>';
-        }
-        var durLabel = '';
-        if (durationSec) {
-            var mm = Math.round(durationSec / 60);
-            durLabel = ' · ' + mm + ' min';
-        }
-
-        // Build the shell with known-safe HTML (badges, thumb, play
-        // indicator), then inject the uploader-supplied title via
-        // `textContent` so any `<`/`&` in the title cannot become live
-        // markup. Same guard applies to both flows because both reach
-        // here.
-        item.innerHTML = thumb
-            + '<div class="pt-info">'
-            + '<span class="pt-title"></span>'
-            + '<span class="pt-meta">' + badge + qualityLabel + durLabel + '</span>'
-            + '</div>'
-            + '<span class="play-indicator">&#9654;</span>';
-        item.querySelector('.pt-title').textContent = movie.title + year;
-        return item;
-    }
-
-    /* Insert `item` into `container` so that direct items stay above proxy
-       items and, within direct items, heights descend (1080p on top). */
-    function insertSortedByHeight(container, item, height) {
-        var siblings = container.querySelectorAll('.prehrajto-item:not(.proxy-item)');
-        for (var i = 0; i < siblings.length; i++) {
-            var sh = parseInt(siblings[i].dataset.height || '0', 10);
-            if (height > sh) {
-                container.insertBefore(item, siblings[i]);
-                return;
-            }
-        }
-        // All existing direct items have higher/equal height — insert before first proxy
-        var firstProxy = container.querySelector('.proxy-item');
-        if (firstProxy) container.insertBefore(item, firstProxy);
-        else container.appendChild(item);
-    }
-
-    // Primary key: smaller runtime diff wins (the 53-minute Žabák should
-    // float above the 78/85-minute Žabák Ribit). Tiebreaker: higher
-    // resolution. Candidates without a known runtime (dataset.runtimeDiff
-    // missing) get Infinity so they always lose to a measured match.
-    function insertSortedByRuntimeThenHeight(container, item, diffSec, height) {
-        var siblings = container.querySelectorAll('.prehrajto-item:not(.proxy-item)');
-        for (var i = 0; i < siblings.length; i++) {
-            var sd = parseInt(siblings[i].dataset.runtimeDiff || '999999', 10);
-            if (diffSec < sd) {
-                container.insertBefore(item, siblings[i]);
-                return;
-            }
-            if (diffSec === sd) {
-                var sh = parseInt(siblings[i].dataset.height || '0', 10);
-                if (height > sh) {
-                    container.insertBefore(item, siblings[i]);
-                    return;
-                }
-            }
-        }
-        var firstProxy = container.querySelector('.proxy-item');
-        if (firstProxy) container.insertBefore(item, firstProxy);
-        else container.appendChild(item);
-    }
+    var player = document.getElementById('film-player');
+    if (!player || typeof sktorrentVideoId === 'undefined') return;
+    var fallbackTried = false;
+    player.addEventListener('error', function() {
+        if (fallbackTried) return;
+        if (!player.src || player.src.indexOf('sktorrent.eu') === -1) return;
+        fallbackTried = true;
+        resolveAndPlaySktorrent('Obnovuji zdroj...', null);
+    }, true);
 })();
 
-/* Dynamic tab for the "Další zdroje" live prehrajto search results.
-   When the film has a statically-rendered `prehraj.to` provider tab
-   (cached URL), we reuse it; otherwise a new tab is appended so the
-   user can see which source they just clicked. */
-function ensureLivePrehrajtoTab() {
-    var existing = document.querySelector('.source-tab[data-provider="prehrajto"]');
-    if (existing) return existing;
-    var tabs = document.getElementById('source-tabs');
-    if (!tabs) return null;
-    var btn = document.createElement('button');
-    btn.className = 'source-tab source-prehrajto';
-    btn.dataset.provider = 'prehrajto';
-    btn.textContent = 'prehraj.to';
-    // Same behaviour as the statically-rendered prehraj.to tab: mark
-    // active / hide sktorrent qualities via showSource, then replay
-    // whichever prehraj.to source the user last clicked, or fall
-    // through to the cached URL.
-    btn.onclick = function() {
-        showSource('prehrajto', btn);
-        var last = document.querySelector('.prehrajto-item.active');
-        if (last && last._movie) playPrehrajto(last._movie, last);
-        else if (cachedPrehrajtoUrl) playCachedPrehrajto();
-    };
-    tabs.appendChild(btn);
-    return btn;
-}
-
-function playPrehrajto(movie, item) {
-    var player = document.getElementById('film-player');
-    var status = document.getElementById('source-status');
-    if (!player) return;
-
-    // Mark clicked item as the active source (gold + play arrow); make
-    // the prehraj.to provider tab the current active tab so the user can
-    // see which provider is playing. If this film had no cached prehrajto
-    // URL, `ensureLivePrehrajtoTab` creates the tab on demand.
-    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
-    item.classList.add('active');
-    item._movie = movie;
-    var prehrajtoTab = ensureLivePrehrajtoTab();
-    if (prehrajtoTab) showSource('prehrajto', prehrajtoTab);
-    var sktQ = document.getElementById('sktorrent-quality');
-    if (sktQ) sktQ.style.display = 'none';
-
-    item.classList.add('loading');
-    status.textContent = 'Načítání...';
-
-    // Scroll to player
-    var playerSection = document.querySelector('.player-section');
-    if (playerSection) playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            item.classList.remove('loading');
-            if (data.success && data.video_url) {
-                var url = data.video_url.replace(/&amp;/g, '&');
-                playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
-                status.textContent = movie.title;
-
-                // Add subtitle tracks if available
-                if (data.subtitles && data.subtitles.length) {
-                    addSubtitles(player, data.subtitles);
-                }
-            } else {
-                status.textContent = 'Zdroj nedostupný';
-            }
-        })
-        .catch(function(e) {
-            item.classList.remove('loading');
-            status.textContent = 'Chyba: ' + e.message;
-        });
-}
-
-/* --- Subtitle support --- */
+/* --- Subtitle support -------------------------------------------------- */
 function addSubtitles(player, subtitles) {
     // Remove existing tracks
     var existing = player.querySelectorAll('track');
@@ -968,89 +750,6 @@ function setSubSize(px) {
     }
     style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
 }
-
-/* --- Initialize sktorrent player via live resolver --- */
-/* SK Torrent rotates videos across online{N}.sktorrent.eu CDN servers, so we
-   never trust a stored CDN value — every page load (and every mid-play error)
-   calls /api/films/sktorrent-resolve to find out where the video lives RIGHT
-   NOW. Backend caches resolver results in BoundedTtlCache (6h TTL), so this
-   adds at most one sktorrent fetch per video per 6 hours. */
-var sktorrentSources = [];
-
-function renderSktorrentSources(data) {
-    var status = document.getElementById('source-status');
-    if (!data || !data.sources || !data.sources.length) {
-        if (status) status.textContent = 'Zdroj nedostupný';
-        return false;
-    }
-    sktorrentSources = data.sources.map(function(s) {
-        return { url: s.url, quality: s.quality, res: s.res };
-    });
-    sktorrentSources.sort(function(a, b) { return b.res - a.res; });
-
-    var qualDiv = document.getElementById('sktorrent-quality');
-    if (qualDiv) {
-        qualDiv.innerHTML = '';
-        sktorrentSources.forEach(function(s, i) {
-            var btn = document.createElement('button');
-            btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
-            btn.textContent = s.quality;
-            btn.onclick = function() { playSktorrent(i, btn); };
-            qualDiv.appendChild(btn);
-        });
-    }
-    return true;
-}
-
-function resolveAndPlaySktorrent(onStatus) {
-    var status = document.getElementById('source-status');
-    if (status && onStatus) status.textContent = onStatus;
-    return fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!renderSktorrentSources(data)) return;
-            var qualDiv = document.getElementById('sktorrent-quality');
-            playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
-        })
-        .catch(function() {
-            if (status) status.textContent = 'Chyba obnovy zdroje';
-        });
-}
-
-(function() {
-    if (typeof sktorrentVideoId === 'undefined') return;
-    var player = document.getElementById('film-player');
-    if (!player) return;
-    resolveAndPlaySktorrent('Načítám zdroj...');
-})();
-
-function playSktorrent(index, btn) {
-    var player = document.getElementById('film-player');
-    if (window._hls) { window._hls.destroy(); window._hls = null; }
-    var source = sktorrentSources[index];
-    if (!source) return;
-    player.src = source.url;
-    player.dataset.sktorrentSrc = source.url;
-    player.dataset.sktorrentQuality = source.quality;
-    document.querySelectorAll('#sktorrent-quality .quality-btn').forEach(function(b) { b.classList.remove('active'); });
-    if (btn) btn.classList.add('active');
-    document.getElementById('source-status').textContent = '';
-}
-
-/* Defence against mid-play CDN rotation: if the SK Torrent URL fails after
-   we already had a working resolver response, try resolving once more. */
-(function() {
-    var player = document.getElementById('film-player');
-    if (!player || typeof sktorrentVideoId === 'undefined') return;
-
-    var fallbackTried = false;
-    player.addEventListener('error', function() {
-        if (fallbackTried) return;
-        if (!player.src || player.src.indexOf('sktorrent.eu') === -1) return;
-        fallbackTried = true;
-        resolveAndPlaySktorrent('Obnovuji zdroj...');
-    }, true);
-})();
 
 /* --- Search --- */
 function doSearch() {
