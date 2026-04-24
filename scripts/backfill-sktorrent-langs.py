@@ -22,6 +22,10 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 import psycopg2
 
 from scripts.auto_import.title_parser import parse_sktorrent_title
+from scripts.video_sources_helper import (
+    dual_write_sktorrent,
+    get_provider_ids,
+)
 
 
 def _flags(title: str) -> tuple[bool, bool]:
@@ -37,6 +41,8 @@ def main() -> int:
         raise SystemExit("DATABASE_URL required")
     conn = psycopg2.connect(dsn)
     cur = conn.cursor()
+
+    providers = get_provider_ids(cur)
 
     updated_films = 0
     cur.execute(
@@ -57,6 +63,26 @@ def main() -> int:
         )
         if cur.rowcount:
             updated_films += 1
+            # Dual-write (#607 / #610): refresh the video_sources row for
+            # this film's sktorrent source so the lang classification on
+            # the new schema matches the flags we just ORed into `films`.
+            cur.execute(
+                "SELECT sktorrent_video_id, sktorrent_cdn, sktorrent_qualities "
+                "FROM films WHERE id = %s",
+                (film_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                dual_write_sktorrent(
+                    cur,
+                    providers=providers,
+                    film_id=film_id,
+                    sktorrent_video_id=row[0],
+                    sktorrent_cdn=row[1],
+                    sktorrent_qualities=row[2],
+                    has_dub=has_dub,
+                    has_subtitles=has_subs,
+                )
 
     updated_episodes = 0
     cur.execute(
@@ -77,6 +103,23 @@ def main() -> int:
         )
         if cur.rowcount:
             updated_episodes += 1
+            cur.execute(
+                "SELECT sktorrent_video_id, sktorrent_cdn, sktorrent_qualities "
+                "FROM episodes WHERE id = %s",
+                (ep_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                dual_write_sktorrent(
+                    cur,
+                    providers=providers,
+                    episode_id=ep_id,
+                    sktorrent_video_id=row[0],
+                    sktorrent_cdn=row[1],
+                    sktorrent_qualities=row[2],
+                    has_dub=has_dub,
+                    has_subtitles=has_subs,
+                )
 
     conn.commit()
     print(f"backfilled {updated_films} films, {updated_episodes} episodes")

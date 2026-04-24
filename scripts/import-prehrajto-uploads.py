@@ -46,6 +46,13 @@ except ImportError:
     print("ERROR: psycopg2 not installed. pip install psycopg2-binary", file=sys.stderr)
     sys.exit(2)
 
+# Dual-write helper (#607 / #610).
+sys.path.insert(0, str(Path(__file__).parent))
+from video_sources_helper import (  # noqa: E402
+    get_provider_ids,
+    dual_write_prehrajto_upload,
+)
+
 
 # ---------------------------------------------------------------------------
 # Sitemap parsing + clustering (vendored from /tmp/prehrajto-pilot/match_tmdb.py)
@@ -489,6 +496,22 @@ def main() -> int:
                 "film_id": film_id,
             })
             updated_flags += 1
+
+            # Dual-write into the unified video_sources schema (#607 / #610).
+            # Runs inside the caller's transaction, right after the legacy
+            # batch flush path, so video_sources stays in lock-step with
+            # film_prehrajto_uploads. `primary_upload_id` was just written to
+            # `films.prehrajto_primary_upload_id`; passing it here makes the
+            # same upload's video_sources row `is_primary=TRUE`.
+            providers = get_provider_ids(cur)
+            for upload in per_upload:
+                dual_write_prehrajto_upload(
+                    cur,
+                    providers=providers,
+                    film_id=film_id,
+                    upload_row=upload,
+                    primary_upload_id=primary_upload_id,
+                )
 
             if commit_every and i % commit_every == 0:
                 flush()

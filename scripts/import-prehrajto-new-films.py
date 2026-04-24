@@ -63,6 +63,13 @@ except ImportError:
     print("ERROR: psycopg2 not installed. pip install psycopg2-binary", file=sys.stderr)
     sys.exit(2)
 
+# Dual-write helper (#607 / #610).
+sys.path.insert(0, str(Path(__file__).parent))
+from video_sources_helper import (  # noqa: E402
+    get_provider_ids,
+    dual_write_prehrajto_upload,
+)
+
 try:
     import requests
 except ImportError:
@@ -893,6 +900,20 @@ def main() -> int:
             ]
             psycopg2.extras.execute_batch(cur, insert_upload_sql, upload_rows, page_size=200)
             inserted_uploads += len(upload_rows)
+
+            # Dual-write into the unified video_sources schema (#607 / #610).
+            # Same transaction as the uploads batch above; on any exception
+            # the whole film INSERT + uploads + video_sources rolls back
+            # together via the outer try/except savepoint path.
+            providers = get_provider_ids(cur)
+            for upload in upload_rows:
+                dual_write_prehrajto_upload(
+                    cur,
+                    providers=providers,
+                    film_id=film_id,
+                    upload_row=upload,
+                    primary_upload_id=primary_upload_id,
+                )
 
             # ---- Genre links ----
             for tmdb_gid in movie["genre_ids"]:

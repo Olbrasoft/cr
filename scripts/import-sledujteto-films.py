@@ -78,6 +78,15 @@ except ImportError:
     print("ERROR: psycopg2 not installed. pip install psycopg2-binary", file=sys.stderr)
     sys.exit(2)
 
+# Dual-write helper (#607 / #610). Lives next to this script; the sys.path
+# entry at script startup (added by the shebang / python3 invocation) puts
+# scripts/ into the path already, so the import resolves directly.
+sys.path.insert(0, str(Path(__file__).parent))
+from video_sources_helper import (  # noqa: E402
+    get_provider_ids,
+    dual_write_sledujteto_upload,
+)
+
 log = logging.getLogger("import-sledujteto-films")
 
 
@@ -311,10 +320,12 @@ INSERT_FILM_SQL = """
 INSERT INTO films (
     title, original_title, slug, year, description,
     tmdb_id, runtime_min, tmdb_poster_path, lang,
+    imdb_rating,
     created_at, added_at
 ) VALUES (
     %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
     %(tmdb_id)s, %(runtime_min)s, %(tmdb_poster_path)s, %(lang)s,
+    %(imdb_rating)s,
     NOW(), NOW()
 )
 RETURNING id
@@ -464,6 +475,14 @@ def build_film_row(
     )
     year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
 
+    # `films.imdb_rating` is misnamed — it actually holds the TMDB vote
+    # average (see commit 3962c20fb "fix(ui): relabel rating badge from IMDB
+    # to TMDB"). TMDB returns 0.0 for films with no votes; we store NULL in
+    # that case so the listing badge is hidden rather than showing a
+    # misleading 0.0.
+    vote_average = (tmdb_meta or {}).get("vote_average")
+    imdb_rating = float(vote_average) if vote_average and vote_average > 0 else None
+
     return {
         "title": title[:255],
         "original_title": (original_title or "")[:255] or None,
@@ -474,6 +493,7 @@ def build_film_row(
         "runtime_min": (tmdb_meta or {}).get("runtime"),
         "tmdb_poster_path": ((tmdb_meta or {}).get("poster_path") or "")[:64] or None,
         "lang": ((tmdb_meta or {}).get("original_language") or "")[:20] or None,
+        "imdb_rating": imdb_rating,
     }
 
 
@@ -567,6 +587,22 @@ def run_import(args: argparse.Namespace) -> int:
 
             rollups = pick_primary_and_rollups(upload_rows)
             cur.execute(UPDATE_FILM_ROLLUPS_SQL, {**rollups, "film_id": film_id})
+
+            # Dual-write into the unified video_sources schema (#607 / #610).
+            # Runs in the same transaction as the legacy upsert above, so the
+            # two tables never diverge. `rollups["primary"]` is the same
+            # file_id we just wrote to `films.sledujteto_primary_file_id`,
+            # which becomes `is_primary=TRUE` in video_sources via the helper.
+            providers = get_provider_ids(cur)
+            for upload in upload_rows:
+                dual_write_sledujteto_upload(
+                    cur,
+                    providers=providers,
+                    film_id=film_id,
+                    upload_row=upload,
+                    primary_file_id=rollups.get("primary"),
+                )
+            stats["dual_write_sledujteto"] += len(upload_rows)
 
             if stats["inserted_films"] + stats["existing_films"] >= 1 and (
                 (stats["inserted_films"] + stats["existing_films"]) % args.commit_every == 0
