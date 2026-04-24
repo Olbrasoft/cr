@@ -54,6 +54,7 @@ Flags:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
 import sys
@@ -408,14 +409,17 @@ def backfill_prehrajto(cur, providers: dict[str, int], limit: int | None
         log.info("prehrajto/%s fallback: %d rows (stable URL only)",
                  table, len(fallback_rows))
         for row in fallback_rows:
-            # External id: last non-empty path segment of the URL. Keeps the
-            # (provider_id, external_id) UNIQUE tight per row so re-runs are
-            # idempotent even though we don't have a real upload_id.
+            # External id: SHA-1 of the full URL (including query string) so
+            # different URLs never collide — previous version used the
+            # trailing path segment, truncated to 128 chars, which could
+            # collide across uploads that share the same filename. Re-running
+            # the backfill with the same URL produces the same hash, so
+            # idempotence is preserved.
             url = row["prehrajto_url"]
-            segment = url.rstrip("/").rsplit("/", 1)[-1]
-            if not segment:
+            if not url:
                 continue
-            external_id = f"legacy_url:{segment}"[:128]
+            url_hash = hashlib.sha1(url.encode("utf-8")).hexdigest()
+            external_id = f"legacy_url:{url_hash}"
             try:
                 upsert_video_source(
                     cur,
