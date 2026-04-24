@@ -393,6 +393,20 @@ def build_upload_rows(
             continue
         upload_id = int(src["upload_id"])
         audio = audio_by_upload.get(upload_id)
+        # Only `www.sledujteto.cz` uploads serve 206 Partial Content from
+        # Hetzner (our prod ASN); `data{N}.sledujteto.cz` uploads redirect
+        # datacenter traffic to an invalid-file HTML page and the browser
+        # errors out with MEDIA_ERR_SRC_NOT_SUPPORTED. Those uploads have
+        # no playback value for us, so we drop them at ingest — keeping
+        # both `film_sledujteto_uploads` and `video_sources` free of
+        # unplayable rows.
+        cdn = cdn_from_sources(src, audio)
+        if cdn != "www":
+            log.debug(
+                "film_id=%d upload=%d: skipping non-www CDN %r (unplayable from Hetzner)",
+                film_id, upload_id, cdn,
+            )
+            continue
         title = src.get("name") or ""
         lang_class = merge_lang_class(
             title=title,
@@ -411,7 +425,7 @@ def build_upload_rows(
             "resolution_hint": normalize_resolution(src.get("resolution")),
             "filesize_bytes": parse_filesize(src.get("filesize")),
             "lang_class": lang_class,
-            "cdn": cdn_from_sources(src, audio),
+            "cdn": cdn,
         })
     return rows
 
