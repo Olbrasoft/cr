@@ -204,9 +204,9 @@ def upsert_video_source(cur, *,
         -- video_ids across films, and any importer that encounters such a
         -- collision should preserve the existing parent binding rather than
         -- silently re-point the row (which would corrupt rollups on the old
-        -- parent via the subtitles trigger cascade). The caller compares
-        -- the returned parent IDs against the incoming ones and logs the
-        -- mismatch instead.
+        -- parent via the subtitles trigger cascade). The Python code below
+        -- compares the returned parent IDs against the incoming ones and
+        -- logs the mismatch instead.
         ON CONFLICT (provider_id, external_id) DO UPDATE SET
             title             = COALESCE(EXCLUDED.title, video_sources.title),
             duration_sec      = COALESCE(EXCLUDED.duration_sec, video_sources.duration_sec),
