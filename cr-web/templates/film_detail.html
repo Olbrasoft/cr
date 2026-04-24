@@ -204,10 +204,18 @@
                     {% when Some with (t) %}
                     <span class="source-row-title">{{ t }}</span>
                     {% when None %}
-                    <span class="source-row-title source-row-title-missing">(bez názvu)</span>
+                    {# Fallback to the film's own title (typically from TMDB).
+                       sktorrent rows don't carry an upload-specific title;
+                       without this fallback the row would just say "(bez názvu)"
+                       and give the user nothing to anchor on. #}
+                    <span class="source-row-title">{{ film.title }}{% match film.year %}{% when Some with (y) %} ({{ y }}){% when None %}{% endmatch %}</span>
                     {% endmatch %}
                     <span class="source-row-badges">
+                        {# Only show the audio chip when we actually know the
+                           language — a bare "🎧 —" is visual noise. #}
+                        {% if vs.audio_lang.is_some() %}
                         <span class="source-row-audio" title="Jazyk zvuku">🎧 {{ vs.audio_label() }}{% match vs.confidence_display() %}{% when Some with (c) %} <span class="confidence">({{ c }})</span>{% when None %}{% endmatch %}</span>
+                        {% endif %}
                         {% if !vs.subtitle_langs.is_empty() %}
                         <span class="source-row-subs" title="Titulky">📝 {{ vs.subtitle_display() }}</span>
                         {% endif %}
@@ -355,7 +363,6 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
     font-weight: 500; font-size: 0.9rem; color: #222;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.source-row-title-missing { color: #888; font-style: italic; font-weight: 400; }
 .source-row-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
 .source-row-audio { background: #dcfce7; color: #065f46; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
 .source-row-audio .confidence { color: #16a34a; font-size: 0.7rem; margin-left: 0.2rem; }
@@ -376,7 +383,6 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
     color: #1a1a1a;
 }
 .source-row.active .source-row-title { color: #fff; }
-.source-row.active .source-row-title-missing { color: rgba(255,255,255,0.8); }
 .source-row.active .source-row-audio,
 .source-row.active .source-row-subs,
 .source-row.active .source-row-res { background: rgba(255,255,255,0.35); color: #1a1a1a; }
@@ -404,9 +410,14 @@ function findSourceRow(provider, externalId) {
 function markActiveRow(provider, externalId) {
     document.querySelectorAll('.source-row.active').forEach(function(r) { r.classList.remove('active'); });
     document.querySelectorAll('.source-row.loading').forEach(function(r) { r.classList.remove('loading'); });
-    if (!externalId) return;
-    var row = findSourceRow(provider, externalId);
-    if (row) row.classList.add('active');
+    if (externalId) {
+        var row = findSourceRow(provider, externalId);
+        if (row) row.classList.add('active');
+    }
+    // Whichever row is now active should reflect the player's current
+    // state (paused → ▶, playing → ⏸); rows that just lost .active get
+    // their ▶ back via the same pass.
+    syncPlayIcons();
 }
 
 /* Activate the numbered tab for a provider. Clears active state on the
@@ -446,13 +457,24 @@ function onSourceRowKeydown(e, row) {
 }
 
 /* Clicking a source row: switch provider tab, mark the row as playing,
-   and delegate to the provider-specific playback function. The row carries
-   two IDs: `externalId` is the stable identity used to locate the row in
-   the DOM (matches video_sources.external_id), while `playbackId` is the
-   handle that the provider-specific playback API expects — for prehraj.to
-   the full upload URL, for sktorrent the video_id, for sledujteto the
-   file_id. The handler falls back to externalId if playbackId is absent. */
+   and delegate to the provider-specific playback function. If the same
+   row is clicked again while it's already the active playback, we toggle
+   pause/resume instead of reloading — the row's play icon is also kept
+   in sync with the <video> element's paused/playing state (see
+   `syncPlayIcons` below). The row carries two IDs: `externalId` is the
+   stable identity used to locate the row in the DOM (matches
+   video_sources.external_id), while `playbackId` is the handle that the
+   provider-specific playback API expects — for prehraj.to the full upload
+   URL, for sktorrent the video_id, for sledujteto the file_id. */
 function playSource(row) {
+    var player = document.getElementById('film-player');
+    // Re-click on the active row → pause/resume, don't reload.
+    if (row.classList.contains('active') && player && player.src) {
+        if (player.paused) player.play().catch(function(){});
+        else player.pause();
+        return;
+    }
+
     var provider = row.dataset.provider;
     var externalId = row.dataset.externalId;
     var playbackId = row.dataset.playbackId || externalId;
@@ -471,6 +493,30 @@ function playSource(row) {
         onDone();
     }
 }
+
+/* Sync the icon on each row's play button with the <video> element's
+   state: while the player is actively playing, the active row shows a
+   pause glyph (so clicking it pauses); all other rows keep the play
+   glyph (clicking them switches source). When paused or ended, the
+   active row shows play again so re-clicking resumes. */
+var PLAY_GLYPH = '▶';    // ▶
+var PAUSE_GLYPH = '⏸';   // ⏸
+function syncPlayIcons() {
+    var player = document.getElementById('film-player');
+    var playing = player && !player.paused && !player.ended && player.readyState > 0;
+    document.querySelectorAll('.source-row').forEach(function(row) {
+        var icon = row.querySelector('.source-row-play');
+        if (!icon) return;
+        icon.textContent = (playing && row.classList.contains('active')) ? PAUSE_GLYPH : PLAY_GLYPH;
+    });
+}
+(function() {
+    var player = document.getElementById('film-player');
+    if (!player) return;
+    ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function(ev) {
+        player.addEventListener(ev, syncPlayIcons);
+    });
+})();
 
 /* --- Player core ------------------------------------------------------- */
 
