@@ -49,11 +49,20 @@ pub async fn movies_subtitle(
         return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
     }
 
+    // Referer matches the provider host — prehraj.to for premiumcdn.net
+    // subs, sledujteto.cz for its own /file/subtitles/ endpoint — because
+    // both sides do origin/referer checks at the CDN layer. A cross-origin
+    // Referer would look like scraping and surface as intermittent 403s.
+    let referer = if is_sledujteto {
+        "https://www.sledujteto.cz/"
+    } else {
+        "https://prehraj.to/"
+    };
     let resp = state
         .http_client
         .get(parsed.as_str())
         .header("User-Agent", "Mozilla/5.0")
-        .header("Referer", "https://prehraj.to/")
+        .header("Referer", referer)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await;

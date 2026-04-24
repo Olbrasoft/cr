@@ -47,6 +47,8 @@ Schema reference: cr-infra/migrations/20260529_058_video_sources_unified.sql
 """
 from __future__ import annotations
 
+import logging
+
 try:
     import psycopg2.extras
 except ImportError:
@@ -197,10 +199,15 @@ def upsert_video_source(cur, *,
             %(audio_confidence)s, %(audio_detected_by)s, %(cdn)s,
             %(is_primary)s, %(is_alive)s, %(last_seen)s, %(metadata)s, NOW()
         )
+        -- Safety: never silently move a source row to a different parent.
+        -- Same rule as backfill — legacy sktorrent has known duplicate
+        -- video_ids across films, and any importer that encounters such a
+        -- collision should preserve the existing parent binding rather than
+        -- silently re-point the row (which would corrupt rollups on the old
+        -- parent via the subtitles trigger cascade). The caller compares
+        -- the returned parent IDs against the incoming ones and logs the
+        -- mismatch instead.
         ON CONFLICT (provider_id, external_id) DO UPDATE SET
-            film_id           = EXCLUDED.film_id,
-            episode_id        = EXCLUDED.episode_id,
-            tv_episode_id     = EXCLUDED.tv_episode_id,
             title             = COALESCE(EXCLUDED.title, video_sources.title),
             duration_sec      = COALESCE(EXCLUDED.duration_sec, video_sources.duration_sec),
             resolution_hint   = COALESCE(EXCLUDED.resolution_hint, video_sources.resolution_hint),
@@ -216,7 +223,7 @@ def upsert_video_source(cur, *,
             last_seen         = COALESCE(EXCLUDED.last_seen, video_sources.last_seen),
             metadata          = COALESCE(EXCLUDED.metadata, video_sources.metadata),
             updated_at        = NOW()
-        RETURNING id
+        RETURNING id, film_id, episode_id, tv_episode_id
         """,
         dict(
             provider_id=provider_id,
@@ -242,7 +249,26 @@ def upsert_video_source(cur, *,
     )
     result = cur.fetchone()
     # Handle both DictCursor (row["id"]) and plain cursor (row[0]).
-    return result["id"] if hasattr(result, "keys") else result[0]
+    if hasattr(result, "keys"):
+        got = (result["id"], result["film_id"], result["episode_id"],
+               result["tv_episode_id"])
+    else:
+        got = (result[0], result[1], result[2], result[3])
+    got_id, got_film, got_ep, got_tv = got
+    # Detect the "moved between parents" case — we preserved the original
+    # parent binding; the caller's incoming parent was different. Log it so
+    # the operator can clean the legacy duplicate. This is the same check
+    # as in backfill-video-sources.py.
+    if (got_film != film_id or got_ep != episode_id
+            or got_tv != tv_episode_id):
+        logging.getLogger(__name__).warning(
+            "video_sources row id=%d kept on original parent "
+            "(film=%s episode=%s tv_ep=%s); incoming (film=%s episode=%s "
+            "tv_ep=%s) not re-pointed",
+            got_id, got_film, got_ep, got_tv,
+            film_id, episode_id, tv_episode_id,
+        )
+    return got_id
 
 
 def upsert_subtitle(cur, source_id: int, lang: str,
