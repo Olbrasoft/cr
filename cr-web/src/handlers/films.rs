@@ -1519,33 +1519,29 @@ mod tests {
     }
 
     #[test]
-    fn audio_filter_dub_unions_all_providers() {
+    fn audio_filter_dub_matches_audio_langs_rollup() {
         let q = query_with_jazyk(Some("dub"));
         let sql = q.audio_filter().expect("expected filter for dub");
-        assert!(sql.contains("f.has_dub = true"), "sql = {sql}");
-        assert!(sql.contains("f.prehrajto_has_dub = true"), "sql = {sql}");
-        assert!(sql.contains("f.sledujteto_has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("'cs' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(sql.contains("'sk' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(!sql.contains("subtitle_langs"), "sql = {sql}");
     }
 
     #[test]
-    fn audio_filter_sub_unions_all_providers() {
+    fn audio_filter_sub_checks_subtitle_langs_rollup() {
         let q = query_with_jazyk(Some("sub"));
         let sql = q.audio_filter().expect("expected filter for sub");
-        assert!(sql.contains("f.has_subtitles = true"), "sql = {sql}");
-        assert!(sql.contains("f.prehrajto_has_subs = true"), "sql = {sql}");
-        assert!(sql.contains("f.sledujteto_has_subs = true"), "sql = {sql}");
+        assert!(sql.contains("cardinality(f.subtitle_langs)"), "sql = {sql}");
+        assert!(!sql.contains("audio_langs"), "sql = {sql}");
     }
 
     #[test]
-    fn audio_filter_dub_and_sub_unions_both() {
+    fn audio_filter_dub_and_sub_unions_both_rollups() {
         let q = query_with_jazyk(Some("dub,sub"));
         let sql = q.audio_filter().expect("expected filter for dub,sub");
-        assert!(sql.contains("f.has_dub = true"), "sql = {sql}");
-        assert!(sql.contains("f.has_subtitles = true"), "sql = {sql}");
-        assert!(sql.contains("f.prehrajto_has_dub = true"), "sql = {sql}");
-        assert!(sql.contains("f.prehrajto_has_subs = true"), "sql = {sql}");
-        assert!(sql.contains("f.sledujteto_has_dub = true"), "sql = {sql}");
-        assert!(sql.contains("f.sledujteto_has_subs = true"), "sql = {sql}");
+        assert!(sql.contains("'cs' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(sql.contains("'sk' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(sql.contains("cardinality(f.subtitle_langs)"), "sql = {sql}");
     }
 
     #[test]
