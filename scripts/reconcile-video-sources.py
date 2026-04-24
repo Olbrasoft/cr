@@ -137,19 +137,21 @@ def check_primary_alignment(cur) -> list[str]:
         cur.execute(
             f"""
             WITH legacy AS ({pointer_sql}),
-                 prov AS (SELECT id FROM video_providers WHERE slug = %s)
-            SELECT COUNT(*) AS n, COALESCE(array_agg(l.id) FILTER (WHERE TRUE), '{{}}'::int[]) AS examples
-            FROM (
-                SELECT l.id, l.ptr FROM legacy l, prov p
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM video_sources vs
-                    WHERE vs.film_id = l.id
-                      AND vs.provider_id = p.id
-                      AND vs.is_primary
-                      AND vs.external_id = l.ptr
-                )
-                LIMIT 10
-            ) l
+                 prov AS (SELECT id FROM video_providers WHERE slug = %s),
+                 mismatched AS (
+                    SELECT l.id FROM legacy l, prov p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM video_sources vs
+                        WHERE vs.film_id = l.id
+                          AND vs.provider_id = p.id
+                          AND vs.is_primary
+                          AND vs.external_id = l.ptr
+                    )
+                 )
+            SELECT
+                (SELECT COUNT(*) FROM mismatched) AS n,
+                COALESCE((SELECT array_agg(id) FROM (SELECT id FROM mismatched LIMIT 10) s),
+                         '{{}}'::int[]) AS examples
             """,
             (slug,),
         )
@@ -163,31 +165,37 @@ def check_primary_alignment(cur) -> list[str]:
         else:
             log.info("OK %s: all legacy primary pointers align", count_label)
 
-    # sktorrent: every films.sktorrent_video_id should have a matching
-    # video_sources row. Primary is unconditional for sktorrent
-    # (is_primary=TRUE always — sktorrent is 1:1 legacy).
-    cur.execute(
-        """
-        WITH prov AS (SELECT id FROM video_providers WHERE slug = 'sktorrent')
-        SELECT COUNT(*) AS n
-        FROM films f, prov p
-        WHERE f.sktorrent_video_id IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM video_sources vs
-              WHERE vs.film_id = f.id
-                AND vs.provider_id = p.id
-                AND vs.external_id = f.sktorrent_video_id::text
-          )
-        """
-    )
-    missing_skt_films = cur.fetchone()["n"]
-    if missing_skt_films > 0:
-        errors.append(
-            f"SKT MISSING: {missing_skt_films} films with legacy sktorrent_video_id "
-            f"have no matching video_sources row"
+    # sktorrent: every legacy sktorrent_video_id (films / episodes /
+    # tv_episodes) should have a matching video_sources row. is_primary is
+    # unconditional for sktorrent (is_primary=TRUE always — sktorrent is 1:1).
+    for table, parent_col, parent_label in (
+        ("films", "film_id", "sktorrent films"),
+        ("episodes", "episode_id", "sktorrent episodes"),
+        ("tv_episodes", "tv_episode_id", "sktorrent tv_episodes"),
+    ):
+        cur.execute(
+            f"""
+            WITH prov AS (SELECT id FROM video_providers WHERE slug = 'sktorrent')
+            SELECT COUNT(*) AS n
+            FROM {table} t, prov p
+            WHERE t.sktorrent_video_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM video_sources vs
+                  WHERE vs.{parent_col} = t.id
+                    AND vs.provider_id = p.id
+                    AND vs.external_id = t.sktorrent_video_id::text
+              )
+            """
         )
-    else:
-        log.info("OK sktorrent films: every sktorrent_video_id has a video_sources row")
+        missing = cur.fetchone()["n"]
+        if missing > 0:
+            errors.append(
+                f"SKT MISSING: {missing} {parent_label} with legacy "
+                f"sktorrent_video_id have no matching video_sources row"
+            )
+        else:
+            log.info("OK %s: every sktorrent_video_id has a video_sources row",
+                     parent_label)
 
     return errors
 
@@ -217,23 +225,62 @@ def check_rollup_staleness(cur) -> list[str]:
                    ) AS expected
             FROM films f
             WHERE EXISTS (SELECT 1 FROM video_sources vs WHERE vs.film_id = f.id)
+        ),
+        stale AS (
+            SELECT id FROM rollup WHERE stored IS DISTINCT FROM expected
         )
-        SELECT COUNT(*) AS n,
-               COALESCE(array_agg(id) FILTER (WHERE TRUE), '{}'::int[]) AS examples
-        FROM (
-            SELECT id FROM rollup WHERE stored IS DISTINCT FROM expected LIMIT 10
-        ) s
+        SELECT
+            (SELECT COUNT(*) FROM stale) AS n,
+            COALESCE((SELECT array_agg(id) FROM (SELECT id FROM stale LIMIT 10) s),
+                     '{}'::int[]) AS examples
         """
     )
     row = cur.fetchone()
     stale = row["n"]
     if stale > 0:
         errors.append(
-            f"ROLLUP STALE: {stale} films have audio_langs drift from video_sources "
-            f"contents. First IDs: {row['examples']}"
+            f"ROLLUP STALE (audio_langs): {stale} films have audio_langs drift from "
+            f"video_sources. First IDs: {row['examples']}"
         )
     else:
         log.info("OK films.audio_langs: no rollup drift detected")
+
+    # Subtitle rollup: same shape but checks films.subtitle_langs vs.
+    # video_source_subtitles for all alive video_sources on the film.
+    cur.execute(
+        """
+        WITH rollup AS (
+            SELECT f.id,
+                   f.subtitle_langs AS stored,
+                   COALESCE(
+                       (SELECT array_agg(DISTINCT vss.lang::TEXT ORDER BY vss.lang::TEXT)
+                        FROM video_sources vs
+                        JOIN video_source_subtitles vss ON vss.source_id = vs.id
+                        WHERE vs.film_id = f.id
+                          AND vs.is_alive),
+                       '{}'::TEXT[]
+                   ) AS expected
+            FROM films f
+            WHERE EXISTS (SELECT 1 FROM video_sources vs WHERE vs.film_id = f.id)
+        ),
+        stale AS (
+            SELECT id FROM rollup WHERE stored IS DISTINCT FROM expected
+        )
+        SELECT
+            (SELECT COUNT(*) FROM stale) AS n,
+            COALESCE((SELECT array_agg(id) FROM (SELECT id FROM stale LIMIT 10) s),
+                     '{}'::int[]) AS examples
+        """
+    )
+    row = cur.fetchone()
+    stale_subs = row["n"]
+    if stale_subs > 0:
+        errors.append(
+            f"ROLLUP STALE (subtitle_langs): {stale_subs} films have subtitle_langs "
+            f"drift from video_source_subtitles. First IDs: {row['examples']}"
+        )
+    else:
+        log.info("OK films.subtitle_langs: no rollup drift detected")
 
     return errors
 

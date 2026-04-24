@@ -77,6 +77,13 @@ def get_provider_ids(cur) -> dict[str, int]:
     mapping = {row[0] if not hasattr(row, "keys") else row["slug"]:
                row[1] if not hasattr(row, "keys") else row["id"]
                for row in rows}
+    # Fail fast on missing seed rows: callers index with providers["sktorrent"]
+    # etc. and a missing slug would surface as an opaque KeyError elsewhere.
+    missing = [s for s in PROVIDER_SLUGS if s not in mapping]
+    if missing:
+        raise RuntimeError(
+            f"video_providers missing seed rows for: {missing}. "
+            f"Run migration 058 before dual-write.")
     _PROVIDER_CACHE[key] = mapping
     return mapping
 
@@ -230,7 +237,7 @@ def upsert_video_source(cur, *,
             is_primary=is_primary,
             is_alive=is_alive,
             last_seen=last_seen,
-            metadata=psycopg2.extras.Json(metadata) if metadata else None,
+            metadata=psycopg2.extras.Json(metadata) if metadata is not None else None,
         ),
     )
     result = cur.fetchone()

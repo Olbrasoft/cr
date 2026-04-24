@@ -79,7 +79,13 @@ def provider_ids(cur) -> dict[str, int]:
         "SELECT slug, id FROM video_providers WHERE slug = ANY(%s)",
         (list(PROVIDER_SLUGS),),
     )
-    return {row["slug"]: row["id"] for row in cur.fetchall()}
+    result = {row["slug"]: row["id"] for row in cur.fetchall()}
+    missing = [s for s in PROVIDER_SLUGS if s not in result]
+    if missing:
+        raise RuntimeError(
+            f"video_providers missing seed rows for: {missing}. "
+            f"Run migration 058 before backfill.")
+    return result
 
 
 def lang_class_to_audio_and_subs(lang_class: str | None,
@@ -170,10 +176,14 @@ def upsert_video_source(cur, *,
             %(audio_detected_by)s, %(cdn)s, %(is_primary)s, %(is_alive)s,
             %(last_seen)s, %(metadata)s, NOW()
         )
+        -- Safety: never silently move a source row to a different parent.
+        -- Legacy sktorrent has known duplicate video_ids across films; the
+        -- UNIQUE constraint on (provider_id, external_id) ensures only one
+        -- parent wins. We therefore preserve the EXISTING film_id/episode_id
+        -- /tv_episode_id columns on conflict (no re-assignment). The caller
+        -- checks the returned parent IDs against the incoming ones and logs
+        -- a mismatch instead of corrupting the other parent's rollups.
         ON CONFLICT (provider_id, external_id) DO UPDATE SET
-            film_id           = EXCLUDED.film_id,
-            episode_id        = EXCLUDED.episode_id,
-            tv_episode_id     = EXCLUDED.tv_episode_id,
             title             = COALESCE(EXCLUDED.title, video_sources.title),
             duration_sec      = COALESCE(EXCLUDED.duration_sec, video_sources.duration_sec),
             resolution_hint   = COALESCE(EXCLUDED.resolution_hint, video_sources.resolution_hint),
@@ -188,7 +198,7 @@ def upsert_video_source(cur, *,
             last_seen         = COALESCE(EXCLUDED.last_seen, video_sources.last_seen),
             metadata          = COALESCE(EXCLUDED.metadata, video_sources.metadata),
             updated_at        = NOW()
-        RETURNING id
+        RETURNING id, film_id, episode_id, tv_episode_id
         """,
         dict(
             provider_id=provider_id,
@@ -208,10 +218,26 @@ def upsert_video_source(cur, *,
             is_primary=is_primary,
             is_alive=is_alive,
             last_seen=last_seen,
-            metadata=psycopg2.extras.Json(metadata) if metadata else None,
+            metadata=psycopg2.extras.Json(metadata) if metadata is not None else None,
         ),
     )
-    return cur.fetchone()["id"]
+    row = cur.fetchone()
+    # Detect the "moved between parents" case: the row already existed but
+    # anchored to a different film/episode/tv_episode. We don't mutate the
+    # existing parent — just surface the mismatch so the operator can decide
+    # (the legacy sktorrent duplicate set is the known cause; cleanup is a
+    # separate task).
+    if (row["film_id"] != film_id
+            or row["episode_id"] != episode_id
+            or row["tv_episode_id"] != tv_episode_id):
+        log.warning(
+            "video_sources row id=%d kept on original parent "
+            "(film=%s episode=%s tv_ep=%s); incoming (film=%s episode=%s "
+            "tv_ep=%s) not re-pointed",
+            row["id"], row["film_id"], row["episode_id"], row["tv_episode_id"],
+            film_id, episode_id, tv_episode_id,
+        )
+    return row["id"]
 
 
 def upsert_subtitle(cur, source_id: int, lang: str) -> None:
@@ -246,10 +272,14 @@ def backfill_sktorrent(cur, providers: dict[str, int], limit: int | None
         # `has_dub` / `has_subtitles` exist on all three tables for sktorrent
         # legacy detection.
         limit_clause = f"LIMIT {int(limit)}" if limit else ""
+        # `sktorrent_added_at` exists on all three tables (migration 036) —
+        # carry it into video_sources.last_seen so "unseen for N days"
+        # reconciliation has a real timestamp instead of NULL.
         cur.execute(
             f"""
             SELECT id, sktorrent_video_id, {cdn_col} AS cdn,
-                   {qualities_col} AS qualities, has_dub, has_subtitles
+                   {qualities_col} AS qualities, has_dub, has_subtitles,
+                   sktorrent_added_at
             FROM {table}
             WHERE sktorrent_video_id IS NOT NULL
             ORDER BY id
@@ -277,6 +307,7 @@ def backfill_sktorrent(cur, providers: dict[str, int], limit: int | None
                     cdn=str(row["cdn"]) if row["cdn"] is not None else None,
                     is_primary=True,  # sktorrent is 1:1 in legacy
                     is_alive=True,
+                    last_seen=row["sktorrent_added_at"],
                     metadata=metadata,
                 )
                 for lang in sub_langs:
@@ -345,6 +376,62 @@ def backfill_prehrajto(cur, providers: dict[str, int], limit: int | None
             log.warning("prehrajto film_id=%d upload_id=%s: %s",
                         row["film_id"], row["upload_id"], e)
             skipped += 1
+
+    # Fallback: some legacy rows have only the stable `prehrajto_url` column
+    # (pre-uploads-table era) with no rows in film_prehrajto_uploads. Emit a
+    # single source row keyed on the URL's trailing path segment so those
+    # titles still surface in video_sources. Applies to films, episodes, and
+    # tv_episodes. `is_primary` is true because it's the only source we have.
+    for table, parent_col in (("films", "film_id"),
+                              ("episodes", "episode_id"),
+                              ("tv_episodes", "tv_episode_id")):
+        upload_table = "film_prehrajto_uploads" if table == "films" else None
+        if upload_table:
+            gate_sql = (
+                f"AND NOT EXISTS (SELECT 1 FROM {upload_table} u "
+                f"WHERE u.film_id = t.id)"
+            )
+        else:
+            gate_sql = ""
+        cur.execute(
+            f"""
+            SELECT id, prehrajto_url
+            FROM {table} t
+            WHERE prehrajto_url IS NOT NULL
+              AND prehrajto_url <> ''
+              {gate_sql}
+            """
+        )
+        fallback_rows = cur.fetchall()
+        if not fallback_rows:
+            continue
+        log.info("prehrajto/%s fallback: %d rows (stable URL only)",
+                 table, len(fallback_rows))
+        for row in fallback_rows:
+            # External id: last non-empty path segment of the URL. Keeps the
+            # (provider_id, external_id) UNIQUE tight per row so re-runs are
+            # idempotent even though we don't have a real upload_id.
+            url = row["prehrajto_url"]
+            segment = url.rstrip("/").rsplit("/", 1)[-1]
+            if not segment:
+                continue
+            external_id = f"legacy_url:{segment}"[:128]
+            try:
+                upsert_video_source(
+                    cur,
+                    provider_id=provider_id,
+                    external_id=external_id,
+                    **{parent_col: row["id"]},
+                    is_primary=True,
+                    is_alive=True,
+                    metadata={"url": url, "legacy_url_fallback": True},
+                )
+                inserted += 1
+            except psycopg2.Error as e:
+                log.warning("prehrajto fallback %s id=%d url=%s: %s",
+                            table, row["id"], url, e)
+                skipped += 1
+
     return inserted, skipped
 
 

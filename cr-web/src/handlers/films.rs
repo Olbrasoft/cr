@@ -316,10 +316,10 @@ impl FilmsQuery {
         let has_dub = parts.contains(&"dub") || parts.contains(&"cz") || parts.contains(&"sk");
         let has_sub = parts.contains(&"sub") || parts.contains(&"titulky");
         match (has_dub, has_sub) {
-            (true, false) => Some("('cs' = ANY(f.audio_langs) OR 'sk' = ANY(f.audio_langs))"),
+            (true, false) => Some("f.audio_langs && ARRAY['cs','sk']::TEXT[]"),
             (false, true) => Some("cardinality(f.subtitle_langs) > 0"),
             (true, true) => Some(
-                "('cs' = ANY(f.audio_langs) OR 'sk' = ANY(f.audio_langs) \
+                "(f.audio_langs && ARRAY['cs','sk']::TEXT[] \
                   OR cardinality(f.subtitle_langs) > 0)",
             ),
             _ => None,
@@ -1957,8 +1957,10 @@ mod tests {
     fn audio_filter_dub_matches_audio_langs_rollup() {
         let q = query_with_jazyk(Some("dub"));
         let sql = q.audio_filter().expect("expected filter for dub");
-        assert!(sql.contains("'cs' = ANY(f.audio_langs)"), "sql = {sql}");
-        assert!(sql.contains("'sk' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(
+            sql.contains("f.audio_langs && ARRAY['cs','sk']"),
+            "sql = {sql}"
+        );
         assert!(!sql.contains("subtitle_langs"), "sql = {sql}");
     }
 
@@ -1974,8 +1976,10 @@ mod tests {
     fn audio_filter_dub_and_sub_unions_both_rollups() {
         let q = query_with_jazyk(Some("dub,sub"));
         let sql = q.audio_filter().expect("expected filter for dub,sub");
-        assert!(sql.contains("'cs' = ANY(f.audio_langs)"), "sql = {sql}");
-        assert!(sql.contains("'sk' = ANY(f.audio_langs)"), "sql = {sql}");
+        assert!(
+            sql.contains("f.audio_langs && ARRAY['cs','sk']"),
+            "sql = {sql}"
+        );
         assert!(sql.contains("cardinality(f.subtitle_langs)"), "sql = {sql}");
     }
 
