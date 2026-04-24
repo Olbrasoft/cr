@@ -393,6 +393,23 @@ def build_upload_rows(
             continue
         upload_id = int(src["upload_id"])
         audio = audio_by_upload.get(upload_id)
+        # Drop uploads whose playback host is `data{N}.sledujteto.cz` —
+        # from Hetzner's datacenter ASN those redirect to an invalid-file
+        # HTML page and the <video> element errors out with
+        # MEDIA_ERR_SRC_NOT_SUPPORTED. Only `www.sledujteto.cz` serves
+        # 206 Partial Content for us. We match on the `data` prefix
+        # rather than "anything != www" so that uploads whose classifier
+        # returned "unknown" (cdn_type missing + no audio detection yet)
+        # stay in — they may resolve to `www` once audio detection runs
+        # and dropping them pre-emptively would cost real coverage.
+        cdn = cdn_from_sources(src, audio)
+        if cdn.startswith("data"):
+            log.debug(
+                "film_id=%d upload=%d: skipping data-CDN upload %r "
+                "(unplayable from Hetzner)",
+                film_id, upload_id, cdn,
+            )
+            continue
         title = src.get("name") or ""
         lang_class = merge_lang_class(
             title=title,
@@ -411,7 +428,7 @@ def build_upload_rows(
             "resolution_hint": normalize_resolution(src.get("resolution")),
             "filesize_bytes": parse_filesize(src.get("filesize")),
             "lang_class": lang_class,
-            "cdn": cdn_from_sources(src, audio),
+            "cdn": cdn,
         })
     return rows
 
