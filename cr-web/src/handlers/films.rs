@@ -209,6 +209,13 @@ pub(crate) struct VideoSourceBadgeRow {
     #[allow(dead_code)] // used only for ORDER BY; template reads by slug
     pub(crate) sort_priority: i16,
     pub(crate) external_id: String,
+    /// What the frontend passes back to the provider-specific playback
+    /// endpoint. For prehraj.to this is the full upload URL (stored in
+    /// `metadata->>'url'`), not the short external_id suffix — the
+    /// `/api/movies/video-url` endpoint expects the URL. For other
+    /// providers `external_id` is already the playback handle, so the
+    /// SQL `COALESCE` falls back to it.
+    pub(crate) playback_id: String,
     pub(crate) title: Option<String>,
     pub(crate) lang_class: String,
     pub(crate) audio_lang: Option<String>,
@@ -632,12 +639,6 @@ struct FilmDetailTemplate {
     /// `sort_priority` + primary-first. Rendered under the provider
     /// tabs on the detail page.
     video_sources_for_badges: Vec<VideoSourceBadgeRow>,
-    /// Gate the "Další zdroje" JS between the legacy live-scrape flow
-    /// and the new DB-backed `/api/films/{id}/prehrajto-sources`
-    /// endpoint (issue #521). Template renders this into a JS
-    /// boolean — flipping `PREHRAJTO_SOURCES_FROM_DB` at the
-    /// process env + restart is all it takes to roll back.
-    prehrajto_sources_from_db: bool,
 }
 
 // --- Search API types ---
@@ -927,6 +928,7 @@ pub async fn films_detail(
                     p.display_name AS provider_display_name, \
                     p.sort_priority, \
                     vs.external_id, \
+                    COALESCE(vs.metadata->>'url', vs.external_id) AS playback_id, \
                     vs.title, \
                     vs.lang_class, \
                     vs.audio_lang, \
@@ -961,7 +963,6 @@ pub async fn films_detail(
         genres,
         sources,
         video_sources_for_badges,
-        prehrajto_sources_from_db: state.config.prehrajto_sources_from_db,
     };
     Ok(Html(tmpl.render()?).into_response())
 }

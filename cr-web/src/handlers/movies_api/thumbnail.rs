@@ -43,12 +43,21 @@ pub struct ThumbQuery {
 
 // --- URL validation helpers ---
 
-/// Validate URL is actually from prehraj.to domain.
+/// Validate URL is actually from the Prehraj.to site. Accepts both the
+/// `prehraj.to` and `prehrajto.cz` domains — they serve the same site and
+/// share upload IDs, and the unified `video_sources` schema stores the
+/// `.cz` variant (see `metadata->>'url'`) while legacy code persisted the
+/// `.to` variant in `films.prehrajto_url`.
 pub(crate) fn is_prehrajto_url(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .map(|h| h == "prehraj.to" || h.ends_with(".prehraj.to"))
+        .map(|h| {
+            h == "prehraj.to"
+                || h.ends_with(".prehraj.to")
+                || h == "prehrajto.cz"
+                || h.ends_with(".prehrajto.cz")
+        })
         .unwrap_or(false)
 }
 
