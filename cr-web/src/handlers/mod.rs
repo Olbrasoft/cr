@@ -29,6 +29,7 @@ mod regions;
 mod series;
 mod tv_porady;
 pub mod video_api;
+mod video_sources;
 
 // Re-export all public handlers so main.rs doesn't need changes
 pub use admin_test_sledujteto::admin_test_sledujteto;
