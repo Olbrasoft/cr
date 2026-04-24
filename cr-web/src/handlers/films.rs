@@ -196,6 +196,71 @@ struct CountRow {
     count: Option<i64>,
 }
 
+/// Per-source badge row rendered on the film detail page (#613). One row
+/// per alive `video_sources` entry for the film, with subtitle languages
+/// aggregated from `video_source_subtitles` in the same query. Ordered by
+/// provider `sort_priority` so badge tabs follow the same visual order
+/// as the provider switcher at the top of the player.
+#[derive(sqlx::FromRow, Serialize)]
+pub(crate) struct VideoSourceBadgeRow {
+    pub(crate) provider_slug: String,
+    pub(crate) provider_host: String,
+    pub(crate) provider_display_name: String,
+    #[allow(dead_code)] // used only for ORDER BY; template reads by slug
+    pub(crate) sort_priority: i16,
+    pub(crate) external_id: String,
+    pub(crate) title: Option<String>,
+    pub(crate) lang_class: String,
+    pub(crate) audio_lang: Option<String>,
+    pub(crate) audio_confidence: Option<f32>,
+    pub(crate) audio_detected_by: Option<String>,
+    pub(crate) resolution_hint: Option<String>,
+    #[allow(dead_code)] // rendered indirectly via `cdn_label`; kept for ordering decisions
+    pub(crate) cdn: Option<String>,
+    pub(crate) is_primary: bool,
+    pub(crate) subtitle_langs: Vec<String>,
+}
+
+impl VideoSourceBadgeRow {
+    /// Human-readable label for the audio language (or "—" when unknown).
+    pub(crate) fn audio_label(&self) -> String {
+        match self.audio_lang.as_deref() {
+            Some("cs") => "Čeština".to_string(),
+            Some("sk") => "Slovenština".to_string(),
+            Some("en") => "Angličtina".to_string(),
+            Some("de") => "Němčina".to_string(),
+            Some(other) => other.to_ascii_uppercase(),
+            None => "—".to_string(),
+        }
+    }
+
+    /// Formatted confidence badge. Hidden when the detector was Whisper at
+    /// ≥ 0.8 confidence (per #613 — that's noise for the user; only show
+    /// when detection was lower-quality so it's visible which sources are
+    /// reliable and which are regex-guessed).
+    pub(crate) fn confidence_display(&self) -> Option<String> {
+        match (self.audio_detected_by.as_deref(), self.audio_confidence) {
+            (Some("whisper"), Some(c)) if c >= 0.8 => None,
+            (_, Some(c)) => Some(format!("{:.0} %", (c * 100.0).round())),
+            _ => None,
+        }
+    }
+
+    /// Comma-separated display of subtitle languages, uppercased. Empty
+    /// when the source has no subtitle tracks.
+    pub(crate) fn subtitle_display(&self) -> String {
+        if self.subtitle_langs.is_empty() {
+            String::new()
+        } else {
+            self.subtitle_langs
+                .iter()
+                .map(|s| s.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
 // --- Query params ---
 
 #[derive(Deserialize)]
@@ -208,7 +273,19 @@ pub struct FilmsQuery {
     rok: Option<String>,    // year filter
     rezim: Option<String>,  // "and" (all genres) or "or" (any genre)
     smer: Option<String>,   // "asc" or "desc" (default)
-    jazyk: Option<String>,  // comma-separated: dub, sub
+    jazyk: Option<String>,  // legacy: "dub" / "sub" — kept for shareable links
+    /// Multi-value audio-language filter (#612). Comma-separated ISO 639
+    /// codes like `cs,sk,en`. AND semantics: the film must have EVERY listed
+    /// language present in `audio_langs`. Empty / absent = no filter.
+    /// Repeated-key form like `?audio=cs&audio=en` isn't supported by the
+    /// default `serde_urlencoded` extractor; going comma-separated matches
+    /// the existing `zanry` / `jazyk` params and keeps the query string
+    /// short + shareable.
+    audio: Option<String>,
+    /// Subtitle filter (#612). `titulky=1` or `titulky=any` requires the
+    /// film to have at least one subtitle track. Comma-separated ISO codes
+    /// like `titulky=cs,en` require EVERY listed language as a subtitle.
+    titulky: Option<String>,
 }
 
 impl FilmsQuery {
@@ -246,6 +323,49 @@ impl FilmsQuery {
                   OR cardinality(f.subtitle_langs) > 0)",
             ),
             _ => None,
+        }
+    }
+
+    /// Parse the `audio=cs,sk,en` param into a Vec of validated ISO codes.
+    /// Returns None when absent/empty; Some(vec) with only `^[a-z]{2,3}$`
+    /// entries otherwise. The regex guard avoids SQL-binding garbage strings
+    /// (the binding itself is parameterised, but keeping the array contents
+    /// canonical lets the GIN index fire and simplifies chip rendering).
+    pub(crate) fn audio_langs_filter(&self) -> Option<Vec<String>> {
+        let raw = self.audio.as_deref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let langs: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s.len() <= 3 && s.chars().all(|c| c.is_ascii_lowercase()))
+            .collect();
+        if langs.is_empty() { None } else { Some(langs) }
+    }
+
+    /// Parse the `titulky=...` param into a subtitle filter mode.
+    /// Returns:
+    ///   - None              — no filter (absent or empty)
+    ///   - Some((None, _))   — `titulky=1` / `titulky=any` → any subtitles present
+    ///   - Some((Some(vec))) — `titulky=cs,en` → film must have every listed lang
+    pub(crate) fn subs_filter(&self) -> Option<Option<Vec<String>>> {
+        let raw = self.titulky.as_deref()?.trim();
+        if raw.is_empty() || raw == "0" {
+            return None;
+        }
+        if raw == "1" || raw == "any" || raw == "ano" {
+            return Some(None);
+        }
+        let langs: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s.len() <= 3 && s.chars().all(|c| c.is_ascii_lowercase()))
+            .collect();
+        if langs.is_empty() {
+            Some(None)
+        } else {
+            Some(Some(langs))
         }
     }
 }
@@ -324,6 +444,16 @@ struct FilmsListTemplate {
     selected_genre_slugs: Vec<String>,
     /// Genres per film, keyed by film id — rendered as chips in desktop list view.
     film_genres_map: std::collections::HashMap<i32, Vec<FilmGenreNameRow>>,
+    /// Currently-applied audio-language filter (#612). Empty → no filter.
+    selected_audio_langs: Vec<String>,
+    /// Currently-applied subtitle-language filter (#612). `Some(vec)` means
+    /// "require these specific subs"; `Some(empty)` means `titulky=any`
+    /// (any subs). `None` means "no subs filter applied".
+    selected_subs: Option<Vec<String>>,
+    /// Full raw query string including `strana=`, `zanry=`, etc. Used to
+    /// build "remove this chip" URLs that strip a single audio/subs param
+    /// without disturbing others.
+    full_query: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl FilmsListTemplate {
@@ -346,6 +476,148 @@ impl FilmsListTemplate {
             .map(|v| v.as_slice())
             .unwrap_or(EMPTY.as_slice())
     }
+
+    // --- Audio / subs filter helpers (#612) ---
+
+    fn is_audio_selected(&self, lang: &str) -> bool {
+        self.selected_audio_langs.iter().any(|l| l == lang)
+    }
+
+    fn is_subs_selected(&self, lang: &str) -> bool {
+        match &self.selected_subs {
+            Some(list) if !list.is_empty() => list.iter().any(|l| l == lang),
+            _ => false,
+        }
+    }
+
+    /// True iff the user checked "Má titulky" without specifying a language.
+    fn is_subs_any(&self) -> bool {
+        matches!(&self.selected_subs, Some(list) if list.is_empty())
+    }
+
+    /// Narrower form used by the active-chip row: show the generic
+    /// "Titulky" chip ONLY when no language-specific chip is already
+    /// rendered (otherwise the UI would duplicate the signal).
+    fn is_subs_any_without_lang(&self) -> bool {
+        matches!(&self.selected_subs, Some(list) if list.is_empty())
+    }
+
+    fn has_lang_filters(&self) -> bool {
+        !self.selected_audio_langs.is_empty() || self.selected_subs.is_some()
+    }
+
+    fn audio_chips(&self) -> &[String] {
+        &self.selected_audio_langs
+    }
+
+    fn subs_chips(&self) -> &[String] {
+        match &self.selected_subs {
+            Some(list) => list.as_slice(),
+            None => &[],
+        }
+    }
+
+    /// Map an ISO code to the Czech label used in active-filter chips.
+    /// Falls back to uppercase of the code for languages we don't list
+    /// explicitly (e.g. "de" → "DE"). Keeps chips short in the UI.
+    fn lang_display(&self, lang: &str) -> String {
+        match lang {
+            "cs" => "Čeština".to_string(),
+            "sk" => "Slovenština".to_string(),
+            "en" => "Angličtina".to_string(),
+            "de" => "Němčina".to_string(),
+            "fr" => "Francouzština".to_string(),
+            other => other.to_ascii_uppercase(),
+        }
+    }
+
+    /// Build a URL back to `/filmy-online/` with the current filters minus
+    /// one audio language. Keeps the rest of the query (zanry, razeni, rok,
+    /// strana=1 reset so removing a filter returns to page 1).
+    fn remove_audio_url(&self, lang: &str) -> String {
+        let mut params = self.full_query.clone();
+        if let Some(vs) = params.get_mut("audio") {
+            // Rebuild each CSV value with the requested lang removed; drop
+            // empties. Using iter_mut + assignment would hit E0594 because
+            // Vec::retain yields `&T` not `&mut T`; reconstructing the Vec
+            // is the cleanest way across Rust 1.x versions.
+            let rebuilt: Vec<String> = vs
+                .iter()
+                .filter_map(|existing_csv| {
+                    let filtered: Vec<&str> = existing_csv
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| *s != lang)
+                        .collect();
+                    if filtered.is_empty() {
+                        None
+                    } else {
+                        Some(filtered.join(","))
+                    }
+                })
+                .collect();
+            if rebuilt.is_empty() {
+                params.remove("audio");
+            } else {
+                *vs = rebuilt;
+            }
+        }
+        params.remove("strana");
+        build_filter_url(&params)
+    }
+
+    fn remove_subs_url(&self) -> String {
+        let mut params = self.full_query.clone();
+        params.remove("titulky");
+        params.remove("strana");
+        build_filter_url(&params)
+    }
+
+    fn remove_subs_lang_url(&self, lang: &str) -> String {
+        let mut params = self.full_query.clone();
+        if let Some(vs) = params.get_mut("titulky") {
+            let rebuilt: Vec<String> = vs
+                .iter()
+                .filter_map(|existing_csv| {
+                    let filtered: Vec<&str> = existing_csv
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| *s != lang)
+                        .collect();
+                    if filtered.is_empty() {
+                        None
+                    } else {
+                        Some(filtered.join(","))
+                    }
+                })
+                .collect();
+            if rebuilt.is_empty() {
+                params.remove("titulky");
+            } else {
+                *vs = rebuilt;
+            }
+        }
+        params.remove("strana");
+        build_filter_url(&params)
+    }
+}
+
+/// Re-serialize `params` into a `/filmy-online/?a=b&c=d` URL. Values with
+/// commas are emitted as-is (the caller already canonicalised them), and
+/// repeated keys each get their own `&key=` entry so the URL shape stays
+/// predictable.
+fn build_filter_url(params: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut parts = Vec::new();
+    for (key, values) in params {
+        for v in values {
+            parts.push(format!("{}={}", key, urlencoding::encode(v)));
+        }
+    }
+    if parts.is_empty() {
+        "/filmy-online/".to_string()
+    } else {
+        format!("/filmy-online/?{}", parts.join("&"))
+    }
 }
 
 #[derive(Template)]
@@ -356,6 +628,10 @@ struct FilmDetailTemplate {
     genres: Vec<FilmGenreNameRow>,
     #[allow(dead_code)] // Fetched from DB but not rendered via Askama; JS handles sources
     sources: Vec<FilmSourceRow>,
+    /// Per-source badge rows (#613). Already sorted by provider
+    /// `sort_priority` + primary-first. Rendered under the provider
+    /// tabs on the detail page.
+    video_sources_for_badges: Vec<VideoSourceBadgeRow>,
     /// Gate the "Další zdroje" JS between the legacy live-scrape flow
     /// and the new DB-backed `/api/films/{id}/prehrajto-sources`
     /// endpoint (issue #521). Template renders this into a JS
@@ -471,7 +747,16 @@ pub async fn films_list(
                 .collect()
         })
         .unwrap_or_default();
-    let open_filter = !selected_genre_slugs.is_empty();
+    let selected_audio_langs = params.audio_langs_filter().unwrap_or_default();
+    let selected_subs = match params.subs_filter() {
+        Some(None) => Some(Vec::new()),
+        Some(Some(v)) => Some(v),
+        None => None,
+    };
+    let full_query = build_full_query_map(&params);
+    let open_filter = !selected_genre_slugs.is_empty()
+        || !selected_audio_langs.is_empty()
+        || selected_subs.is_some();
     let film_genres_map = load_film_genres_map(&state.db, &films).await?;
 
     let tmpl = FilmsListTemplate {
@@ -488,8 +773,72 @@ pub async fn films_list(
         open_filter,
         selected_genre_slugs,
         film_genres_map,
+        selected_audio_langs,
+        selected_subs,
+        full_query,
     };
     Ok(Html(tmpl.render()?).into_response())
+}
+
+/// Serialize the current filter params into a BTreeMap keyed by query
+/// parameter name. Used by the active-chip "remove" URL helpers so each
+/// chip can rebuild the URL with one of its own filters stripped out.
+/// BTreeMap gives a deterministic ordering for the rendered URLs — stable
+/// across renders so the browser cache isn't constantly invalidated.
+fn build_full_query_map(params: &FilmsQuery) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    if let Some(z) = params.zanry.as_ref()
+        && !z.trim().is_empty()
+    {
+        map.insert("zanry".into(), vec![z.clone()]);
+    }
+    if let Some(b) = params.bez.as_ref()
+        && !b.trim().is_empty()
+    {
+        map.insert("bez".into(), vec![b.clone()]);
+    }
+    if let Some(q) = params.q.as_ref()
+        && !q.trim().is_empty()
+    {
+        map.insert("q".into(), vec![q.clone()]);
+    }
+    if let Some(r) = params.rok.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("rok".into(), vec![r.clone()]);
+    }
+    if let Some(r) = params.razeni.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("razeni".into(), vec![r.clone()]);
+    }
+    if let Some(s) = params.smer.as_ref()
+        && !s.trim().is_empty()
+    {
+        map.insert("smer".into(), vec![s.clone()]);
+    }
+    if let Some(rz) = params.rezim.as_ref()
+        && !rz.trim().is_empty()
+    {
+        map.insert("rezim".into(), vec![rz.clone()]);
+    }
+    if let Some(j) = params.jazyk.as_ref()
+        && !j.trim().is_empty()
+    {
+        map.insert("jazyk".into(), vec![j.clone()]);
+    }
+    if let Some(a) = params.audio.as_ref()
+        && !a.trim().is_empty()
+    {
+        map.insert("audio".into(), vec![a.clone()]);
+    }
+    if let Some(t) = params.titulky.as_ref()
+        && !t.trim().is_empty()
+    {
+        map.insert("titulky".into(), vec![t.clone()]);
+    }
+    map
 }
 
 /// GET /filmy-online/{slug}/ — film detail, genre listing, or cover image
@@ -568,11 +917,50 @@ pub async fn films_detail(
     .fetch_all(&state.db)
     .await?;
 
+    // Per-source badge data (#613). One row per alive video source for this
+    // film, with an array-aggregated list of subtitle languages. Ordered by
+    // `video_providers.sort_priority` so the tab order matches the badge
+    // order — the frontend scroll-anchor logic relies on that.
+    let video_sources_for_badges = sqlx::query_as::<_, VideoSourceBadgeRow>(
+        "SELECT p.slug AS provider_slug, \
+                    p.host AS provider_host, \
+                    p.display_name AS provider_display_name, \
+                    p.sort_priority, \
+                    vs.external_id, \
+                    vs.title, \
+                    vs.lang_class, \
+                    vs.audio_lang, \
+                    vs.audio_confidence, \
+                    vs.audio_detected_by, \
+                    vs.resolution_hint, \
+                    vs.cdn, \
+                    vs.is_primary, \
+                    COALESCE( \
+                        (SELECT array_agg(DISTINCT vss.lang::TEXT ORDER BY vss.lang::TEXT) \
+                         FROM video_source_subtitles vss \
+                         WHERE vss.source_id = vs.id), \
+                        '{}'::TEXT[] \
+                    ) AS subtitle_langs \
+             FROM video_sources vs \
+             JOIN video_providers p ON p.id = vs.provider_id \
+             WHERE vs.film_id = $1 AND vs.is_alive \
+             ORDER BY p.sort_priority, vs.is_primary DESC, vs.updated_at DESC",
+    )
+    .bind(film.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(film_id = film.id, error = ?e,
+                "video_sources badge query failed; detail page renders without badges");
+        Vec::new()
+    });
+
     let tmpl = FilmDetailTemplate {
         img: state.image_base_url.clone(),
         film,
         genres,
         sources,
+        video_sources_for_badges,
         prehrajto_sources_from_db: state.config.prehrajto_sources_from_db,
     };
     Ok(Html(tmpl.render()?).into_response())
@@ -707,6 +1095,13 @@ async fn films_by_genre(
         open_filter: open_filter || !zanry_extras.is_empty(),
         selected_genre_slugs: zanry_extras.clone(),
         film_genres_map,
+        selected_audio_langs: params.audio_langs_filter().unwrap_or_default(),
+        selected_subs: match params.subs_filter() {
+            Some(None) => Some(Vec::new()),
+            Some(Some(v)) => Some(v),
+            None => None,
+        },
+        full_query: build_full_query_map(&params),
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -893,6 +1288,32 @@ async fn run_films_query(
     if let Some(af) = params.audio_filter() {
         where_parts.push(af.to_string());
     }
+    // Multi-value audio-lang filter (#612). `f.audio_langs @> $N` asks "is
+    // every user-selected lang present in the film's rollup array" — AND
+    // semantics per the issue. GIN on `audio_langs` makes this a cheap
+    // bitmap intersection.
+    let audio_langs_param = params.audio_langs_filter();
+    if audio_langs_param.is_some() {
+        where_parts.push(format!("f.audio_langs @> ${bind_idx}::TEXT[]"));
+        bind_idx += 1;
+    }
+    // Subtitle filter (#612).
+    //   titulky=any → require at least one subtitle track (any language)
+    //   titulky=cs,en → require every listed language as a subtitle track
+    let subs_param = params.subs_filter();
+    let mut subs_bind_idx = None;
+    match &subs_param {
+        Some(None) => {
+            where_parts.push("cardinality(f.subtitle_langs) > 0".to_string());
+        }
+        Some(Some(_)) => {
+            where_parts.push(format!("f.subtitle_langs @> ${bind_idx}::TEXT[]"));
+            subs_bind_idx = Some(bind_idx);
+            bind_idx += 1;
+        }
+        None => {}
+    }
+    let _ = subs_bind_idx; // reserved for future chip rendering; kept to document order
 
     // Anti-zombie filter: only list films that actually have at least one
     // alive video source. Before the #611 reader switch, this condition was
@@ -929,6 +1350,12 @@ async fn run_films_query(
     if let Some(yr) = year_f {
         cq = cq.bind(yr);
     }
+    if let Some(langs) = audio_langs_param.as_ref() {
+        cq = cq.bind(langs.clone());
+    }
+    if let Some(Some(langs)) = subs_param.as_ref() {
+        cq = cq.bind(langs.clone());
+    }
     let count_row = cq.fetch_one(db).await?;
 
     let films_query = format!(
@@ -951,6 +1378,12 @@ async fn run_films_query(
     }
     if let Some(yr) = year_f {
         fq = fq.bind(yr);
+    }
+    if let Some(langs) = audio_langs_param.as_ref() {
+        fq = fq.bind(langs.clone());
+    }
+    if let Some(Some(langs)) = subs_param.as_ref() {
+        fq = fq.bind(langs.clone());
     }
     let films = fq.bind(FILMS_PER_PAGE).bind(offset).fetch_all(db).await?;
 
@@ -1515,6 +1948,8 @@ mod tests {
             rezim: None,
             smer: None,
             jazyk: jazyk.map(|s| s.to_string()),
+            audio: None,
+            titulky: None,
         }
     }
 
