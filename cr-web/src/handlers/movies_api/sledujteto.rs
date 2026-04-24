@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
 
+use super::subtitles::SubtitleTrack;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -251,6 +252,12 @@ pub struct ResolveResponse {
     video_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     download_url: Option<String>,
+    /// HTML `<track>` entries. Matches the shape returned by the prehraj.to
+    /// resolve endpoint so the shared `addSubtitles(player, data.subtitles)`
+    /// client code works verbatim for both providers. Empty vec when the
+    /// upload has no subtitle attachments.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    subtitles: Vec<SubtitleTrack>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -265,19 +272,27 @@ pub async fn sledujteto_resolve(
     // present in `film_sledujteto_uploads` — that bounds traffic to
     // files the import pipeline has already classified, and turns any
     // drive-by into a DB read with no upstream side effect.
-    let known = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM film_sledujteto_uploads WHERE file_id = $1)",
+    //
+    // We also pull `lang_class` in the same round-trip so we can map
+    // subtitle tracks to an HTML `srclang` below (sledujteto doesn't
+    // expose track language in its add-file-link response).
+    let lang_class: Option<String> = match sqlx::query_scalar::<_, String>(
+        "SELECT vs.lang_class \
+           FROM video_sources vs \
+           JOIN video_providers p ON p.id = vs.provider_id \
+          WHERE p.slug = 'sledujteto' AND vs.external_id = $1::TEXT",
     )
     .bind(params.id as i32)
-    .fetch_one(&state.db)
-    .await;
-    match known {
-        Ok(true) => {}
-        Ok(false) => {
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(lc)) => Some(lc),
+        Ok(None) => {
             return Json(ResolveResponse {
                 success: false,
                 video_url: None,
                 download_url: None,
+                subtitles: vec![],
                 error: Some("unknown file_id".into()),
             });
         }
@@ -287,10 +302,11 @@ pub async fn sledujteto_resolve(
                 success: false,
                 video_url: None,
                 download_url: None,
+                subtitles: vec![],
                 error: Some("db error".into()),
             });
         }
-    }
+    };
 
     let body = json!({ "params": { "id": params.id } });
 
@@ -317,6 +333,7 @@ pub async fn sledujteto_resolve(
                 success: false,
                 video_url: None,
                 download_url: None,
+                subtitles: vec![],
                 error: Some(format!("upstream: {e}")),
             });
         }
@@ -332,6 +349,7 @@ pub async fn sledujteto_resolve(
             success: false,
             video_url: None,
             download_url: None,
+            subtitles: vec![],
             error: Some(format!("HTTP {}", status.as_u16())),
         });
     }
@@ -342,6 +360,18 @@ pub async fn sledujteto_resolve(
         msg: Option<String>,
         video_url: Option<String>,
         download_url: Option<String>,
+        #[serde(default)]
+        subtitles: Vec<UpstreamSubtitle>,
+    }
+    #[derive(Deserialize)]
+    struct UpstreamSubtitle {
+        /// Sledujteto returns a proxied VTT URL of the form
+        /// `https://www.sledujteto.cz/file/subtitles/?file=<raw>` — that
+        /// outer URL is what actually serves valid WEBVTT bytes, so we
+        /// forward it as-is (wrapped by our own CORS proxy below).
+        file: Option<String>,
+        /// Human-readable label (usually the original .srt filename).
+        label: Option<String>,
     }
 
     let data: UpstreamResp = match resp.json().await {
@@ -352,6 +382,7 @@ pub async fn sledujteto_resolve(
                 success: false,
                 video_url: None,
                 download_url: None,
+                subtitles: vec![],
                 error: Some(format!("parse: {e}")),
             });
         }
@@ -362,6 +393,7 @@ pub async fn sledujteto_resolve(
             success: false,
             video_url: None,
             download_url: None,
+            subtitles: vec![],
             error: data.msg.or(Some("upstream error".into())),
         });
     }
@@ -376,15 +408,48 @@ pub async fn sledujteto_resolve(
                 success: false,
                 video_url: None,
                 download_url: data.download_url,
+                subtitles: vec![],
                 error: Some("missing video_url in upstream response".into()),
             });
         }
     };
 
+    // Map upstream subtitle descriptors to our shared `<track>` shape.
+    //  - `url` stays raw; the browser-side `addSubtitles` helper already
+    //    wraps it in `/api/movies/subtitle?url=…` (shared allowlist now
+    //    covers both `premiumcdn.net` and `www.sledujteto.cz`, so the
+    //    same wrapper serves both providers and adds the CORS / VTT
+    //    content-type the CDN omits).
+    //  - `lang` is derived from the upload's classified `lang_class`:
+    //    CZ_SUB → cs, SK_SUB → sk, anything else defaults to `cs` because
+    //    99 % of attached tracks on sledujteto are Czech and the user can
+    //    still toggle them off via native CC menu.
+    //  - `label` falls back to "Titulky" when upstream omits the filename.
+    let sub_lang = match lang_class.as_deref() {
+        Some("SK_SUB") => "sk",
+        _ => "cs",
+    };
+    let subtitles: Vec<SubtitleTrack> = data
+        .subtitles
+        .into_iter()
+        .filter_map(|s| {
+            let raw = s.file?;
+            if raw.trim().is_empty() {
+                return None;
+            }
+            Some(SubtitleTrack {
+                url: raw,
+                lang: sub_lang.to_string(),
+                label: s.label.unwrap_or_else(|| "Titulky".to_string()),
+            })
+        })
+        .collect();
+
     Json(ResolveResponse {
         success: true,
         video_url: Some(video_url),
         download_url: data.download_url,
+        subtitles,
         error: None,
     })
 }
@@ -424,14 +489,24 @@ pub async fn sledujteto_sources(
     State(state): State<AppState>,
     Path(film_id): Path<i32>,
 ) -> Response {
+    // After the #611 reader switch, this reads from `video_sources` with
+    // a `provider='sledujteto'` filter. The `external_id` column is the
+    // sledujteto file_id stored as TEXT — cast to INT for the output so
+    // the JSON contract (and `SledujtetoSourceRow.file_id: i32`) stay
+    // unchanged.
     let sql = r#"
-        SELECT file_id, title, duration_sec, resolution_hint, filesize_bytes,
-               lang_class, cdn
-        FROM film_sledujteto_uploads
-        WHERE film_id = $1 AND is_alive = TRUE
-        ORDER BY
-            CASE cdn WHEN 'www' THEN 0 ELSE 1 END,
-            CASE lang_class
+        SELECT vs.external_id::INTEGER AS file_id,
+               COALESCE(vs.title, '') AS title,
+               vs.duration_sec, vs.resolution_hint, vs.filesize_bytes,
+               vs.lang_class,
+               COALESCE(vs.cdn, 'unknown') AS cdn
+          FROM video_sources vs
+          JOIN video_providers p ON p.id = vs.provider_id
+         WHERE p.slug = 'sledujteto'
+           AND vs.film_id = $1 AND vs.is_alive = TRUE
+         ORDER BY
+            CASE vs.cdn WHEN 'www' THEN 0 ELSE 1 END,
+            CASE vs.lang_class
                 WHEN 'CZ_DUB'    THEN 0
                 WHEN 'CZ_NATIVE' THEN 1
                 WHEN 'CZ_SUB'    THEN 2
@@ -441,13 +516,13 @@ pub async fn sledujteto_sources(
                 ELSE 6
             END,
             CASE
-                WHEN resolution_hint ILIKE '%2160%' OR resolution_hint ILIKE '%4k%' THEN 0
-                WHEN resolution_hint ILIKE '%1080%' THEN 1
-                WHEN resolution_hint ILIKE '%720%'  THEN 2
-                WHEN resolution_hint ILIKE '%480%'  THEN 3
+                WHEN vs.resolution_hint ILIKE '%2160%' OR vs.resolution_hint ILIKE '%4k%' THEN 0
+                WHEN vs.resolution_hint ILIKE '%1080%' THEN 1
+                WHEN vs.resolution_hint ILIKE '%720%'  THEN 2
+                WHEN vs.resolution_hint ILIKE '%480%'  THEN 3
                 ELSE 4
             END,
-            file_id
+            vs.external_id::INTEGER
     "#;
 
     match sqlx::query_as::<_, SledujtetoSourceRow>(sql)

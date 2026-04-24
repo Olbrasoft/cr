@@ -13,6 +13,51 @@ use crate::state::AppState;
 
 const SERIES_PER_PAGE: i64 = 24;
 
+/// Column list for `EpisodeRow` queries. After the #611 reader switch this
+/// projects the same field names as the legacy `episodes` columns but reads
+/// each provider attribute from `video_sources`. The FilmRow counterpart
+/// in `films.rs` uses the same pattern — see there for performance notes.
+///
+/// Scope: series episodes only (provider_id from `sktorrent` / `prehrajto`
+/// joined to `video_sources.episode_id`). sledujteto has no series support
+/// in legacy, so no sledujteto subquery here.
+const EPISODE_COLUMNS: &str = "e.id, e.season, e.episode, e.title, \
+    (SELECT vs.external_id::INTEGER \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_video_id, \
+    (SELECT vs.cdn::SMALLINT \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_cdn, \
+    (SELECT vs.metadata->>'qualities' \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_qualities, \
+    e.episode_name, e.overview, e.air_date, e.runtime, e.still_filename, \
+    (SELECT COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.episode_id = e.id AND p.slug = 'prehrajto' AND vs.is_alive \
+      ORDER BY vs.is_primary DESC, vs.updated_at DESC \
+      LIMIT 1) AS prehrajto_url, \
+    false AS prehrajto_has_dub, \
+    false AS prehrajto_has_subs, \
+    e.slug";
+
+/// Predicate that gates whether an episode has any playable source at all.
+/// Used instead of the legacy `(sktorrent_video_id IS NOT NULL OR prehrajto_url
+/// IS NOT NULL)` OR-chain. Prevents zombie episodes (TMDB stubs without any
+/// source) from rendering.
+const EPISODE_HAS_SOURCE_PREDICATE: &str = "EXISTS (SELECT 1 FROM video_sources vs \
+                                                    WHERE vs.episode_id = e.id AND vs.is_alive)";
+
 #[derive(FromRow, Serialize)]
 pub struct SeriesRow {
     id: i32,
@@ -732,15 +777,13 @@ pub async fn series_resolve(
     // Only list episodes that have a playable source — either SK Torrent or a
     // cached Přehraj.to URL. TMDB stubs without any source stay in the DB
     // (useful when enrichment picks them up later) but we don't show them.
-    let episodes = sqlx::query_as::<_, EpisodeRow>(
-        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, \
-         episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-         FROM episodes \
-         WHERE series_id = $1 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY season, episode, sktorrent_video_id",
-    )
+    let episodes = sqlx::query_as::<_, EpisodeRow>(&format!(
+        "SELECT {EPISODE_COLUMNS} \
+           FROM episodes e \
+          WHERE e.series_id = $1 \
+            AND {EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.season, e.episode, e.id",
+    ))
     .bind(series.id)
     .fetch_all(&state.db)
     .await?;
@@ -864,15 +907,13 @@ pub async fn episode_detail(
     };
 
     // --- Resolve episode: try slug first, then parse old NxM format ---
-    let episode = sqlx::query_as::<_, EpisodeRow>(
-        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, sktorrent_qualities, \
-         episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-         FROM episodes \
-         WHERE series_id = $1 AND slug = $2 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY sktorrent_video_id LIMIT 1",
-    )
+    let episode = sqlx::query_as::<_, EpisodeRow>(&format!(
+        "SELECT {EPISODE_COLUMNS} \
+           FROM episodes e \
+          WHERE e.series_id = $1 AND e.slug = $2 \
+            AND {EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.id LIMIT 1",
+    ))
     .bind(series.id)
     .bind(&ep_path)
     .fetch_optional(&state.db)
@@ -887,15 +928,13 @@ pub async fn episode_detail(
                     (s_str.parse::<i16>(), e_str.parse::<i16>())
                 {
                     // Find the episode by season+episode to get its slug
-                    let found = sqlx::query_as::<_, EpisodeRow>(
-                        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, \
-                         sktorrent_qualities, episode_name, overview, air_date, runtime, \
-                         still_filename, prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-                         FROM episodes \
-                         WHERE series_id = $1 AND season = $2 AND episode = $3 \
-                           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-                         ORDER BY sktorrent_video_id LIMIT 1",
-                    )
+                    let found = sqlx::query_as::<_, EpisodeRow>(&format!(
+                        "SELECT {EPISODE_COLUMNS} \
+                           FROM episodes e \
+                          WHERE e.series_id = $1 AND e.season = $2 AND e.episode = $3 \
+                            AND {EPISODE_HAS_SOURCE_PREDICATE} \
+                          ORDER BY e.id LIMIT 1",
+                    ))
                     .bind(series.id)
                     .bind(season_num)
                     .bind(episode_num)
@@ -930,13 +969,13 @@ pub async fn episode_detail(
     let episode_num = episode.episode;
 
     // Navigation: previous and next episode — same source-available filter
-    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>, Option<String>)>(
-        "SELECT DISTINCT ON (season, episode) season, episode, episode_name, slug \
-         FROM episodes \
-         WHERE series_id = $1 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY season, episode",
-    )
+    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>, Option<String>)>(&format!(
+        "SELECT DISTINCT ON (e.season, e.episode) e.season, e.episode, e.episode_name, e.slug \
+           FROM episodes e \
+          WHERE e.series_id = $1 \
+            AND {EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.season, e.episode",
+    ))
     .bind(series.id)
     .fetch_all(&state.db)
     .await

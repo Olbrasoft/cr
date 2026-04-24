@@ -18,6 +18,42 @@ use crate::state::AppState;
 
 const TV_SHOWS_PER_PAGE: i64 = 24;
 
+/// Column list for `TvEpisodeRow` queries. After the #611 reader switch,
+/// provider attributes come from `video_sources` joined on `tv_episode_id`.
+/// Same shape as the series `EPISODE_COLUMNS` — see that const for rationale.
+const TV_EPISODE_COLUMNS: &str = "e.id, e.season, e.episode, e.title, \
+    (SELECT vs.external_id::INTEGER \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.tv_episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_video_id, \
+    (SELECT vs.cdn::SMALLINT \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.tv_episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_cdn, \
+    (SELECT vs.metadata->>'qualities' \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.tv_episode_id = e.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_qualities, \
+    e.episode_name, e.overview, e.air_date, e.runtime, e.still_filename, \
+    (SELECT COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.tv_episode_id = e.id AND p.slug = 'prehrajto' AND vs.is_alive \
+      ORDER BY vs.is_primary DESC, vs.updated_at DESC \
+      LIMIT 1) AS prehrajto_url, \
+    false AS prehrajto_has_dub, \
+    false AS prehrajto_has_subs, \
+    e.slug";
+
+const TV_EPISODE_HAS_SOURCE_PREDICATE: &str = "EXISTS (SELECT 1 FROM video_sources vs \
+             WHERE vs.tv_episode_id = e.id AND vs.is_alive)";
+
 #[derive(FromRow, Serialize)]
 pub struct TvShowRow {
     id: i32,
@@ -406,15 +442,13 @@ pub async fn tv_porad_detail(
         }
     };
 
-    let episodes = sqlx::query_as::<_, TvEpisodeRow>(
-        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, \
-         sktorrent_qualities, episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-         FROM tv_episodes \
-         WHERE tv_show_id = $1 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY season, episode, sktorrent_video_id",
-    )
+    let episodes = sqlx::query_as::<_, TvEpisodeRow>(&format!(
+        "SELECT {TV_EPISODE_COLUMNS} \
+           FROM tv_episodes e \
+          WHERE e.tv_show_id = $1 \
+            AND {TV_EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.season, e.episode, e.id",
+    ))
     .bind(show.id)
     .fetch_all(&state.db)
     .await?;
@@ -491,15 +525,13 @@ pub async fn tv_epizoda_detail(
         }
     };
 
-    let episode = sqlx::query_as::<_, TvEpisodeRow>(
-        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, \
-         sktorrent_qualities, episode_name, overview, air_date, runtime, still_filename, \
-         prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-         FROM tv_episodes \
-         WHERE tv_show_id = $1 AND slug = $2 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY sktorrent_video_id LIMIT 1",
-    )
+    let episode = sqlx::query_as::<_, TvEpisodeRow>(&format!(
+        "SELECT {TV_EPISODE_COLUMNS} \
+           FROM tv_episodes e \
+          WHERE e.tv_show_id = $1 AND e.slug = $2 \
+            AND {TV_EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.id LIMIT 1",
+    ))
     .bind(show.id)
     .bind(&ep_path)
     .fetch_optional(&state.db)
@@ -512,15 +544,13 @@ pub async fn tv_epizoda_detail(
                 if let (Ok(season_num), Ok(episode_num)) =
                     (s_str.parse::<i16>(), e_str.parse::<i16>())
                 {
-                    let found = sqlx::query_as::<_, TvEpisodeRow>(
-                        "SELECT id, season, episode, title, sktorrent_video_id, sktorrent_cdn, \
-                         sktorrent_qualities, episode_name, overview, air_date, runtime, \
-                         still_filename, prehrajto_url, prehrajto_has_dub, prehrajto_has_subs, slug \
-                         FROM tv_episodes \
-                         WHERE tv_show_id = $1 AND season = $2 AND episode = $3 \
-                           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-                         ORDER BY sktorrent_video_id LIMIT 1",
-                    )
+                    let found = sqlx::query_as::<_, TvEpisodeRow>(&format!(
+                        "SELECT {TV_EPISODE_COLUMNS} \
+                           FROM tv_episodes e \
+                          WHERE e.tv_show_id = $1 AND e.season = $2 AND e.episode = $3 \
+                            AND {TV_EPISODE_HAS_SOURCE_PREDICATE} \
+                          ORDER BY e.id LIMIT 1",
+                    ))
                     .bind(show.id)
                     .bind(season_num)
                     .bind(episode_num)
@@ -552,13 +582,13 @@ pub async fn tv_epizoda_detail(
     let season_num = episode.season;
     let episode_num = episode.episode;
 
-    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>, Option<String>)>(
-        "SELECT DISTINCT ON (season, episode) season, episode, episode_name, slug \
-         FROM tv_episodes \
-         WHERE tv_show_id = $1 \
-           AND (sktorrent_video_id IS NOT NULL OR prehrajto_url IS NOT NULL) \
-         ORDER BY season, episode",
-    )
+    let all_episodes = sqlx::query_as::<_, (i16, i16, Option<String>, Option<String>)>(&format!(
+        "SELECT DISTINCT ON (e.season, e.episode) e.season, e.episode, e.episode_name, e.slug \
+           FROM tv_episodes e \
+          WHERE e.tv_show_id = $1 \
+            AND {TV_EPISODE_HAS_SOURCE_PREDICATE} \
+          ORDER BY e.season, e.episode",
+    ))
     .bind(show.id)
     .fetch_all(&state.db)
     .await
