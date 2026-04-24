@@ -61,8 +61,11 @@ const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(2 * 3600);
 ///
 /// The template's `parseResolutionHint` helper mirrors the resolution
 /// buckets here — keep them in sync too.
+///
+/// After the #611 reader switch this references `video_sources` columns
+/// (prefixed with `vs.` or unprefixed, depending on which SELECT uses it).
 const PREHRAJTO_RANK_ORDER_BY: &str = r#"
-    CASE lang_class
+    CASE vs.lang_class
       WHEN 'CZ_DUB'    THEN 6
       WHEN 'CZ_NATIVE' THEN 5
       WHEN 'CZ_SUB'    THEN 4
@@ -71,7 +74,7 @@ const PREHRAJTO_RANK_ORDER_BY: &str = r#"
       WHEN 'UNKNOWN'   THEN 1
       ELSE 0
     END DESC,
-    CASE LOWER(COALESCE(resolution_hint, ''))
+    CASE LOWER(COALESCE(vs.resolution_hint, ''))
       WHEN '2160p'  THEN 6
       WHEN 'bluray' THEN 5
       WHEN '1080p'  THEN 5
@@ -86,8 +89,16 @@ const PREHRAJTO_RANK_ORDER_BY: &str = r#"
       WHEN 'tvrip'  THEN 2
       ELSE 1
     END DESC,
-    COALESCE(view_count, 0) DESC
+    COALESCE(vs.view_count, 0) DESC
 "#;
+
+/// Filter clause used by every prehrajto SELECT to read only rows from
+/// the `prehrajto` provider in `video_sources`. Joins on `video_providers`
+/// instead of hard-coding a provider_id so a fresh DB setup doesn't have
+/// to care about the lookup row order.
+const PREHRAJTO_JOIN: &str = "FROM video_sources vs \
+                              JOIN video_providers p ON p.id = vs.provider_id \
+                              WHERE p.slug = 'prehrajto'";
 
 /// prehraj.to upload ids are 13-hex (older) or 16-hex (newer); anything
 /// else is definitely not a real upload and we can reject it early.
@@ -260,10 +271,14 @@ async fn try_resolve_one(state: &AppState, upload_id: &str) -> TryResolveOutcome
     // HashMap<String, Arc<Mutex>>; inserting an entry for every
     // valid-looking hex id a client throws at us would be a memory-growth
     // vector. Confirming the upload exists (and is alive) before reserving
-    // a lock slot bounds the map to real rows in `film_prehrajto_uploads`.
+    // a lock slot bounds the map to real rows in the prehrajto provider's
+    // `video_sources` set.
     let row = match sqlx::query_as::<_, UploadRow>(
-        "SELECT film_id, url FROM film_prehrajto_uploads \
-         WHERE upload_id = $1 AND is_alive = TRUE",
+        "SELECT vs.film_id AS film_id, \
+                COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) AS url \
+           FROM video_sources vs \
+           JOIN video_providers p ON p.id = vs.provider_id \
+          WHERE p.slug = 'prehrajto' AND vs.external_id = $1 AND vs.is_alive = TRUE",
     )
     .bind(upload_id)
     .fetch_optional(&state.db)
@@ -361,7 +376,9 @@ async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryRes
                 "no contentUrl — marking is_alive=FALSE"
             );
             if let Err(e) = sqlx::query(
-                "UPDATE film_prehrajto_uploads SET is_alive = FALSE WHERE upload_id = $1",
+                "UPDATE video_sources SET is_alive = FALSE, updated_at = NOW() \
+                   WHERE provider_id = (SELECT id FROM video_providers WHERE slug = 'prehrajto') \
+                     AND external_id = $1",
             )
             .bind(upload_id)
             .execute(&state.db)
@@ -399,13 +416,25 @@ async fn do_scrape(state: &AppState, upload_id: &str, row: &UploadRow) -> TryRes
 /// reports — no importer-time validate needed. A DB failure here is
 /// non-fatal (the next scrape will try again); log and move on.
 async fn persist_is_direct(state: &AppState, upload_id: &str, is_direct: bool) {
-    // `IS DISTINCT FROM` keeps the UPDATE a no-op when the flag is
-    // already correct (including across NULL → bool transitions), so
-    // repeated hits on a fresh cache don't churn the row.
+    // After the #611 reader switch, `is_direct` is stored inside
+    // `video_sources.metadata` as a JSONB key rather than a typed column.
+    // The UPDATE merges a single-key patch so other metadata fields
+    // (url, qualities, …) stay intact. `jsonb_build_object` avoids string
+    // interpolation and is immune to injection even if `is_direct` ever
+    // came from an untrusted source (it doesn't — it's a bool we parsed
+    // from the proxy response above).
+    //
+    // The WHERE clause checks current value via `metadata->'is_direct'`
+    // to keep the UPDATE a no-op when already correct, preserving the
+    // same "don't churn rows on cache hits" behavior the legacy query
+    // had via `IS DISTINCT FROM`.
     let res = sqlx::query(
-        "UPDATE film_prehrajto_uploads \
-         SET is_direct = $1 \
-         WHERE upload_id = $2 AND is_direct IS DISTINCT FROM $1",
+        "UPDATE video_sources \
+           SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('is_direct', $1::boolean), \
+               updated_at = NOW() \
+         WHERE provider_id = (SELECT id FROM video_providers WHERE slug = 'prehrajto') \
+           AND external_id = $2 \
+           AND (metadata->>'is_direct')::BOOLEAN IS DISTINCT FROM $1",
     )
     .bind(is_direct)
     .bind(upload_id)
@@ -434,8 +463,10 @@ async fn release_per_key_lock(
 
 static NEXT_BEST_UPLOAD_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT upload_id FROM film_prehrajto_uploads \
-         WHERE film_id = $1 AND is_alive = TRUE AND upload_id <> ALL($2) \
+        "SELECT vs.external_id AS upload_id \
+           {PREHRAJTO_JOIN} \
+           AND vs.film_id = $1 AND vs.is_alive = TRUE \
+           AND vs.external_id <> ALL($2) \
          ORDER BY {PREHRAJTO_RANK_ORDER_BY} LIMIT 1"
     )
 });
@@ -517,10 +548,13 @@ pub struct PrehrajtoSourceRow {
 
 static PREHRAJTO_SOURCES_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT upload_id, url, title, duration_sec, resolution_hint, \
-                lang_class, is_direct \
-         FROM film_prehrajto_uploads \
-         WHERE film_id = $1 AND is_alive = TRUE \
+        "SELECT vs.external_id AS upload_id, \
+                COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) AS url, \
+                COALESCE(vs.title, '') AS title, \
+                vs.duration_sec, vs.resolution_hint, vs.lang_class, \
+                (vs.metadata->>'is_direct')::BOOLEAN AS is_direct \
+           {PREHRAJTO_JOIN} \
+           AND vs.film_id = $1 AND vs.is_alive = TRUE \
          ORDER BY {PREHRAJTO_RANK_ORDER_BY}"
     )
 });

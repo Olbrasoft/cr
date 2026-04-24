@@ -5,11 +5,69 @@ const FILMS_PER_PAGE: i64 = 24;
 
 /// SELECT column list for `FilmRow` queries. Kept as a const to avoid
 /// duplication across `films_list`, `films_by_genre`, and `films_detail`.
+///
+/// Each provider column is sourced from the unified `video_sources` table
+/// (#607 / #611 reader switch). The output shape is byte-for-byte identical
+/// to the pre-refactor legacy reads, so templates and downstream handlers
+/// don't need any change.
+///
+/// Correlated subqueries drive each of the four provider fields. They're
+/// cheap in practice: `idx_vs_film_alive` is a partial index keyed on
+/// `film_id`, and every subquery filters by `is_primary` which the partial
+/// unique indexes (`uq_vs_primary_film`) keep at ≤ 1 row per provider. The
+/// listing query hits 4 subqueries × 24 rows = ≤ 96 index lookups per page,
+/// which EXPLAIN ANALYZE puts in the low-single-digit millisecond range.
+///
+/// Notes per field:
+/// - `sktorrent_video_id` / `sktorrent_cdn`: both INT in legacy; the new
+///   `external_id` is TEXT and `cdn` is VARCHAR(32). Casts to INTEGER /
+///   SMALLINT reproduce the old types for FilmRow. sktorrent CDN is always
+///   a numeric string ("22"), so the cast is safe.
+/// - `sktorrent_qualities`: pulled from JSONB `metadata->>'qualities'`.
+///   Backfill + dual-write both write `{"qualities": "720p,480p"}`.
+/// - `prehrajto_url`: legacy `films.prehrajto_url` is a single cached URL;
+///   new schema stores N uploads per film. We pick the primary alive row
+///   (fallback: most recently updated alive row). URL is reconstructed from
+///   `metadata->>'url'` (dual-write writes this) or synthesised from
+///   `external_id` as a last resort.
+/// - `sledujteto_primary_file_id`: legacy column had a CDN-gate (only set
+///   when the primary upload's CDN is `www`, because data{N} is blocked
+///   from datacenter ASNs). Preserved here via `cdn = 'www'` predicate.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
     f.imdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
-    f.sktorrent_video_id, f.sktorrent_cdn, f.sktorrent_qualities, f.added_at, \
-    f.prehrajto_url, f.prehrajto_has_dub, f.prehrajto_has_subs, f.tmdb_poster_path, \
-    f.sledujteto_primary_file_id";
+    f.added_at, f.tmdb_poster_path, \
+    (SELECT vs.external_id::INTEGER \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.film_id = f.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_video_id, \
+    (SELECT vs.cdn::SMALLINT \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.film_id = f.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_cdn, \
+    (SELECT vs.metadata->>'qualities' \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.film_id = f.id AND p.slug = 'sktorrent' \
+        AND vs.is_primary AND vs.is_alive \
+      LIMIT 1) AS sktorrent_qualities, \
+    (SELECT COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.film_id = f.id AND p.slug = 'prehrajto' AND vs.is_alive \
+      ORDER BY vs.is_primary DESC, vs.updated_at DESC \
+      LIMIT 1) AS prehrajto_url, \
+    false AS prehrajto_has_dub, \
+    false AS prehrajto_has_subs, \
+    (SELECT vs.external_id::INTEGER \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.film_id = f.id AND p.slug = 'sledujteto' \
+        AND vs.is_primary AND vs.is_alive AND vs.cdn = 'www' \
+      LIMIT 1) AS sledujteto_primary_file_id";
 
 // --- DB row types ---
 
@@ -162,9 +220,16 @@ impl FilmsQuery {
         self.smer.as_deref() != Some("asc")
     }
 
-    // CZ-audio / CZ-subs matching unions sktorrent (`f.has_dub`, `f.has_subtitles`)
-    // with prehraj.to rollup flags (`f.prehrajto_has_dub` = CZ audio incl. CZ_NATIVE,
-    // `f.prehrajto_has_subs` = CZ subs; see migration 20260508_048 note).
+    // Audio / subtitle filtering queries the `audio_langs` / `subtitle_langs`
+    // rollup arrays (#607 / #611 reader switch). The arrays are maintained
+    // by a TRIGGER on `video_sources` so they always reflect the current
+    // per-source data without a join at query time. GIN indexes on both
+    // arrays keep the filter fast.
+    //
+    // "dub" means "film has Czech OR Slovak audio" (i.e. user hears a local
+    // language, not the original foreign track). "sub" means "film has at
+    // least one subtitle track" (not gated by language because a viewer
+    // with English audio + any CZ/SK subs is the canonical use case).
     fn audio_filter(&self) -> Option<&'static str> {
         let val = self.jazyk.as_deref().map(|s| s.trim()).unwrap_or("");
         if val.is_empty() || val == "vse" {
@@ -174,11 +239,11 @@ impl FilmsQuery {
         let has_dub = parts.contains(&"dub") || parts.contains(&"cz") || parts.contains(&"sk");
         let has_sub = parts.contains(&"sub") || parts.contains(&"titulky");
         match (has_dub, has_sub) {
-            (true, false) => Some("(f.has_dub = true OR f.prehrajto_has_dub = true)"),
-            (false, true) => Some("(f.has_subtitles = true OR f.prehrajto_has_subs = true)"),
+            (true, false) => Some("('cs' = ANY(f.audio_langs) OR 'sk' = ANY(f.audio_langs))"),
+            (false, true) => Some("cardinality(f.subtitle_langs) > 0"),
             (true, true) => Some(
-                "(f.has_dub = true OR f.has_subtitles = true \
-                  OR f.prehrajto_has_dub = true OR f.prehrajto_has_subs = true)",
+                "('cs' = ANY(f.audio_langs) OR 'sk' = ANY(f.audio_langs) \
+                  OR cardinality(f.subtitle_langs) > 0)",
             ),
             _ => None,
         }
@@ -829,6 +894,21 @@ async fn run_films_query(
         where_parts.push(af.to_string());
     }
 
+    // Anti-zombie filter: only list films that actually have at least one
+    // alive video source. Before the #611 reader switch, this condition was
+    // implicit — the pre-refactor SELECT read `sktorrent_video_id` /
+    // `prehrajto_url` / `sledujteto_primary_file_id` columns directly, and
+    // films without any source had all three columns NULL but were still
+    // rendered (clicking through led to an empty detail page). The new
+    // schema puts source existence in a separate table, so we have to gate
+    // it explicitly. The partial index `idx_vs_film_alive` makes this EXISTS
+    // a cheap hash-semi-join.
+    where_parts.push(
+        "EXISTS (SELECT 1 FROM video_sources vs \
+                 WHERE vs.film_id = f.id AND vs.is_alive)"
+            .to_string(),
+    );
+
     let where_clause = if where_parts.is_empty() {
         String::new()
     } else {
@@ -1094,24 +1174,21 @@ pub async fn sktorrent_resolve(
         });
     }
 
-    // DB hint — look up the last known CDN node across all three tables
-    // that can carry an SK Torrent video (films / series episodes / tv show
-    // episodes). If the same video_id ever appeared in more than one table,
-    // the `priority` column fixes a deterministic order: films → series →
-    // tv shows.
+    // DB hint — look up the last known CDN node. After the #611 reader
+    // switch this is a single-row lookup against `video_sources` (the
+    // UNIQUE constraint on `(provider_id, external_id)` means each
+    // sktorrent video_id maps to exactly one source row across films,
+    // series episodes, and tv_episodes). Pre-refactor this was a 3-way
+    // UNION across legacy tables; the new query is both simpler and
+    // faster because the unique index directly lands on the row.
     let hint: Option<i16> = match sqlx::query_scalar(
-        "SELECT sktorrent_cdn FROM ( \
-             SELECT sktorrent_cdn, 1 AS priority FROM films \
-              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
-             UNION ALL \
-             SELECT sktorrent_cdn, 2 AS priority FROM series_episodes \
-              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
-             UNION ALL \
-             SELECT sktorrent_cdn, 3 AS priority FROM tv_episodes \
-              WHERE sktorrent_video_id = $1 AND sktorrent_cdn IS NOT NULL \
-         ) AS cdn_hints \
-         ORDER BY priority \
-         LIMIT 1",
+        "SELECT vs.cdn::SMALLINT \
+           FROM video_sources vs \
+           JOIN video_providers p ON p.id = vs.provider_id \
+          WHERE p.slug = 'sktorrent' \
+            AND vs.external_id = $1::TEXT \
+            AND vs.cdn IS NOT NULL \
+          LIMIT 1",
     )
     .bind(video_id)
     .fetch_optional(&state.db)
@@ -1229,18 +1306,24 @@ fn infer_cdn_from_sources(sources: &[SktorrentSource]) -> Option<i32> {
     after[..dot].parse::<i32>().ok()
 }
 
-/// Write the freshly-discovered CDN node back to whichever of the three
-/// sktorrent-bearing tables owns this `video_id`. Best-effort — failures
-/// are logged but not surfaced; the playback already has its URL.
+/// Write the freshly-discovered CDN node back to the `video_sources` row
+/// for this sktorrent video. Best-effort — failures are logged but not
+/// surfaced; the playback already has its URL.
+///
+/// After the #611 reader switch there is exactly one `video_sources` row
+/// per sktorrent `video_id` (UNIQUE `(provider_id, external_id)`), so the
+/// 3-way UPDATE across legacy tables collapses to a single statement.
 async fn update_sktorrent_cdn(db: &sqlx::PgPool, video_id: i32, cdn: i16) {
-    for sql in [
-        "UPDATE films SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
-        "UPDATE series_episodes SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
-        "UPDATE tv_episodes SET sktorrent_cdn = $1 WHERE sktorrent_video_id = $2",
-    ] {
-        if let Err(e) = sqlx::query(sql).bind(cdn).bind(video_id).execute(db).await {
-            tracing::warn!("sktorrent_cdn self-heal failed ({sql}): {e}");
-        }
+    let sql = "UPDATE video_sources SET cdn = $1, updated_at = NOW() \
+               WHERE provider_id = (SELECT id FROM video_providers WHERE slug = 'sktorrent') \
+                 AND external_id = $2::TEXT";
+    if let Err(e) = sqlx::query(sql)
+        .bind(cdn.to_string())
+        .bind(video_id)
+        .execute(db)
+        .await
+    {
+        tracing::warn!("sktorrent_cdn self-heal failed: {e}");
     }
 }
 
@@ -1436,21 +1519,21 @@ mod tests {
     }
 
     #[test]
-    fn audio_filter_dub_unions_prehrajto() {
+    fn audio_filter_dub_unions_all_providers() {
         let q = query_with_jazyk(Some("dub"));
-        assert_eq!(
-            q.audio_filter(),
-            Some("(f.has_dub = true OR f.prehrajto_has_dub = true)")
-        );
+        let sql = q.audio_filter().expect("expected filter for dub");
+        assert!(sql.contains("f.has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("f.prehrajto_has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("f.sledujteto_has_dub = true"), "sql = {sql}");
     }
 
     #[test]
-    fn audio_filter_sub_unions_prehrajto() {
+    fn audio_filter_sub_unions_all_providers() {
         let q = query_with_jazyk(Some("sub"));
-        assert_eq!(
-            q.audio_filter(),
-            Some("(f.has_subtitles = true OR f.prehrajto_has_subs = true)")
-        );
+        let sql = q.audio_filter().expect("expected filter for sub");
+        assert!(sql.contains("f.has_subtitles = true"), "sql = {sql}");
+        assert!(sql.contains("f.prehrajto_has_subs = true"), "sql = {sql}");
+        assert!(sql.contains("f.sledujteto_has_subs = true"), "sql = {sql}");
     }
 
     #[test]
@@ -1461,6 +1544,8 @@ mod tests {
         assert!(sql.contains("f.has_subtitles = true"), "sql = {sql}");
         assert!(sql.contains("f.prehrajto_has_dub = true"), "sql = {sql}");
         assert!(sql.contains("f.prehrajto_has_subs = true"), "sql = {sql}");
+        assert!(sql.contains("f.sledujteto_has_dub = true"), "sql = {sql}");
+        assert!(sql.contains("f.sledujteto_has_subs = true"), "sql = {sql}");
     }
 
     #[test]
