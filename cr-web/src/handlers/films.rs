@@ -1948,6 +1948,8 @@ mod tests {
             rezim: None,
             smer: None,
             jazyk: jazyk.map(|s| s.to_string()),
+            audio: None,
+            titulky: None,
         }
     }
 
