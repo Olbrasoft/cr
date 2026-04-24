@@ -253,7 +253,7 @@ def check_rollup_staleness(cur) -> list[str]:
             SELECT f.id,
                    f.subtitle_langs AS stored,
                    COALESCE(
-                       (SELECT array_agg(DISTINCT vss.lang ORDER BY vss.lang)
+                       (SELECT array_agg(DISTINCT vss.lang::TEXT ORDER BY vss.lang::TEXT)
                         FROM video_sources vs
                         JOIN video_source_subtitles vss ON vss.source_id = vs.id
                         WHERE vs.film_id = f.id
