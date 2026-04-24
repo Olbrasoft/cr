@@ -95,6 +95,8 @@ struct FilmRow {
     sktorrent_qualities: Option<String>,
     #[allow(dead_code)] // Needed in SELECT for ORDER BY; not rendered in templates
     added_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[allow(dead_code)]
+    // Template reads sources via `video_sources_for_badges`; column stays for legacy scripts
     prehrajto_url: Option<String>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future dub/sub badges
     prehrajto_has_dub: bool,
@@ -107,10 +109,9 @@ struct FilmRow {
     /// template keeps the legacy `-large.webp` URL served from R2.
     tmdb_poster_path: Option<String>,
     /// Best sledujteto upload for this film — written by the sledujteto
-    /// import script. When `Some`, the detail-page JS calls
-    /// `/api/sledujteto/resolve?id=<file_id>` at render time and points
-    /// the video element at the returned playback URL. Fallback chain is
-    /// sktorrent → prehrajto (cached) → sledujteto.
+    /// import script. Template reads sources via `video_sources_for_badges`;
+    /// the column stays for legacy scripts that still SELECT it.
+    #[allow(dead_code)]
     pub sledujteto_primary_file_id: Option<i32>,
 }
 
@@ -639,6 +640,14 @@ struct FilmDetailTemplate {
     /// `sort_priority` + primary-first. Rendered under the provider
     /// tabs on the detail page.
     video_sources_for_badges: Vec<VideoSourceBadgeRow>,
+    /// Which providers have at least one row in `video_sources_for_badges`,
+    /// driving whether the template renders that provider's numbered tab.
+    /// Keeps the tab row in sync with the source list, unlike the legacy
+    /// `film.prehrajto_url` / `film.sktorrent_video_id` fields which can
+    /// drift from the unified schema (PR #623 Copilot review).
+    has_source_sktorrent: bool,
+    has_source_prehrajto: bool,
+    has_source_sledujteto: bool,
 }
 
 // --- Search API types ---
@@ -957,12 +966,25 @@ pub async fn films_detail(
         Vec::new()
     });
 
+    let has_source_sktorrent = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "sktorrent");
+    let has_source_prehrajto = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "prehrajto");
+    let has_source_sledujteto = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "sledujteto");
+
     let tmpl = FilmDetailTemplate {
         img: state.image_base_url.clone(),
         film,
         genres,
         sources,
         video_sources_for_badges,
+        has_source_sktorrent,
+        has_source_prehrajto,
+        has_source_sledujteto,
     };
     Ok(Html(tmpl.render()?).into_response())
 }

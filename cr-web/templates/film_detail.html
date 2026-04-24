@@ -65,21 +65,21 @@
     {# Video player section — always shown. Player sources come from the
        unified `video_sources` table via `video_sources_for_badges`. #}
     <div class="player-section">
-        {% let has_skt = film.sktorrent_video_id.is_some() %}
-        {% let has_prh = film.prehrajto_url.is_some() %}
         {# Provider tabs are numbered (1 = sktorrent, 2 = prehraj.to, 3 = sledujteto).
-           Provider names are intentionally omitted — the number maps to the
-           colored stripe on each source row in the "Zdroje" list below.
-           Clicking a tab switches to that provider's primary row. #}
+           Visible label is just the number so the tab stays compact; the
+           accessible name (`aria-label`) spells out the provider for screen
+           readers. Rendering is driven by which providers have at least one
+           row in `video_sources_for_badges` — the unified source of truth —
+           so the tabs never drift from the list below. #}
         <div class="source-tabs" id="source-tabs">
-            {% if has_skt %}
-            <button class="source-tab source-tab-sktorrent active" data-provider="sktorrent" onclick="onTabClick(this)" title="Zdroj 1">1</button>
+            {% if has_source_sktorrent %}
+            <button class="source-tab source-tab-sktorrent active" data-provider="sktorrent" onclick="onTabClick(this)" aria-label="Zdroj 1: online.sktorrent.eu">1</button>
             {% endif %}
-            {% if has_prh %}
-            <button class="source-tab source-tab-prehrajto{% if !has_skt %} active{% endif %}" data-provider="prehrajto" onclick="onTabClick(this)" title="Zdroj 2">2</button>
+            {% if has_source_prehrajto %}
+            <button class="source-tab source-tab-prehrajto{% if !has_source_sktorrent %} active{% endif %}" data-provider="prehrajto" onclick="onTabClick(this)" aria-label="Zdroj 2: Přehraj.to">2</button>
             {% endif %}
-            {% if film.sledujteto_primary_file_id.is_some() %}
-            <button class="source-tab source-tab-sledujteto{% if !has_skt && !has_prh %} active{% endif %}" data-provider="sledujteto" onclick="onTabClick(this)" title="Zdroj 3">3</button>
+            {% if has_source_sledujteto %}
+            <button class="source-tab source-tab-sledujteto{% if !has_source_sktorrent && !has_source_prehrajto %} active{% endif %}" data-provider="sledujteto" onclick="onTabClick(this)" aria-label="Zdroj 3: sledujteto.cz">3</button>
             {% endif %}
         </div>
 
@@ -195,7 +195,10 @@
                  data-provider="{{ vs.provider_slug }}"
                  data-external-id="{{ vs.external_id }}"
                  data-playback-id="{{ vs.playback_id }}"
-                 onclick="playSource(this)">
+                 role="button"
+                 tabindex="0"
+                 onclick="playSource(this)"
+                 onkeydown="onSourceRowKeydown(event, this)">
                 <div class="source-row-main">
                     {% match vs.title %}
                     {% when Some with (t) %}
@@ -342,6 +345,7 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
     transition: background 0.15s, border-color 0.15s;
 }
 .source-row:hover { background: #f0f0f0; }
+.source-row:focus-visible { outline: 2px solid #11457E; outline-offset: 2px; }
 .source-row.source-row-sktorrent { border-left-color: #11457E; }
 .source-row.source-row-prehrajto { border-left-color: #D7141A; }
 .source-row.source-row-sledujteto { border-left-color: #C5A059; }
@@ -428,6 +432,17 @@ function onTabClick(btn) {
     var row = document.querySelector('.source-row[data-provider="' + provider + '"]');
     if (row) playSource(row);
     else setActiveTab(provider);
+}
+
+/* Keyboard handler for source rows. Source rows are `<div role="button">`
+   rather than real `<button>` elements (they need to hold a multi-line
+   layout: title + badges row + play arrow), so we implement the standard
+   button keyboard semantics — Enter and Space both activate the row. */
+function onSourceRowKeydown(e, row) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        playSource(row);
+    }
 }
 
 /* Clicking a source row: switch provider tab, mark the row as playing,
@@ -689,89 +704,6 @@ function setSubSize(px) {
     }
     style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
 }
-
-/* --- Initialize sktorrent player via live resolver --- */
-/* SK Torrent rotates videos across online{N}.sktorrent.eu CDN servers, so we
-   never trust a stored CDN value — every page load (and every mid-play error)
-   calls /api/films/sktorrent-resolve to find out where the video lives RIGHT
-   NOW. Backend caches resolver results in BoundedTtlCache (6h TTL), so this
-   adds at most one sktorrent fetch per video per 6 hours. */
-var sktorrentSources = [];
-
-function renderSktorrentSources(data) {
-    var status = document.getElementById('source-status');
-    if (!data || !data.sources || !data.sources.length) {
-        if (status) status.textContent = 'Zdroj nedostupný';
-        return false;
-    }
-    sktorrentSources = data.sources.map(function(s) {
-        return { url: s.url, quality: s.quality, res: s.res };
-    });
-    sktorrentSources.sort(function(a, b) { return b.res - a.res; });
-
-    var qualDiv = document.getElementById('sktorrent-quality');
-    if (qualDiv) {
-        qualDiv.innerHTML = '';
-        sktorrentSources.forEach(function(s, i) {
-            var btn = document.createElement('button');
-            btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
-            btn.textContent = s.quality;
-            btn.onclick = function() { playSktorrent(i, btn); };
-            qualDiv.appendChild(btn);
-        });
-    }
-    return true;
-}
-
-function resolveAndPlaySktorrent(onStatus) {
-    var status = document.getElementById('source-status');
-    if (status && onStatus) status.textContent = onStatus;
-    return fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!renderSktorrentSources(data)) return;
-            var qualDiv = document.getElementById('sktorrent-quality');
-            playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
-        })
-        .catch(function() {
-            if (status) status.textContent = 'Chyba obnovy zdroje';
-        });
-}
-
-(function() {
-    if (typeof sktorrentVideoId === 'undefined') return;
-    var player = document.getElementById('film-player');
-    if (!player) return;
-    resolveAndPlaySktorrent('Načítám zdroj...');
-})();
-
-function playSktorrent(index, btn) {
-    var player = document.getElementById('film-player');
-    if (window._hls) { window._hls.destroy(); window._hls = null; }
-    var source = sktorrentSources[index];
-    if (!source) return;
-    player.src = source.url;
-    player.dataset.sktorrentSrc = source.url;
-    player.dataset.sktorrentQuality = source.quality;
-    document.querySelectorAll('#sktorrent-quality .quality-btn').forEach(function(b) { b.classList.remove('active'); });
-    if (btn) btn.classList.add('active');
-    document.getElementById('source-status').textContent = '';
-}
-
-/* Defence against mid-play CDN rotation: if the SK Torrent URL fails after
-   we already had a working resolver response, try resolving once more. */
-(function() {
-    var player = document.getElementById('film-player');
-    if (!player || typeof sktorrentVideoId === 'undefined') return;
-
-    var fallbackTried = false;
-    player.addEventListener('error', function() {
-        if (fallbackTried) return;
-        if (!player.src || player.src.indexOf('sktorrent.eu') === -1) return;
-        fallbackTried = true;
-        resolveAndPlaySktorrent('Obnovuji zdroj...');
-    }, true);
-})();
 
 /* --- Search --- */
 function doSearch() {
