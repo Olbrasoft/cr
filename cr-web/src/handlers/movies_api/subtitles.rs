@@ -31,10 +31,21 @@ pub async fn movies_subtitle(
         Ok(u) => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
     };
-    // Only allow https premiumcdn.net VTT files (dot-boundary to prevent evilpremiumcdn.net)
+    // Allowlist: prehraj.to serves native .vtt on premiumcdn.net; sledujteto
+    // wraps .srt through its own subtitle proxy at /file/subtitles/?file=<raw>
+    // which returns WEBVTT bytes with a varying path (not .vtt-suffixed), so
+    // we check the host + path prefix for that provider separately.
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    let allowed_host = host == "premiumcdn.net" || host.ends_with(".premiumcdn.net");
-    if parsed.scheme() != "https" || !allowed_host || !parsed.path().ends_with(".vtt") {
+    let is_premiumcdn = host == "premiumcdn.net" || host.ends_with(".premiumcdn.net");
+    let is_sledujteto = host == "sledujteto.cz" || host.ends_with(".sledujteto.cz");
+    let path_ok = if is_premiumcdn {
+        parsed.path().ends_with(".vtt")
+    } else if is_sledujteto {
+        parsed.path().starts_with("/file/subtitles/")
+    } else {
+        false
+    };
+    if parsed.scheme() != "https" || !(is_premiumcdn || is_sledujteto) || !path_ok {
         return (StatusCode::FORBIDDEN, "URL not allowed").into_response();
     }
 

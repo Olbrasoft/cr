@@ -334,7 +334,7 @@ pub async fn sledujteto_resolve(
                 video_url: None,
                 download_url: None,
                 subtitles: vec![],
-                error: Some(format!("upstream: {e}")),
+                error: Some("upstream error".into()),
             });
         }
     };
@@ -383,7 +383,7 @@ pub async fn sledujteto_resolve(
                 video_url: None,
                 download_url: None,
                 subtitles: vec![],
-                error: Some(format!("parse: {e}")),
+                error: Some("upstream parse error".into()),
             });
         }
     };
