@@ -31,6 +31,10 @@ from scripts.auto_import.tmdb_resolver import (
     TvResolution,
     resolve_episode,
 )
+from scripts.video_sources_helper import (
+    dual_write_sktorrent,
+    get_provider_ids,
+)
 
 log = logging.getLogger(__name__)
 
@@ -209,6 +213,17 @@ def upsert_episode(
             (sktorrent_video_id, sktorrent_cdn, qualities_str,
              has_dub, has_subtitles, ep_id),
         )
+        # Dual-write into the unified video_sources schema (#607 / #610).
+        dual_write_sktorrent(
+            cur,
+            providers=get_provider_ids(cur),
+            episode_id=ep_id,
+            sktorrent_video_id=sktorrent_video_id,
+            sktorrent_cdn=sktorrent_cdn,
+            sktorrent_qualities=qualities_str,
+            has_dub=has_dub,
+            has_subtitles=has_subtitles,
+        )
         log.info("updated episode %d S%dE%d (added SKT %d)",
                  ep_id, season, episode_num, sktorrent_video_id)
         return "updated_episode", ep_id
@@ -234,6 +249,17 @@ def upsert_episode(
         ),
     )
     ep_id = cur.fetchone()[0]
+    # Dual-write into the unified video_sources schema (#607 / #610).
+    dual_write_sktorrent(
+        cur,
+        providers=get_provider_ids(cur),
+        episode_id=ep_id,
+        sktorrent_video_id=sktorrent_video_id,
+        sktorrent_cdn=sktorrent_cdn,
+        sktorrent_qualities=qualities_str,
+        has_dub=has_dub,
+        has_subtitles=has_subtitles,
+    )
     log.info("added episode %d S%dE%d (series_id=%d)", ep_id, season, episode_num, series_id)
     return "added_episode", ep_id
 

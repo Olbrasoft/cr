@@ -27,6 +27,11 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from scripts.video_sources_helper import (
+    dual_write_sktorrent,
+    get_provider_ids,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -164,6 +169,17 @@ def process_tv_show_episode(
         )
 
     tv_episode_id = row[0]
+    # Dual-write into the unified video_sources schema (#607 / #610).
+    dual_write_sktorrent(
+        cur,
+        providers=get_provider_ids(cur),
+        tv_episode_id=tv_episode_id,
+        sktorrent_video_id=sktorrent_video_id,
+        sktorrent_cdn=sktorrent_cdn,
+        sktorrent_qualities=qualities_str,
+        has_dub=has_dub,
+        has_subtitles=has_subtitles,
+    )
     action = (
         "added_tv_show+added_tv_episode" if created_show else "added_tv_episode"
     )

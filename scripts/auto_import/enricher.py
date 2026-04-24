@@ -21,6 +21,10 @@ import psycopg2
 from scripts.auto_import.cover_downloader import download_cover, download_sktorrent_thumb
 from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.auto_import.tmdb_resolver import MovieResolution
+from scripts.video_sources_helper import (
+    dual_write_sktorrent,
+    get_provider_ids,
+)
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +162,22 @@ def upsert_film(
              movie.poster_path,
              film_id),
         )
+        # Dual-write into the unified video_sources schema (#607 / #610).
+        # has_dub/has_subtitles here reflect only THIS run's signal (regex over
+        # the sktorrent title); the legacy UPDATE OR-ed them into the films
+        # column so historical signals are preserved. The video_sources row
+        # carries only the current detection, which is the right semantic for
+        # a per-source record (a source either has CZ audio or doesn't).
+        dual_write_sktorrent(
+            cur,
+            providers=get_provider_ids(cur),
+            film_id=film_id,
+            sktorrent_video_id=sktorrent_video_id,
+            sktorrent_cdn=sktorrent_cdn,
+            sktorrent_qualities=qualities_str,
+            has_dub=has_dub,
+            has_subtitles=has_subtitles,
+        )
         log.info("upserted SKT into existing film %d (imdb=%s)", film_id, movie.imdb_id)
         return "updated_film", film_id
 
@@ -204,6 +224,19 @@ def upsert_film(
         ),
     )
     film_id = cur.fetchone()[0]
+
+    # Dual-write into the unified video_sources schema (#607 / #610). Same
+    # transaction as the films INSERT above.
+    dual_write_sktorrent(
+        cur,
+        providers=get_provider_ids(cur),
+        film_id=film_id,
+        sktorrent_video_id=sktorrent_video_id,
+        sktorrent_cdn=sktorrent_cdn,
+        sktorrent_qualities=qualities_str,
+        has_dub=has_dub,
+        has_subtitles=has_subtitles,
+    )
 
     # Cover (best-effort, id-keyed layout). TMDB first, then SK Torrent
     # thumbnail as a low-res fallback for obscure CZ titles without a TMDB
