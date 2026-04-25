@@ -30,11 +30,19 @@
     <span>Filmy online</span>
 </a>
 {% when None %}
+    {% if page > 1 %}
+<a href="/filmy-online/" class="logo-group logo-link" style="display:flex;align-items:center;gap:0.5rem;">
+    <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+        alt="Logo Filmy online" title="Filmy online" class="header-emblem">
+    <span>Filmy online</span>
+</a>
+    {% else %}
 <div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
     <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
         alt="Logo Filmy online" title="Filmy online" class="header-emblem">
     <h1>Filmy online</h1>
 </div>
+    {% endif %}
 {% endmatch %}
 {% endblock %}
 
