@@ -18,7 +18,11 @@ EnvironmentFile=/opt/cr/.env
 # rewrite it to 127.0.0.1 (the cr-db container publishes 5432 there).
 # This keeps ONE source of truth for the password while letting both
 # the Rust container and host-side scripts share the file.
-ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/auto-import.py --trigger cron --max-new 50'
+# --max-new 0 = unlimited per run. The scanner stops at the DB checkpoint,
+# so the per-run volume is bounded by what's genuinely new since the last
+# successful run. A finite cap caused a permanent backlog when daily uploads
+# exceeded the cap. Postmortem: PR #629.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/auto-import.py --trigger cron --max-new 0'
 StandardOutput=append:/var/log/cr-auto-import.log
 StandardError=append:/var/log/cr-auto-import.log
 # systemd tries 1 restart for transient failures (e.g. SK Torrent 502).
