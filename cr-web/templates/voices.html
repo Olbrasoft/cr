@@ -104,10 +104,30 @@
     width: 100%;
     margin-top: auto;
 }
-.voice-duration {
+.voice-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 0.78rem;
     color: #888;
-    text-align: right;
+}
+.voice-download {
+    color: var(--color-blue);
+    text-decoration: none;
+    font-weight: 600;
+}
+.voice-download:hover {
+    text-decoration: underline;
+}
+.voices-model-note {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: #666;
+}
+.voices-model-note a {
+    color: var(--color-blue);
+    font-weight: 600;
 }
 .voices-empty {
     text-align: center;
@@ -115,6 +135,66 @@
     color: #888;
     grid-column: 1 / -1;
 }
+.voices-howto {
+    margin: 0 auto 3rem;
+    max-width: 820px;
+    background: white;
+    border: 1px solid var(--color-gray-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    padding: 1.75rem 2rem;
+}
+.voices-howto h3 {
+    color: var(--color-blue);
+    font-size: 1.35rem;
+    margin: 0 0 0.75rem;
+}
+.voices-howto h4 {
+    color: var(--color-black);
+    font-size: 1rem;
+    margin: 1.25rem 0 0.5rem;
+}
+.voices-howto p,
+.voices-howto li {
+    color: #333;
+    font-size: 0.95rem;
+    line-height: 1.65;
+}
+.voices-howto ol,
+.voices-howto ul {
+    padding-left: 1.4rem;
+}
+.voices-howto code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #f1f3f6;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+.voices-howto pre {
+    background: #1a1d24;
+    color: #e8eaed;
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0.5rem 0 1rem;
+}
+.voices-howto a {
+    color: var(--color-blue);
+    font-weight: 600;
+}
+.voices-sources {
+    list-style: none;
+    padding-left: 0;
+}
+.voices-sources li {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--color-gray-border);
+}
+.voices-sources li:last-child { border-bottom: none; }
+.voices-sources strong { color: var(--color-black); }
 @media (max-width: 600px) {
     .voices-hero h2 { font-size: 1.6rem; }
     .voices-grid { grid-template-columns: 1fr; }
@@ -133,6 +213,12 @@
     <h2>Seznam hlasů</h2>
     <p>Knihovna ukázek hlasů českých herců, hereček a dabérů. Krátká osobní představení v 1. osobě
        jsou vygenerována zero-shot modelem Chatterbox z malého vzorku původního hlasu.</p>
+    <p class="voices-model-note">
+        Generováno modelem
+        <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">Chatterbox</a>
+        (Resemble AI) s českým T3 fine-tunem. U každé karty si můžete stáhnout referenční nahrávku (.wav),
+        kterou model dostal jako vzor hlasu — to je „model“ daného herce použitý pro zero-shot klonování.
+    </p>
     <div class="voices-filter">
         <input type="text" id="voice-search" placeholder="Hledat — jméno, role, profese…"
                oninput="filterVoices()" autocomplete="off">
@@ -151,13 +237,72 @@
         </div>
         <p class="voice-bio">{{ v.bio }}</p>
         <audio controls preload="none" src="/static/audio/voices/sample_{{ v.slug }}.wav"></audio>
-        <div class="voice-duration">{{ v.duration }} ukázka</div>
+        <div class="voice-footer">
+            <span>{{ v.duration }} ukázka</span>
+            <a class="voice-download"
+               href="/static/audio/voice-prompts/{{ v.slug }}.wav"
+               download="{{ v.slug }}-referencni-hlas.wav"
+               title="Referenční nahrávka, kterou Chatterbox použil jako vzor hlasu">
+                &#x2B07; Stáhnout vzor hlasu
+            </a>
+        </div>
     </article>
 {% endfor %}
     <div class="voices-empty" id="voices-empty" style="display:none;">
         Pro dotaz nebyl nalezen žádný hlas.
     </div>
 </div>
+
+<section class="voices-howto">
+    <h3>Jak to funguje</h3>
+    <p>
+        Stránka prezentuje výstup malé domácí pipeline kolem
+        <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">Chatterboxu</a>
+        — open-source TTS modelu od Resemble AI, který umí <em>zero-shot voice cloning</em>:
+        z 10–20 sekundové referenční nahrávky napodobí daný hlas a přečte libovolný text.
+    </p>
+
+    <h4>Pipeline</h4>
+    <ol>
+        <li><strong>Referenční hlas</strong> — krátký vzorek řečníka (např. <code>moravec.wav</code>) ořezaný na 16 kHz mono,
+            normalizovaný na −22 dBFS RMS. Tento WAV si stahujete tlačítkem <em>Stáhnout vzor hlasu</em>.</li>
+        <li><strong>Chatterbox base model</strong>
+            (<a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">ResembleAI/chatterbox</a>
+            na Hugging Face) + lokální český T3 fine-tune (<code>t3_cs.safetensors</code>).</li>
+        <li><strong>FastAPI TTS server</strong> běží lokálně na portu 8767 (RTX 3060), endpoint <code>POST /tts</code>
+            přijímá <code>{ text, voice }</code> a vrací WAV.</li>
+        <li><strong>Build skripty</strong> v Pythonu generují celou knihovnu jedním spuštěním —
+            výsledné soubory <code>sample_*.wav</code> jsou to, co slyšíte v každé kartě.</li>
+    </ol>
+
+    <h4>Použití — generování ukázky pro všechny hlasy</h4>
+    <pre>python build_voice_intros.py
+# pro každý slug zavolá TTS server, vyrobí osobní představení
+# do samples/sample_{slug}.wav, 8 s cooldown mezi voláními</pre>
+
+    <h4>Přidání nového hlasu</h4>
+    <pre>yt-dlp -f bestaudio "https://www.youtube.com/watch?v=..." -o raw.m4a
+ffmpeg -ss 12 -t 20 -ac 1 -ar 16000 -sample_fmt s16 -i raw.m4a clip.wav
+python make_voice.py clip.wav "Jméno Příjmení" 0.45
+# vytvoří voices/jmeno.pt + jmeno.wav, hlas je rovnou použitelný</pre>
+
+    <h4>Zdroje</h4>
+    <ul class="voices-sources">
+        <li><strong>Chatterbox (kód)</strong> —
+            <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">github.com/resemble-ai/chatterbox</a>,
+            Apache 2.0, Resemble AI</li>
+        <li><strong>Chatterbox (váhy)</strong> —
+            <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">huggingface.co/ResembleAI/chatterbox</a></li>
+        <li><strong>Český T3 fine-tune</strong> — soubor <code>t3_cs.safetensors</code> (~2,1 GB),
+            trénovaný lokálně, není veřejně publikovaný</li>
+        <li><strong>Web (kód této stránky)</strong> —
+            <a href="https://github.com/Olbrasoft/cr" target="_blank" rel="noopener">github.com/Olbrasoft/cr</a>,
+            cesta <code>cr-web/templates/voices.html</code></li>
+        <li><strong>Referenční hlasy</strong> — krátké výstřižky z veřejně dostupných rozhovorů a vystoupení
+            jednotlivých herců; sloužící pouze jako vzor barvy hlasu pro neziskovou demonstraci modelu.
+            V případě námitky kteréhokoliv ze zachycených herců daný vzorek odstraníme.</li>
+    </ul>
+</section>
 {% endblock %}
 
 {% block scripts %}
