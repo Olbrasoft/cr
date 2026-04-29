@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}Seznam hlasů — ukázky českých herců a dabérů{% endblock %}
+{% block meta_description %}Knihovna ukázek hlasů českých herců, hereček a dabérů — krátká osobní představení vygenerovaná modelem Chatterbox (zero-shot voice cloning).{% endblock %}
+
+{% block og_title %}Seznam hlasů — ceskarepublika.wiki{% endblock %}
+{% block og_description %}Ukázky českých hereckých hlasů, vygenerované modelem Chatterbox.{% endblock %}
+
+{# No map on this page — skip Leaflet's ~150 KB of synchronous network. #}
+{% block leaflet %}{% endblock %}
+
+{% block head %}
+<style>
+.voices-hero {
+    text-align: center;
+    padding: 2rem 0 1rem;
+}
+.voices-hero h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-blue);
+    margin-bottom: 0.5rem;
+}
+.voices-hero p {
+    color: #555;
+    font-size: 1.05rem;
+    max-width: 720px;
+    margin: 0 auto;
+}
+.voices-filter {
+    max-width: 720px;
+    margin: 1.5rem auto 0;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+.voices-filter input {
+    flex: 1;
+    background: white;
+    color: var(--color-black);
+    border: 1px solid var(--color-gray-border);
+    border-radius: 8px;
+    padding: 0.65rem 0.9rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.voices-filter input:focus {
+    outline: none;
+    border-color: var(--color-blue);
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
+}
+.voices-count {
+    color: #888;
+    font-size: 0.9rem;
+    text-align: center;
+    margin-top: 0.5rem;
+}
+.voices-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 1.25rem;
+    padding: 1.5rem 0 3rem;
+}
+.voice-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    border: 1px solid var(--color-gray-border);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.voice-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.1);
+}
+.voice-card h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--color-blue);
+    margin: 0;
+}
+.voice-meta {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    color: #666;
+    flex-wrap: wrap;
+}
+.voice-meta .voice-years {
+    font-weight: 600;
+    color: var(--color-black);
+}
+.voice-bio {
+    font-size: 0.92rem;
+    color: #333;
+    line-height: 1.55;
+    margin: 0.25rem 0 0.5rem;
+}
+.voice-card audio {
+    width: 100%;
+    margin-top: auto;
+}
+.voice-duration {
+    font-size: 0.78rem;
+    color: #888;
+    text-align: right;
+}
+.voices-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: #888;
+    grid-column: 1 / -1;
+}
+@media (max-width: 600px) {
+    .voices-hero h2 { font-size: 1.6rem; }
+    .voices-grid { grid-template-columns: 1fr; }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Seznam hlasů</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="voices-hero">
+    <h2>Seznam hlasů</h2>
+    <p>Knihovna ukázek hlasů českých herců, hereček a dabérů. Krátká osobní představení v 1. osobě
+       jsou vygenerována zero-shot modelem Chatterbox z malého vzorku původního hlasu.</p>
+    <div class="voices-filter">
+        <input type="text" id="voice-search" placeholder="Hledat — jméno, role, profese…"
+               oninput="filterVoices()" autocomplete="off">
+    </div>
+    <div class="voices-count" id="voices-count">{{ voices.len() }} hlasů</div>
+</section>
+
+<div class="voices-grid" id="voices-grid">
+{% for v in voices %}
+    <article class="voice-card"
+             data-search="{{ v.name|lower }} {{ v.slug }} {{ v.role|lower }} {{ v.bio|lower }}">
+        <h3>{{ v.name }}</h3>
+        <div class="voice-meta">
+            <span class="voice-years">{{ v.years }}</span>
+            <span>{{ v.role }}</span>
+        </div>
+        <p class="voice-bio">{{ v.bio }}</p>
+        <audio controls preload="none" src="/static/audio/voices/sample_{{ v.slug }}.wav"></audio>
+        <div class="voice-duration">{{ v.duration }} ukázka</div>
+    </article>
+{% endfor %}
+    <div class="voices-empty" id="voices-empty" style="display:none;">
+        Pro dotaz nebyl nalezen žádný hlas.
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterVoices() {
+    var q = document.getElementById('voice-search').value.toLowerCase().trim();
+    var cards = document.querySelectorAll('.voice-card');
+    var visible = 0;
+    cards.forEach(function (c) {
+        var match = !q || c.dataset.search.indexOf(q) !== -1;
+        c.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    document.getElementById('voices-count').textContent =
+        visible === cards.length
+            ? cards.length + ' hlasů'
+            : visible + ' z ' + cards.length + ' hlasů';
+    document.getElementById('voices-empty').style.display = visible === 0 ? '' : 'none';
+}
+
+// Stop other audio when one starts playing.
+document.querySelectorAll('.voice-card audio').forEach(function (a) {
+    a.addEventListener('play', function () {
+        document.querySelectorAll('.voice-card audio').forEach(function (other) {
+            if (other !== a && !other.paused) other.pause();
+        });
+    });
+});
+</script>
+{% endblock %}
