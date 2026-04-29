@@ -18,10 +18,10 @@ EnvironmentFile=/opt/cr/.env
 # rewrite it to 127.0.0.1 (the cr-db container publishes 5432 there).
 # This keeps ONE source of truth for the password while letting both
 # the Rust container and host-side scripts share the file.
-# --max-new 0 = unlimited per run. SK Torrent uploads ~100 new videos/day; a
-# 50/day cap created a permanent backlog (e.g. Euforie S03E03 missing 2026-04-29).
-# The scanner stops naturally at the checkpoint, so unlimited is bounded by
-# what's actually new since the last successful run.
+# --max-new 0 = unlimited per run. The scanner stops at the DB checkpoint,
+# so the per-run volume is bounded by what's genuinely new since the last
+# successful run. A finite cap caused a permanent backlog when daily uploads
+# exceeded the cap. Postmortem: PR #629.
 ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/auto-import.py --trigger cron --max-new 0'
 StandardOutput=append:/var/log/cr-auto-import.log
 StandardError=append:/var/log/cr-auto-import.log
