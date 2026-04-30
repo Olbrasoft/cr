@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+
+{% block title %}Seznam hlasů — ukázky českých herců a dabérů{% endblock %}
+{% block meta_description %}Knihovna ukázek hlasů českých herců, hereček a dabérů — krátká osobní představení vygenerovaná modelem Chatterbox (zero-shot voice cloning).{% endblock %}
+
+{% block og_title %}Seznam hlasů — ceskarepublika.wiki{% endblock %}
+{% block og_description %}Ukázky českých hereckých hlasů, vygenerované modelem Chatterbox.{% endblock %}
+{% block og_image %}https://ceskarepublika.wiki/static/img/og-seznam-hlasu-v1.png{% endblock %}
+{% block og_type %}article{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <a href="/seznam-hlasu/" style="display:flex;align-items:center;gap:0.5rem;text-decoration:none;color:inherit;">
+        <img src="/static/img/seznam-hlasu.webp?v=2"
+            alt="Seznam hlasů" class="header-emblem">
+        <h1>Seznam hlasů</h1>
+    </a>
+</div>
+{% endblock %}
+
+{% block header_right %}
+<div class="context-emblem"></div>
+{% endblock %}
+
+{# No map on this page — skip Leaflet's ~150 KB of synchronous network. #}
+{% block leaflet %}{% endblock %}
+
+<!-- #367 — explicit OG image metadata for share previews on Discord, WhatsApp,
+     Facebook, Slack, X. Width/height/alt overrides override base.html defaults
+     so platforms that depend on these (notably Seznam.cz/Lidé.cz) render the
+     large card. twitter:image is also set explicitly to avoid relying on the
+     og:image fallback chain on X. -->
+{% block og_extra %}
+<meta property="og:image:secure_url" content="https://ceskarepublika.wiki/static/img/og-seznam-hlasu-v1.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Seznam hlasů — ceskarepublika.wiki">
+<meta property="og:site_name" content="ceskarepublika.wiki">
+<meta property="og:url" content="https://ceskarepublika.wiki/seznam-hlasu/">
+<meta name="twitter:image" content="https://ceskarepublika.wiki/static/img/og-seznam-hlasu-v1.png">
+<meta name="twitter:image:alt" content="Seznam hlasů — ceskarepublika.wiki">
+{% endblock %}
+
+{% block head %}
+<style>
+.voices-hero {
+    text-align: center;
+    padding: 2rem 0 1rem;
+}
+.voices-hero h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-blue);
+    margin-bottom: 0.5rem;
+}
+.voices-hero p {
+    color: #555;
+    font-size: 1.05rem;
+    max-width: 720px;
+    margin: 0 auto;
+}
+.voices-filter {
+    max-width: 720px;
+    margin: 1.5rem auto 0;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+.voices-filter input {
+    flex: 1;
+    background: white;
+    color: var(--color-black);
+    border: 1px solid var(--color-gray-border);
+    border-radius: 8px;
+    padding: 0.65rem 0.9rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.voices-filter input:focus {
+    outline: none;
+    border-color: var(--color-blue);
+    box-shadow: 0 0 0 3px rgba(17, 69, 126, 0.15);
+}
+.voices-count {
+    color: #888;
+    font-size: 0.9rem;
+    text-align: center;
+    margin-top: 0.5rem;
+}
+.voices-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 1.25rem;
+    padding: 1.5rem 0 3rem;
+}
+.voice-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    border: 1px solid var(--color-gray-border);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.voice-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.1);
+}
+.voice-card h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--color-blue);
+    margin: 0;
+}
+.voice-meta {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    color: #666;
+    flex-wrap: wrap;
+}
+.voice-meta .voice-years {
+    font-weight: 600;
+    color: var(--color-black);
+}
+.voice-bio {
+    font-size: 0.92rem;
+    color: #333;
+    line-height: 1.55;
+    margin: 0.25rem 0 0.5rem;
+}
+.voice-card audio {
+    width: 100%;
+    margin-top: auto;
+}
+.voice-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: #888;
+}
+.voice-download {
+    color: var(--color-blue);
+    text-decoration: none;
+    font-weight: 600;
+}
+.voice-download:hover {
+    text-decoration: underline;
+}
+.voices-model-note {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: #666;
+}
+.voices-model-note a {
+    color: var(--color-blue);
+    font-weight: 600;
+}
+.voices-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: #888;
+    grid-column: 1 / -1;
+}
+.voices-howto {
+    margin: 0 auto 3rem;
+    max-width: 820px;
+    background: white;
+    border: 1px solid var(--color-gray-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-premium);
+    padding: 1.75rem 2rem;
+}
+.voices-howto h3 {
+    color: var(--color-blue);
+    font-size: 1.35rem;
+    margin: 0 0 0.75rem;
+}
+.voices-howto h4 {
+    color: var(--color-black);
+    font-size: 1rem;
+    margin: 1.25rem 0 0.5rem;
+}
+.voices-howto p,
+.voices-howto li {
+    color: #333;
+    font-size: 0.95rem;
+    line-height: 1.65;
+}
+.voices-howto ol,
+.voices-howto ul {
+    padding-left: 1.4rem;
+}
+.voices-howto code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #f1f3f6;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+.voices-howto pre {
+    background: #1a1d24;
+    color: #e8eaed;
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0.5rem 0 1rem;
+}
+.voices-howto a {
+    color: var(--color-blue);
+    font-weight: 600;
+}
+.voices-sources {
+    list-style: none;
+    padding-left: 0;
+}
+.voices-sources li {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--color-gray-border);
+}
+.voices-sources li:last-child { border-bottom: none; }
+.voices-sources strong { color: var(--color-black); }
+@media (max-width: 600px) {
+    .voices-hero h2 { font-size: 1.6rem; }
+    .voices-grid { grid-template-columns: 1fr; }
+}
+</style>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumbs" style="padding-top: 2rem; border: none; margin: 0;">
+    <a href="/">Česká republika</a> &raquo; <span>Seznam hlasů</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section class="voices-hero">
+    <h2>Seznam hlasů</h2>
+    <p>Knihovna ukázek hlasů českých herců, hereček a dabérů. Krátká osobní představení v 1. osobě
+       jsou vygenerována zero-shot modelem Chatterbox z malého vzorku původního hlasu.</p>
+    <p class="voices-model-note">
+        Generováno modelem
+        <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">Chatterbox</a>
+        (Resemble AI) s českým T3 fine-tunem. U každé karty si můžete stáhnout referenční nahrávku (.wav),
+        kterou model dostal jako vzor hlasu — to je „model“ daného herce použitý pro zero-shot klonování.
+    </p>
+    <div class="voices-filter">
+        <input type="text" id="voice-search" placeholder="Hledat — jméno, role, profese…"
+               oninput="filterVoices()" autocomplete="off">
+    </div>
+    <div class="voices-count" id="voices-count">{{ voices.len() }} hlasů</div>
+</section>
+
+<div class="voices-grid" id="voices-grid">
+{% for v in voices %}
+    <article class="voice-card"
+             data-search="{{ v.name|lower }} {{ v.slug }} {{ v.role|lower }} {{ v.bio|lower }}">
+        <h3>{{ v.name }}</h3>
+        <div class="voice-meta">
+            <span class="voice-years">{{ v.years }}</span>
+            <span>{{ v.role }}</span>
+        </div>
+        <p class="voice-bio">{{ v.bio }}</p>
+        <audio controls preload="none" src="/static/audio/voices/sample_{{ v.slug }}.wav"></audio>
+        <div class="voice-footer">
+            <span>{{ v.duration }} ukázka</span>
+            <a class="voice-download"
+               href="/static/audio/voice-prompts/{{ v.slug }}.wav"
+               download="{{ v.slug }}-referencni-hlas.wav"
+               title="Referenční nahrávka, kterou Chatterbox použil jako vzor hlasu">
+                &#x2B07; Stáhnout vzor hlasu
+            </a>
+        </div>
+    </article>
+{% endfor %}
+    <div class="voices-empty" id="voices-empty" style="display:none;">
+        Pro dotaz nebyl nalezen žádný hlas.
+    </div>
+</div>
+
+<section class="voices-howto">
+    <h3>Jak to funguje</h3>
+    <p>
+        Tahle stránka je výstup domácí AI pipeline, kterou používáme pro audio povídky publikované
+        na našem YouTube kanálu. Hlasy generujeme <strong>lokálně</strong> na PC s grafickou kartou
+        <strong>NVIDIA RTX 3060</strong> (8&nbsp;GB VRAM), žádná cloudová inference. Jádrem je open-source
+        model <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">Chatterbox</a>
+        od Resemble AI, který umí <em>zero-shot voice cloning</em>: z krátké referenční nahrávky
+        (10–20&nbsp;s) napodobí daný hlas a přečte libovolný český text.
+    </p>
+
+    <h4>Co tím vytváříme</h4>
+    <p>
+        Příklad hotové povídky vygenerované touto pipeline —
+        <a href="https://www.youtube.com/watch?v=6uMViLgUAeM" target="_blank" rel="noopener">„Léto v Australisu“</a>
+        (~45&nbsp;min, 12 hlasů, audio + AI obrázky + video). Scénář (dialogy mezi postavami) je rozdělen
+        po replikách, každé replice je přiřazen jeden hlas z této knihovny, vše projede TTS serverem,
+        spojí se do MP3 a obalí se vizuálem v 1080p H.264.
+    </p>
+
+    <h4>Lokální setup</h4>
+    <ul>
+        <li><strong>HW:</strong> PC s NVIDIA RTX 3060 (8&nbsp;GB VRAM), Linux. Základní model Chatterboxu
+            zabere ~3,3&nbsp;GB VRAM, syntéza dalších ~3&nbsp;GB.</li>
+        <li><strong>Model váhy:</strong> Chatterbox base + náš lokální český T3 fine-tune
+            (<code>t3_cs.safetensors</code>, ~2,1&nbsp;GB) pro správnou českou výslovnost.
+            Base model najdete na
+            <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">huggingface.co/ResembleAI/chatterbox</a>.</li>
+        <li><strong>TTS server:</strong> <code>tts_server.py</code> (FastAPI) běží jako systemd service,
+            poslouchá na <code>127.0.0.1:8767</code>, drží model v paměti. Endpoint <code>POST /tts</code>
+            přijímá <code>{ text, reference_voice, exaggeration, cfg_weight }</code> a vrací WAV/MP3.</li>
+        <li><strong>Knihovna hlasů:</strong> jeden referenční WAV na hlas (16 kHz mono, normalizovaný
+            na −22 dBFS RMS) — to, co si stahujete tlačítkem <em>Stáhnout vzor hlasu</em>. Předpočítané
+            conditional embeddingy jsou v <code>voices/&lt;slug&gt;.pt</code> (~164 kB).</li>
+    </ul>
+
+    <h4>Pipeline povídky</h4>
+    <ol>
+        <li><strong>Scénář</strong> — Python soubor <code>povidky/&lt;slug&gt;/dramatize.py</code>
+            obsahuje pole <code>(VYPRAVĚČ, "text"), (POSTAVA, "dialog"), …</code>. Každá replika ≥ 15 znaků
+            (kratší rozbíjejí Chatterbox alignment).</li>
+        <li><strong>Audio</strong> — engine projde scénář, pro každou repliku zavolá <code>POST /tts</code>
+            s odpovídajícím referenčním WAVem. Cache na disku (<code>cache/&lt;sha1&gt;.wav</code>)
+            přežívá pády serveru — když VRAM přeteče po ~50–80 replikách, restartne se a pokračuje
+            jen na nezpracovaných.</li>
+        <li><strong>Mix</strong> — všechny segmenty se znormalizují na −20 dBFS RMS, mezi replikami
+            220 ms ticha, výstup do <code>&lt;slug&gt;.mp3</code> (mono, 24 kHz, 128 kbps).</li>
+        <li><strong>Obrázky</strong> — <code>scenes.json</code> (~50–60 promptů na hodinu audia),
+            generování přes <a href="https://image.pollinations.ai" target="_blank" rel="noopener">pollinations.ai FLUX</a>
+            (zdarma, bez klíče), 1536×864 PNG.</li>
+        <li><strong>Video</strong> — ffmpeg s Ken Burns zoompan + 1,5 s fade in/out, concat klipů,
+            přidá AAC stopu. Výstup 1920×1080, 25 fps, H.264 CRF 22. Hodina povídky ≈ 700–950 MB.</li>
+    </ol>
+
+    <h4>Generování této stránky</h4>
+    <pre>systemctl --user start chatterbox-tts.service
+# počká, až se model nahraje do VRAM
+python build_voice_intros.py
+# pro každý slug zavolá /tts s krátkým „Dobrý den, jsem ...“
+# uloží do samples/sample_&lt;slug&gt;.wav, 8 s cooldown mezi voláními</pre>
+
+    <h4>Přidání nového hlasu</h4>
+    <pre>yt-dlp -f bestaudio "https://www.youtube.com/watch?v=..." -o raw.m4a
+ffmpeg -ss 12 -t 20 -ac 1 -ar 16000 -sample_fmt s16 -i raw.m4a clip.wav
+bash normalize_voices.sh    # −22 dBFS RMS, peak limiter −1 dBFS
+python make_voice.py clip.wav "Jméno Příjmení" 0.45
+# vytvoří voices/&lt;slug&gt;.pt + &lt;slug&gt;.wav, hlas je rovnou použitelný</pre>
+
+    <h4>Zdroje</h4>
+    <ul class="voices-sources">
+        <li><strong>Chatterbox (kód)</strong> —
+            <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">github.com/resemble-ai/chatterbox</a>,
+            MIT, Resemble AI</li>
+        <li><strong>Chatterbox (base váhy)</strong> —
+            <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">huggingface.co/ResembleAI/chatterbox</a>
+            (stahuje se jednou, dál běží lokálně)</li>
+        <li><strong>Český T3 fine-tune</strong> — soubor <code>t3_cs.safetensors</code> (~2,1 GB),
+            trénovaný lokálně, není veřejně publikovaný</li>
+        <li><strong>Pollinations FLUX</strong> (vizuál) —
+            <a href="https://image.pollinations.ai" target="_blank" rel="noopener">image.pollinations.ai</a></li>
+        <li><strong>Ukázková povídka</strong> —
+            <a href="https://www.youtube.com/watch?v=6uMViLgUAeM" target="_blank" rel="noopener">„Léto v Australisu“</a>
+            na YouTube kanálu
+            <a href="https://www.youtube.com/@ceskarepublika-wiki" target="_blank" rel="noopener">ceskarepublika wiki</a></li>
+        <li><strong>Web (kód této stránky)</strong> —
+            <a href="https://github.com/Olbrasoft/cr" target="_blank" rel="noopener">github.com/Olbrasoft/cr</a>,
+            cesta <code>cr-web/templates/voices.html</code></li>
+        <li><strong>Referenční hlasy</strong> — krátké výstřižky z veřejně dostupných rozhovorů a vystoupení
+            jednotlivých herců; sloužící pouze jako vzor barvy hlasu pro neziskovou demonstraci modelu.
+            V případě námitky kteréhokoliv ze zachycených herců daný vzorek odstraníme.</li>
+    </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterVoices() {
+    var q = document.getElementById('voice-search').value.toLowerCase().trim();
+    var cards = document.querySelectorAll('.voice-card');
+    var visible = 0;
+    cards.forEach(function (c) {
+        var match = !q || c.dataset.search.indexOf(q) !== -1;
+        c.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    document.getElementById('voices-count').textContent =
+        visible === cards.length
+            ? cards.length + ' hlasů'
+            : visible + ' z ' + cards.length + ' hlasů';
+    document.getElementById('voices-empty').style.display = visible === 0 ? '' : 'none';
+}
+
+// Stop other audio when one starts playing.
+document.querySelectorAll('.voice-card audio').forEach(function (a) {
+    a.addEventListener('play', function () {
+        document.querySelectorAll('.voice-card audio').forEach(function (other) {
+            if (other !== a && !other.paused) other.pause();
+        });
+    });
+});
+</script>
+{% endblock %}

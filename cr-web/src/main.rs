@@ -341,6 +341,8 @@ async fn main() -> Result<()> {
         .route("/pamatky/", axum::routing::get(handlers::landmarks_index))
         .route("/audioknihy", axum::routing::get(handlers::audiobooks))
         .route("/audioknihy/", axum::routing::get(handlers::audiobooks))
+        .route("/seznam-hlasu", axum::routing::get(handlers::voices))
+        .route("/seznam-hlasu/", axum::routing::get(handlers::voices))
         .route(
             "/stahnout-video",
             axum::routing::get(handlers::download_video),

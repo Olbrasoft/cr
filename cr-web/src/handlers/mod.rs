@@ -30,6 +30,7 @@ mod series;
 mod tv_porady;
 pub mod video_api;
 mod video_sources;
+mod voices;
 
 // Re-export all public handlers so main.rs doesn't need changes
 pub use admin_test_sledujteto::admin_test_sledujteto;
@@ -50,6 +51,7 @@ pub use video_api::{
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,
     video_thumb,
 };
+pub use voices::voices;
 
 // --- DB row types ---
 
@@ -561,6 +563,13 @@ pub(crate) struct AudiobookRow {
 pub(crate) struct AudiobooksTemplate {
     pub(crate) img: String,
     pub(crate) audiobooks: Vec<AudiobookRow>,
+}
+
+#[derive(Template)]
+#[template(path = "voices.html")]
+pub(crate) struct VoicesTemplate {
+    pub(crate) img: String,
+    pub(crate) voices: Vec<voices::VoiceEntry>,
 }
 
 #[derive(Template)]
