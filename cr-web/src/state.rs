@@ -13,7 +13,6 @@ use sqlx::PgPool;
 
 use crate::cache::BoundedTtlCache;
 use crate::handlers::SktorrentSource;
-use crate::handlers::movies_api::SearchCandidate;
 use crate::handlers::video_api::VideoDownloads;
 
 #[derive(Clone)]
@@ -70,11 +69,6 @@ pub struct AppState {
     /// carries its own deadline because token lifetimes vary per upload —
     /// the cache's own TTL is just a conservative upper bound.
     pub prehrajto_stream_cache: BoundedTtlCache<String, CachedStreamUrl>,
-    /// Cached prehraj.to `action=search` results keyed by raw search query.
-    /// Used by the resolve-at-play-time endpoint (#633) — every variant of
-    /// the same hint shares one round-trip per cache window so a film's
-    /// `[CZ_DUB, CZ_SUB]` button pair triggers at most one upstream search.
-    pub prehrajto_search_cache: BoundedTtlCache<String, Vec<SearchCandidate>>,
     /// Per-`upload_id` async locks for in-flight scrape deduplication. On
     /// cache miss a handler takes the per-key lock, re-checks the cache,
     /// then scrapes once — concurrent requests for the same upload block
