@@ -11,19 +11,23 @@
 //!   1. Look up the hint by `(owner_id, variant)`.
 //!   2. Hit the proxy `action=search` (cached for 30 min in
 //!      [`AppState::prehrajto_search_cache`]) to get fresh upload candidates.
-//!   3. Filter candidates by variant (regex on title) and rank.
-//!   4. For the top N candidates, hit `action=video` to get a tokenized
-//!      CDN URL — reuses the existing [`AppState::prehrajto_stream_cache`]
-//!      so a successful resolve from the legacy endpoint also serves this
-//!      one and vice versa.
-//!   5. 302 to the first working candidate; 404 with "Žádný funkční zdroj"
-//!      if the top N all fail.
+//!   3. Filter candidates by variant (regex on title). Order is the proxy's
+//!      own — prehraj.to already returns rough relevance order, so we
+//!      don't add a secondary ranker; ties are broken by the dead-upload
+//!      fallback at step 4.
+//!   4. For up to [`MAX_CANDIDATES_PER_REQUEST`] candidates, hit
+//!      `action=video` to get a tokenized CDN URL — reuses the existing
+//!      [`AppState::prehrajto_stream_cache`] so a successful resolve from
+//!      the legacy endpoint also serves this one and vice versa.
+//!   5. 307 to the first working candidate; 404 with "Žádný funkční zdroj"
+//!      if all candidates returned `success: false` (deletions),
+//!      502 if any candidate hit a transient proxy error and none worked.
 //!
 //! Endpoint: `GET /api/movies/stream/by-hint/{owner_kind}/{owner_id}/{variant}`
 //! where `owner_kind ∈ {"film", "episode", "tv-episode"}` and `variant` is
 //! the table CHECK value verbatim.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
@@ -31,6 +35,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use regex::Regex;
 use serde::Deserialize;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::state::{AppState, CachedStreamUrl};
 
@@ -39,6 +44,18 @@ use super::prehrajto_hints::{
     PrehrajtoSearchHint, find_for_episode, find_for_film, find_for_tv_episode,
 };
 use super::thumbnail::is_allowed_stream_url;
+
+/// Outbound concurrency cap against prehraj.to (via the CZ proxy). Mirrors
+/// the limit used by the legacy resolver in [`super::prehrajto`] — three
+/// concurrent scrapes keep peak load modest while still letting unrelated
+/// hints progress in parallel. Shared across both flows so a burst here
+/// doesn't blow past the legacy budget either.
+static PREHRAJTO_VIDEO_SEMAPHORE: Semaphore = Semaphore::const_new(3);
+
+// Per-`upload_id` async locks for in-flight `action=video` deduplication
+// reuse the shared [`AppState::prehrajto_in_flight`] map (defined in
+// `state.rs`) so the legacy resolver and this one don't both stampede for
+// the same `upload_id`. Helper [`per_upload_lock`] below wires it up.
 
 /// Maximum candidates to attempt per request before giving up. The first
 /// hit wins; the loop only advances on dead-upload signals (proxy
@@ -125,9 +142,14 @@ static RE_RES_2160P: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(2160p|
 static RE_RES_1080P: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)1080p").unwrap());
 
 /// True when `title` looks like a match for the requested variant. The
-/// per-hint `title_filter_regex` (when set) acts as an *additional*
-/// filter — both must match.
-pub(crate) fn variant_matches(title: &str, variant: &str, custom: Option<&str>) -> bool {
+/// per-hint `custom` regex (when present) acts as an *additional* filter —
+/// both must match.
+///
+/// `custom` is taken pre-compiled so callers can compile once per hint
+/// instead of once per candidate (Copilot review on #633: a film with N
+/// search results would otherwise pay `Regex::new()` N times for the same
+/// pattern, which dominates filtering cost for non-trivial regexes).
+pub(crate) fn variant_matches(title: &str, variant: &str, custom: Option<&Regex>) -> bool {
     let primary = match variant {
         "CZ_DUB" => RE_CZ_DUB.is_match(title),
         "CZ_SUB" => RE_CZ_SUB.is_match(title),
@@ -138,9 +160,27 @@ pub(crate) fn variant_matches(title: &str, variant: &str, custom: Option<&str>) 
     if !primary {
         return false;
     }
-    match custom.and_then(|p| Regex::new(p).ok()) {
+    match custom {
         Some(re) => re.is_match(title),
         None => true,
+    }
+}
+
+/// Compile a per-hint `title_filter_regex` once per request. Logs and
+/// returns `None` on invalid patterns so a typo'd regex doesn't silently
+/// neuter the filter (#633 Copilot review point).
+fn compile_custom_regex(hint_id: i32, pattern: Option<&str>) -> Option<Regex> {
+    let p = pattern?;
+    match Regex::new(p) {
+        Ok(re) => Some(re),
+        Err(e) => {
+            tracing::warn!(
+                hint_id,
+                error = %e,
+                "prehrajto resolver: invalid title_filter_regex, ignoring"
+            );
+            None
+        }
     }
 }
 
@@ -210,7 +250,9 @@ pub async fn prehrajto_resolve_by_hint(
         return (StatusCode::NOT_FOUND, "Variant nedostupný").into_response();
     };
 
-    // 2-3. Search (cached) + filter by variant
+    // 2-3. Search (cached) + filter by variant. Compile the per-hint custom
+    // regex once so we don't pay `Regex::new()` per candidate (#633 Copilot
+    // review).
     let candidates = match search_candidates(&state, &hint.search_query).await {
         Ok(list) => list,
         Err(reason) => {
@@ -222,9 +264,10 @@ pub async fn prehrajto_resolve_by_hint(
             return (StatusCode::BAD_GATEWAY, "Vyhledávání selhalo").into_response();
         }
     };
+    let custom_re = compile_custom_regex(hint.id, hint.title_filter_regex.as_deref());
     let filtered: Vec<SearchCandidate> = candidates
         .into_iter()
-        .filter(|c| variant_matches(&c.title, &variant, hint.title_filter_regex.as_deref()))
+        .filter(|c| variant_matches(&c.title, &variant, custom_re.as_ref()))
         .take(MAX_CANDIDATES_PER_REQUEST)
         .collect();
 
@@ -237,7 +280,12 @@ pub async fn prehrajto_resolve_by_hint(
         return (StatusCode::NOT_FOUND, "Žádný funkční zdroj").into_response();
     }
 
-    // 4-5. action=video on each candidate, first hit wins.
+    // 4-5. action=video on each candidate, first hit wins. Distinguish
+    // dead-upload (proxy `success: false`) from transient proxy errors —
+    // if every candidate failed but at least one was transient, surface
+    // 502 instead of 404 so monitoring catches outages instead of seeing
+    // a "no source" trickle (#633 Copilot review).
+    let mut had_transient_error = false;
     for candidate in &filtered {
         match resolve_candidate(&state, candidate).await {
             Ok(Some(url)) => {
@@ -251,6 +299,7 @@ pub async fn prehrajto_resolve_by_hint(
                 );
             }
             Err(reason) => {
+                had_transient_error = true;
                 tracing::warn!(
                     upload_id = candidate.upload_id,
                     reason,
@@ -260,7 +309,11 @@ pub async fn prehrajto_resolve_by_hint(
         }
     }
 
-    (StatusCode::NOT_FOUND, "Žádný funkční zdroj").into_response()
+    if had_transient_error {
+        (StatusCode::BAD_GATEWAY, "Zdroj zatím nedostupný").into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Žádný funkční zdroj").into_response()
+    }
 }
 
 // --- Search step ---------------------------------------------------------
@@ -323,12 +376,27 @@ async fn search_candidates(
 
 // --- Resolve step --------------------------------------------------------
 
+/// Acquire (or insert) the per-`upload_id` async lock from the shared
+/// [`AppState::prehrajto_in_flight`] map. Same mechanism as the legacy
+/// resolver — concurrent requests for the same `upload_id` block on this
+/// lock and pick up the cached URL after the first one releases (#633
+/// Copilot review: stampede prevention).
+async fn per_upload_lock(state: &AppState, upload_id: &str) -> Arc<Mutex<()>> {
+    let mut map = state.prehrajto_in_flight.lock().await;
+    map.entry(upload_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
 /// Resolve a single candidate to a tokenized CDN URL. Reuses
-/// [`AppState::prehrajto_stream_cache`] so the legacy upload-id endpoint
-/// and this resolver share cached URLs.
+/// [`AppState::prehrajto_stream_cache`] (so the legacy upload-id endpoint
+/// and this resolver share cached URLs), the shared
+/// [`PREHRAJTO_VIDEO_SEMAPHORE`] (bounded outbound concurrency), and the
+/// shared [`AppState::prehrajto_in_flight`] map (per-upload stampede
+/// prevention).
 ///
 /// Returns:
-/// - `Ok(Some(url))` on success (302-able).
+/// - `Ok(Some(url))` on success (307-able).
 /// - `Ok(None)` on `success: false` from the proxy (upload is dead).
 /// - `Err(reason)` on transient proxy errors / malformed responses /
 ///   non-allow-listed CDN — caller advances to the next candidate.
@@ -336,11 +404,31 @@ async fn resolve_candidate(
     state: &AppState,
     candidate: &SearchCandidate,
 ) -> Result<Option<String>, &'static str> {
+    // Fast path before we reserve any locks or semaphore slots.
     if let Some(entry) = state.prehrajto_stream_cache.get(&candidate.upload_id).await
         && entry.expires_at > Instant::now()
     {
         return Ok(Some(entry.url));
     }
+
+    // Per-upload exclusion: only one task scrapes a given upload at a time.
+    // Re-check the cache after acquiring the lock — a sibling task may
+    // have populated it while we were waiting.
+    let lock = per_upload_lock(state, &candidate.upload_id).await;
+    let _guard = lock.lock().await;
+    if let Some(entry) = state.prehrajto_stream_cache.get(&candidate.upload_id).await
+        && entry.expires_at > Instant::now()
+    {
+        return Ok(Some(entry.url));
+    }
+
+    // Outbound concurrency cap — bounds total parallel `action=video`
+    // calls across the whole process (legacy resolver shares the same
+    // semantics with its own semaphore, sized identically).
+    let _permit = PREHRAJTO_VIDEO_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| "semaphore-closed")?;
 
     let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or("proxy-not-configured")?;
     let api_url = format!(
@@ -498,23 +586,29 @@ mod tests {
 
     #[test]
     fn custom_filter_narrows_match() {
+        let re = Regex::new(r"(?i)2026").unwrap();
         // Both filters must match.
         assert!(variant_matches(
             "Spasitel 2026 CZ DABING",
             "CZ_DUB",
-            Some(r"(?i)2026")
+            Some(&re)
         ));
         // Custom filter rejects matching primary.
         assert!(!variant_matches(
             "Spasitel 1981 CZ DABING",
             "CZ_DUB",
-            Some(r"(?i)2026")
+            Some(&re)
         ));
-        // Invalid regex falls through to primary-only.
-        assert!(variant_matches(
-            "Spasitel CZ DABING",
-            "CZ_DUB",
-            Some("[unbalanced")
-        ));
+    }
+
+    #[test]
+    fn compile_custom_regex_drops_invalid_pattern() {
+        // Invalid regex returns None instead of panicking — caller falls
+        // through to primary-only matching.
+        assert!(compile_custom_regex(0, Some("[unbalanced")).is_none());
+        // Valid pattern compiles.
+        assert!(compile_custom_regex(0, Some(r"(?i)2026")).is_some());
+        // None passes through.
+        assert!(compile_custom_regex(0, None).is_none());
     }
 }
