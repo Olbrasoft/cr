@@ -937,7 +937,14 @@ pub async fn films_detail(
                     p.display_name AS provider_display_name, \
                     p.sort_priority, \
                     vs.external_id, \
-                    COALESCE(vs.metadata->>'url', vs.external_id) AS playback_id, \
+                    -- prehrajto needs a full URL for /api/movies/video-url to
+                    -- accept the playback_id; fall back to synthesizing the
+                    -- canonical detail URL when metadata.url is missing
+                    -- (#647 Copilot review).
+                    COALESCE( \
+                        vs.metadata->>'url', \
+                        CASE WHEN p.slug = 'prehrajto' THEN 'https://prehraj.to/' || vs.external_id ELSE vs.external_id END \
+                    ) AS playback_id, \
                     vs.title, \
                     vs.lang_class, \
                     vs.audio_lang, \
