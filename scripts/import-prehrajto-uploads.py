@@ -17,6 +17,18 @@ Safety guarantees (hard-enforced at runtime):
     multi-hour transactions; the invariant still fires at the end, but
     already-committed batches are not reverted when it trips
 
+Mark-dead behaviour (#644):
+  - At end of run, for every film_id touched in this run, any
+    `film_prehrajto_uploads` / `video_sources(prehrajto)` row whose upload_id
+    is no longer in the live sitemap gets `is_alive = FALSE`. Catches
+    rotated upload_ids (Spasitel 2026 case: prehraj.to silently re-uploaded
+    under a new 16-hex while the old went 404 "Soubor nenalezen").
+  - Per-film, not global — `--limit` partial runs only flag films they
+    actually visited. A full-catalog mark-dead requires a full sitemap pull.
+  - Pass `--no-mark-dead` for partial-sitemap runs (test/pilot/single shard)
+    that would otherwise mis-flag rows whose uploads simply weren't in the
+    pulled subset.
+
 Usage:
   DATABASE_URL=postgres://... python3 scripts/import-prehrajto-uploads.py \\
       --sitemap-dir /tmp/prehrajto-pilot \\
@@ -305,6 +317,10 @@ def main() -> int:
     ap.add_argument("--commit-every", type=int, default=500,
                     help="In live (non-dry-run) mode, commit after every N films "
                          "(default 500). Set 0 to keep a single transaction.")
+    ap.add_argument("--no-mark-dead", action="store_true",
+                    help="Skip the end-of-run sweep that flips is_alive=FALSE for "
+                         "uploads no longer in the sitemap. Use with partial "
+                         "sitemaps or test runs to avoid mis-flagging live uploads.")
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL", "").strip()
@@ -393,6 +409,13 @@ def main() -> int:
         updated_flags = 0
         skipped_no_upload_id = 0
         films_with_no_upload_id = 0
+        # #644: per-film record of upload_ids seen in THIS run. Used at end of
+        # the loop to flag rows whose upload_id is no longer on prehraj.to as
+        # is_alive=FALSE — catches the rotated-IDs case (Spasitel 2026:
+        # prehraj.to silently re-uploaded under a new 16-hex while the old
+        # one became 404 "Soubor nenalezen"). Per-film instead of global so a
+        # `--limit` partial run only touches the films it actually visited.
+        seen_per_film: dict[int, set[str]] = defaultdict(set)
 
         upsert_sql = """
         INSERT INTO film_prehrajto_uploads
@@ -484,6 +507,7 @@ def main() -> int:
                 batch_rows.append({
                     k: v for k, v in u.items() if not k.startswith("_")
                 })
+                seen_per_film[film_id].add(u["upload_id"])
             if len(batch_rows) >= BATCH:
                 flush()
 
@@ -527,6 +551,49 @@ def main() -> int:
             print(f"  (skipped {skipped_no_upload_id} entries without recognizable upload_id)")
         if films_with_no_upload_id:
             print(f"  ({films_with_no_upload_id} films had zero parseable uploads)")
+
+        # ---- #644: mark dead uploads (sitemap diff) ----
+        # For every film_id we touched, flip is_alive=FALSE on rows whose
+        # upload_id wasn't in this run's sitemap. Both the legacy
+        # `film_prehrajto_uploads` table and the unified `video_sources` rows
+        # for that film + provider=prehrajto get the same treatment so the
+        # two stay consistent (they're written together in the upsert path).
+        if args.no_mark_dead:
+            print("Skipping mark-dead sweep (--no-mark-dead).")
+        elif not seen_per_film:
+            print("Mark-dead skipped: no films touched this run.")
+        else:
+            print(f"\nMark-dead sweep across {len(seen_per_film):,} films...")
+            mark_dead_legacy_total = 0
+            mark_dead_vs_total = 0
+            t_md = time.time()
+            mark_dead_legacy_sql = """
+                UPDATE film_prehrajto_uploads
+                   SET is_alive = FALSE
+                 WHERE film_id = %s
+                   AND is_alive = TRUE
+                   AND NOT (upload_id = ANY(%s))
+            """
+            mark_dead_vs_sql = """
+                UPDATE video_sources vs
+                   SET is_alive = FALSE,
+                       last_checked = now()
+                  FROM video_providers p
+                 WHERE vs.provider_id = p.id
+                   AND p.slug = 'prehrajto'
+                   AND vs.film_id = %s
+                   AND vs.is_alive = TRUE
+                   AND NOT (vs.external_id = ANY(%s))
+            """
+            for film_id, seen_ids in seen_per_film.items():
+                ids_arr = list(seen_ids)
+                cur.execute(mark_dead_legacy_sql, (film_id, ids_arr))
+                mark_dead_legacy_total += cur.rowcount
+                cur.execute(mark_dead_vs_sql, (film_id, ids_arr))
+                mark_dead_vs_total += cur.rowcount
+            print(f"  legacy film_prehrajto_uploads → {mark_dead_legacy_total:,} rows flagged dead")
+            print(f"  unified video_sources         → {mark_dead_vs_total:,} rows flagged dead")
+            print(f"  ({time.time()-t_md:.1f}s)")
 
         # ---- Invariant: films count unchanged ----
         # In live mode with batched commits, earlier batches are already committed;
