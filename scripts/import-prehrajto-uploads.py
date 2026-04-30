@@ -162,8 +162,17 @@ def parse_sitemap(path: Path, chunk_size: int = 1 << 20) -> Iterator[dict]:
                 dur_m = _DUR_RE.search(block)
                 views_m = _VIEWS_RE.search(block)
                 live_m = _LIVE_RE.search(block)
+                # Canonicalize to prehraj.to. The XML sitemap publishes URLs
+                # under the `prehrajto.cz` mirror, but the CZ proxy
+                # (chobotnice) validates against the canonical `prehraj.to`
+                # host and rejects `prehrajto.cz` with
+                # "Missing or invalid prehraj.to URL". Storing the canonical
+                # form keeps the resolver's `action=video` calls working
+                # without an extra rewrite step on every request.
+                raw_loc = _unescape(loc_m.group(1))
+                canonical = raw_loc.replace("https://prehrajto.cz/", "https://prehraj.to/", 1)
                 yield {
-                    "url": _unescape(loc_m.group(1)),
+                    "url": canonical,
                     "title": _unescape(title_m.group(1)),
                     "duration": int(dur_m.group(1)) if dur_m else 0,
                     "views": int(views_m.group(1)) if views_m else 0,
@@ -509,6 +518,16 @@ def main() -> int:
         # `--limit` partial run only touches the films it actually visited.
         seen_per_film: dict[int, set[str]] = defaultdict(set)
 
+        # `uq_fpu_upload_id` enforces upload_id uniqueness across the whole
+        # table — the migration's design intent (20260508_048) is that "same
+        # upload_id must not belong to two different films; on cluster-key
+        # collision the importer must pick one film_id and reject the
+        # other." We use `upload_id` as the conflict target (matches that
+        # global unique index) and a WHERE clause so the UPDATE only fires
+        # when the existing row's film_id matches — otherwise the row is
+        # silently skipped, preserving the original parent. This handles
+        # both same-film re-imports (the normal idempotent path) and
+        # cross-film cluster collisions (defensive: keep first parent).
         upsert_sql = """
         INSERT INTO film_prehrajto_uploads
             (film_id, upload_id, url, title, duration_sec, view_count,
@@ -516,7 +535,7 @@ def main() -> int:
         VALUES
             (%(film_id)s, %(upload_id)s, %(url)s, %(title)s, %(duration_sec)s, %(view_count)s,
              %(lang_class)s, %(resolution_hint)s, NOW(), TRUE)
-        ON CONFLICT (film_id, upload_id) DO UPDATE SET
+        ON CONFLICT (upload_id) DO UPDATE SET
             url             = EXCLUDED.url,
             title           = EXCLUDED.title,
             duration_sec    = EXCLUDED.duration_sec,
@@ -525,6 +544,7 @@ def main() -> int:
             resolution_hint = EXCLUDED.resolution_hint,
             last_seen_at    = EXCLUDED.last_seen_at,
             is_alive        = TRUE
+        WHERE film_prehrajto_uploads.film_id = EXCLUDED.film_id
         """
 
         # films update — rollup flags are assigned directly from the current
@@ -588,6 +608,29 @@ def main() -> int:
                 films_with_no_upload_id += 1
                 continue
 
+            # Cross-film cluster collisions: the legacy table enforces a
+            # global unique on `upload_id`, so an upload already linked to
+            # ANOTHER film won't be accepted here. Filter those out before
+            # computing the primary pointer + rollup flags so
+            # `films.prehrajto_primary_upload_id` doesn't end up pointing
+            # at an upload this film doesn't actually own (Copilot review
+            # on #653: rollup flags would otherwise reflect uploads owned
+            # by a different film).
+            ids_in_batch = [u["upload_id"] for u in per_upload]
+            cur.execute(
+                "SELECT upload_id, film_id FROM film_prehrajto_uploads "
+                "WHERE upload_id = ANY(%s)",
+                (ids_in_batch,),
+            )
+            owners = {row[0]: row[1] for row in cur.fetchall()}
+            per_upload = [
+                u for u in per_upload
+                if owners.get(u["upload_id"], film_id) == film_id
+            ]
+            if not per_upload:
+                films_with_no_upload_id += 1
+                continue
+
             per_upload.sort(key=lambda d: -d["_rank"])
             primary_upload_id = per_upload[0]["upload_id"]
             has_cz_audio = any(u["lang_class"] in ("CZ_DUB", "CZ_NATIVE") for u in per_upload)
@@ -620,14 +663,57 @@ def main() -> int:
             # `films.prehrajto_primary_upload_id`; passing it here makes the
             # same upload's video_sources row `is_primary=TRUE`.
             providers = get_provider_ids(cur)
+            # The partial unique index `uq_vs_primary_film` only permits ONE
+            # is_primary=TRUE row per (provider, film). When prehraj.to
+            # rotates upload_ids, the new primary's external_id differs from
+            # the prior winner that's still flagged primary in DB → INSERT
+            # would violate the index. Demote any prior primaries for this
+            # film first; the loop below then sets is_primary on exactly the
+            # new winner (or none, if the chosen primary's row is updated
+            # via ON CONFLICT and demoted siblings already exist).
+            cur.execute(
+                """
+                UPDATE video_sources
+                   SET is_primary = FALSE,
+                       updated_at = now()
+                 WHERE provider_id = %s
+                   AND film_id     = %s
+                   AND is_primary  = TRUE
+                   AND external_id <> %s
+                """,
+                (providers["prehrajto"], film_id, primary_upload_id),
+            )
+            # Each dual_write runs inside a SAVEPOINT so a single ambiguous
+            # upload (e.g. partial-unique-index conflict from a stale prior
+            # row, or a cross-film cluster overlap the helper can't repair
+            # in-place) doesn't abort the whole run. The savepoint pattern
+            # is the standard way to recover from constraint violations
+            # mid-transaction in psycopg2 (the alternative — a fresh
+            # transaction per row — would lose the importer's batched
+            # legacy-table upserts).
             for upload in per_upload:
-                dual_write_prehrajto_upload(
-                    cur,
-                    providers=providers,
-                    film_id=film_id,
-                    upload_row=upload,
-                    primary_upload_id=primary_upload_id,
-                )
+                cur.execute("SAVEPOINT dw")
+                try:
+                    dual_write_prehrajto_upload(
+                        cur,
+                        providers=providers,
+                        film_id=film_id,
+                        upload_row=upload,
+                        primary_upload_id=primary_upload_id,
+                    )
+                    cur.execute("RELEASE SAVEPOINT dw")
+                except psycopg2.errors.UniqueViolation as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT dw")
+                    cur.execute("RELEASE SAVEPOINT dw")
+                    constraint = getattr(getattr(e, "diag", None),
+                                         "constraint_name", None)
+                    print(
+                        f"  WARN dual_write skipped: film_id={film_id} "
+                        f"upload_id={upload.get('upload_id')} "
+                        f"is_primary={upload['upload_id'] == primary_upload_id} "
+                        f"({constraint})",
+                        flush=True,
+                    )
 
             if commit_every and i % commit_every == 0:
                 flush()
