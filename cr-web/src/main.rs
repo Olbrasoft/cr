@@ -132,6 +132,14 @@ async fn main() -> Result<()> {
             5000,
             std::time::Duration::from_secs(2 * 3600),
         ),
+        // 30-min TTL for cached `action=search` results — prehraj.to's catalog
+        // changes slowly enough that a half-hour window is safe, while still
+        // cheap to refresh on demand. 5000 entries fits the live catalog with
+        // headroom.
+        prehrajto_search_cache: cache::BoundedTtlCache::new(
+            5000,
+            std::time::Duration::from_secs(30 * 60),
+        ),
         prehrajto_in_flight: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
@@ -210,6 +218,12 @@ async fn main() -> Result<()> {
         .route(
             "/movies/stream/{upload_id}",
             axum::routing::get(handlers::movies_api::prehrajto_stream_upload),
+        )
+        // #633: search-then-video resolver. Path params are deserialized into
+        // ResolveParams via Path<ResolveParams> in the handler.
+        .route(
+            "/movies/stream/by-hint/{owner_kind}/{owner_id}/{variant}",
+            axum::routing::get(handlers::movies_api::prehrajto_resolve_by_hint),
         )
         .route(
             "/films/{film_id}/prehrajto-sources",
