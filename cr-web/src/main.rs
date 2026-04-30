@@ -225,6 +225,17 @@ async fn main() -> Result<()> {
             "/movies/stream/by-hint/{owner_kind}/{owner_id}/{variant}",
             axum::routing::get(handlers::movies_api::prehrajto_resolve_by_hint),
         )
+        // #634 follow-up: per-candidate by-upload resolver — used by the
+        // live-search row UI on the film detail page (one row per
+        // prehraj.to search candidate, click resolves and 307s).
+        .route(
+            "/movies/stream/by-upload/{upload_id}",
+            axum::routing::get(handlers::movies_api::prehrajto_resolve_by_upload),
+        )
+        .route(
+            "/movies/prehrajto/cache-status/{upload_id}",
+            axum::routing::get(handlers::movies_api::prehrajto_cache_status),
+        )
         .route(
             "/films/{film_id}/prehrajto-sources",
             axum::routing::get(handlers::movies_api::prehrajto_sources),
