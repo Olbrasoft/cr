@@ -1,6 +1,5 @@
 mod cz_proxy;
 mod prehrajto;
-mod prehrajto_hints;
 mod sledujteto;
 mod stream;
 mod subtitles;
