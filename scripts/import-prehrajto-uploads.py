@@ -567,6 +567,10 @@ def main() -> int:
             mark_dead_legacy_total = 0
             mark_dead_vs_total = 0
             t_md = time.time()
+            # Resolve the prehrajto provider_id once instead of joining
+            # video_providers by slug on every film (#649 Copilot review).
+            providers_for_md = get_provider_ids(cur)
+            prehrajto_pid = providers_for_md["prehrajto"]
             mark_dead_legacy_sql = """
                 UPDATE film_prehrajto_uploads
                    SET is_alive = FALSE
@@ -574,22 +578,27 @@ def main() -> int:
                    AND is_alive = TRUE
                    AND NOT (upload_id = ANY(%s))
             """
+            # Touch updated_at alongside last_checked (#649 Copilot review).
+            # video_sources has no auto-update trigger on the column, so we
+            # keep the timestamp aligned with other write paths (e.g. the
+            # legacy resolver in prehrajto.rs) that set updated_at=now() on
+            # liveness changes — otherwise rows flipped here would look
+            # "older" than they actually are.
             mark_dead_vs_sql = """
-                UPDATE video_sources vs
+                UPDATE video_sources
                    SET is_alive = FALSE,
-                       last_checked = now()
-                  FROM video_providers p
-                 WHERE vs.provider_id = p.id
-                   AND p.slug = 'prehrajto'
-                   AND vs.film_id = %s
-                   AND vs.is_alive = TRUE
-                   AND NOT (vs.external_id = ANY(%s))
+                       last_checked = now(),
+                       updated_at  = now()
+                 WHERE provider_id = %s
+                   AND film_id = %s
+                   AND is_alive = TRUE
+                   AND NOT (external_id = ANY(%s))
             """
             for film_id, seen_ids in seen_per_film.items():
                 ids_arr = list(seen_ids)
                 cur.execute(mark_dead_legacy_sql, (film_id, ids_arr))
                 mark_dead_legacy_total += cur.rowcount
-                cur.execute(mark_dead_vs_sql, (film_id, ids_arr))
+                cur.execute(mark_dead_vs_sql, (prehrajto_pid, film_id, ids_arr))
                 mark_dead_vs_total += cur.rowcount
             print(f"  legacy film_prehrajto_uploads → {mark_dead_legacy_total:,} rows flagged dead")
             print(f"  unified video_sources         → {mark_dead_vs_total:,} rows flagged dead")
