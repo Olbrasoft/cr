@@ -224,6 +224,22 @@
                         <span class="source-row-res">{{ r }}</span>
                         {% when None %}
                         {% endmatch %}
+                        {# Direct/unverified flag for prehraj.to rows (#634
+                           follow-up). 🟢 "direct" = we have a fresh
+                           tokenized CDN URL cached, click plays without a
+                           proxy round-trip. 🟡 "?" = not yet resolved;
+                           click triggers resolution and flips the chip. #}
+                        {% if vs.provider_slug == "prehrajto" %}
+                            {% match vs.cdn %}
+                            {% when Some with (c) %}
+                                {% if c == "direct" %}
+                                <span class="source-row-cdn cdn-direct" title="Ověřený přímý zdroj">🟢 direct</span>
+                                {% else %}
+                                <span class="source-row-cdn cdn-unverified" title="Klikni pro ověření">🟡 ?</span>
+                                {% endif %}
+                            {% when None %}
+                            {% endmatch %}
+                        {% endif %}
                         {% if vs.is_primary %}
                         <span class="source-row-primary" title="Primární zdroj">primary</span>
                         {% endif %}
@@ -368,6 +384,11 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
 .source-row-audio .confidence { color: #16a34a; font-size: 0.7rem; margin-left: 0.2rem; }
 .source-row-subs { background: #dbeafe; color: #1e40af; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
 .source-row-res { background: #f3f4f6; color: #6b7280; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.72rem; font-weight: 500; }
+/* Direct/unverified flag for prehraj.to rows (#634 follow-up) — green
+   = cached tokenized CDN URL ready, yellow = unresolved (click to verify). */
+.source-row-cdn { padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.72rem; font-weight: 500; }
+.source-row-cdn.cdn-direct { background: #dcfce7; color: #166534; }
+.source-row-cdn.cdn-unverified { background: #fef9c3; color: #854d0e; }
 .source-row-primary { background: #a68412; color: #fff; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 .source-row-play {
     flex-shrink: 0; width: 1.75rem; height: 1.75rem;
@@ -612,6 +633,12 @@ function playPrehrajtoUrl(idOrHint, onDone) {
     if (typeof idOrHint === 'string' && idOrHint.indexOf('by-hint:') === 0) {
         return playPrehrajtoByHint(idOrHint.substring('by-hint:'.length), onDone);
     }
+    /* #634 follow-up: per-candidate live-search rows carry
+       `by-upload:{upload_id}` and route to the by-upload resolver,
+       which resolves any prehraj.to upload via search-then-video. */
+    if (typeof idOrHint === 'string' && idOrHint.indexOf('by-upload:') === 0) {
+        return playPrehrajtoByUpload(idOrHint.substring('by-upload:'.length), onDone);
+    }
 
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
@@ -650,26 +677,71 @@ function playPrehrajtoByHint(hintRef, onDone) {
     var status = document.getElementById('source-status');
     if (!player) { if (onDone) onDone(); return; }
 
+    pointPlayerAtResolver(player, status, '/api/movies/stream/by-hint/' + hintRef.split(':').map(encodeURIComponent).join('/'), onDone);
+}
+
+/* #634 follow-up: play one prehraj.to upload candidate from the live
+   search row list. Same flow as `playPrehrajtoByHint` (point <video>
+   at the resolver and let the browser follow the 307), but the URL
+   identifies a single upload_id rather than a hint variant. After the
+   browser starts playback, we flip the row's chip from 🟡 to 🟢 so
+   the user sees the source is now verified-direct. */
+function playPrehrajtoByUpload(uploadId, onDone) {
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+    if (!player) { if (onDone) onDone(); return; }
+    pointPlayerAtResolver(player, status, '/api/movies/stream/by-upload/' + encodeURIComponent(uploadId), onDone, function() {
+        flipRowFlagToDirect(uploadId);
+    });
+}
+
+/* Shared helper for the two by-hint / by-upload flows. Cleans up the
+   previous HLS pipeline + subtitle tracks, points <video> at the
+   resolver URL, and wires error/loadeddata listeners so the status
+   row reflects the actual outcome (Copilot #640: status was
+   misleading "Přehraj.to" even on 404/502). */
+function pointPlayerAtResolver(player, status, url, onDone, onPlaying) {
     if (window._hls) { window._hls.destroy(); window._hls = null; }
     if (status) status.textContent = 'Načítání Přehraj.to...';
-    var url = '/api/movies/stream/by-hint/' + hintRef.split(':').map(encodeURIComponent).join('/');
-    /* The resolver returns 302 → premiumcdn.net signed mp4. We can't
-       distinguish HLS from MP4 here without the underlying URL, but
-       prehraj.to never serves HLS, so direct MP4 is correct. */
+
+    /* Remove any leftover <track> elements via querySelectorAll — the
+       earlier firstChild-walk approach broke on the leading whitespace
+       text node Askama leaves inside <video> (Copilot #640). */
+    player.querySelectorAll('track').forEach(function(t) { player.removeChild(t); });
+
+    /* Replace any prior listeners we registered. Without removing the
+       old handlers, switching sources back and forth would leave us
+       with multiple listeners flipping status text in races. */
+    if (player._byResolverErrorH) player.removeEventListener('error', player._byResolverErrorH);
+    if (player._byResolverLoadH) player.removeEventListener('loadeddata', player._byResolverLoadH);
+    var errorH = function() {
+        if (status) status.textContent = 'Zdroj nedostupný';
+    };
+    var loadH = function() {
+        if (status) status.textContent = 'Přehraj.to';
+        if (onPlaying) onPlaying();
+    };
+    player._byResolverErrorH = errorH;
+    player._byResolverLoadH = loadH;
+    player.addEventListener('error', errorH, { once: true });
+    player.addEventListener('loadeddata', loadH, { once: true });
+
     player.src = url;
-    /* Removing previous textTracks — variant buttons don't carry subtitle
-       URLs (the resolver doesn't expose them yet). Keeps the controls
-       row consistent across switches between sources. */
-    while (player.firstChild) {
-        if (player.firstChild.tagName === 'TRACK') {
-            player.removeChild(player.firstChild);
-        } else {
-            break;
-        }
-    }
     player.play().catch(function(){});
-    if (status) status.textContent = 'Přehraj.to';
     if (onDone) onDone();
+}
+
+/* Flip a row's "?" chip to "direct" once we've successfully started
+   playback for that upload_id. Visual-only — the underlying cache
+   state is the source of truth on the next page load. */
+function flipRowFlagToDirect(uploadId) {
+    var row = document.querySelector('.source-row-prehrajto[data-external-id="' + uploadId + '"]');
+    if (!row) return;
+    var chip = row.querySelector('.source-row-cdn');
+    if (chip) {
+        chip.textContent = 'direct';
+        chip.classList.add('cdn-direct');
+    }
 }
 
 function playSledujtetoFile(fileId, onDone) {

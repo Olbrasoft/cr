@@ -1,5 +1,8 @@
 use super::*;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+use super::movies_api::SearchCandidate;
 
 const FILMS_PER_PAGE: i64 = 24;
 
@@ -229,76 +232,80 @@ pub(crate) struct VideoSourceBadgeRow {
     pub(crate) subtitle_langs: Vec<String>,
 }
 
-/// Build a synthetic [`VideoSourceBadgeRow`] for a prehraj.to search hint
-/// (#634). The row carries `playback_id = "by-hint:film:{id}:{variant}"`
-/// so the JS playback dispatch sees the `by-hint:` prefix and routes to
-/// the new resolver endpoint instead of the legacy upload-id flow.
+/// Build a synthetic [`VideoSourceBadgeRow`] for one prehraj.to search
+/// candidate (#634 follow-up). The row carries
+/// `playback_id = "by-upload:{upload_id}"` so the frontend dispatch routes
+/// to the new `/api/movies/stream/by-upload/{upload_id}` endpoint at
+/// click time. Compared to the earlier hint-based variant rows, this
+/// preserves the actual filename + per-candidate metadata so the user
+/// sees what's actually on prehraj.to (one row per upload, not one row
+/// per variant bucket).
 ///
-/// Variant labelling:
-/// - `CZ_DUB`  → audio_lang `cs`, lang_class `CZ_DUB`, title "CZ dabing"
-/// - `CZ_SUB`  → no audio_lang; subtitle_langs `["cs"]`, title "CZ titulky"
-/// - `RES_*`   → resolution_hint set, title is the resolution
-///
-/// Whichever variant is rendered first becomes the auto-play target by
-/// the existing "click first .source-row on load" effect — so the caller
-/// passes `is_first = true` for whichever hint should auto-play.
+/// `is_direct_cached = true` means we already have a fresh tokenized CDN
+/// URL in `prehrajto_stream_cache` for this `upload_id` — the row gets a
+/// 🟢 "ověřeno" chip on the UI. Anything else is rendered as 🟡
+/// "neověřeno"; clicking the row resolves and the chip flips after the
+/// browser receives the redirect.
 pub(crate) fn synthetic_prehrajto_row(
-    film_id: i32,
-    hint: &super::movies_api::prehrajto_hints::PrehrajtoSearchHint,
+    candidate: &super::movies_api::SearchCandidate,
+    is_direct_cached: bool,
     is_first: bool,
 ) -> VideoSourceBadgeRow {
-    let (title, audio_lang, subtitle_langs, resolution_hint, lang_class) =
-        match hint.variant.as_str() {
-            "CZ_DUB" => (
-                "Přehraj.to — CZ dabing".to_string(),
-                Some("cs".to_string()),
-                Vec::new(),
-                None,
-                "CZ_DUB".to_string(),
-            ),
-            "CZ_SUB" => (
-                "Přehraj.to — CZ titulky".to_string(),
-                None,
-                vec!["cs".to_string()],
-                None,
-                "CZ_SUB".to_string(),
-            ),
-            "RES_2160P" => (
-                "Přehraj.to — 2160p".to_string(),
-                None,
-                Vec::new(),
-                Some("2160p".to_string()),
-                "UNKNOWN".to_string(),
-            ),
-            "RES_1080P" => (
-                "Přehraj.to — 1080p".to_string(),
-                None,
-                Vec::new(),
-                Some("1080p".to_string()),
-                "UNKNOWN".to_string(),
-            ),
-            other => (
-                format!("Přehraj.to — {other}"),
-                None,
-                Vec::new(),
-                None,
-                "UNKNOWN".to_string(),
-            ),
+    // Crude language / resolution heuristics from the filename. Same
+    // intent as `prehrajto_resolver::variant_matches`, but applied here
+    // for the badge chips so the user sees what we know without having
+    // to click. False positives are visual noise; false negatives just
+    // omit a chip.
+    let title = candidate.title.clone();
+    let lower = title.to_lowercase();
+    let has_cz_dub = lower.contains("cz dab")
+        || lower.contains("cz-dab")
+        || lower.contains("cz.dab")
+        || lower.contains("česk")
+        || lower.contains("cestin")
+        || lower.contains("češtin");
+    let has_cz_sub = lower.contains("cz tit")
+        || lower.contains("cz-tit")
+        || lower.contains("cz.tit")
+        || lower.contains("titulky cz")
+        || lower.contains("cz titulky")
+        || lower.contains("czsub")
+        || lower.contains("cz sub");
+    let resolution_hint =
+        if lower.contains("2160p") || lower.contains("4k") || lower.contains("uhd") {
+            Some("2160p".to_string())
+        } else if lower.contains("1080p") {
+            Some("1080p".to_string())
+        } else if lower.contains("720p") {
+            Some("720p".to_string())
+        } else {
+            None
         };
+    let (audio_lang, subtitle_langs, lang_class) = if has_cz_dub {
+        (Some("cs".to_string()), Vec::new(), "CZ_DUB".to_string())
+    } else if has_cz_sub {
+        (None, vec!["cs".to_string()], "CZ_SUB".to_string())
+    } else {
+        (None, Vec::new(), "UNKNOWN".to_string())
+    };
+
     VideoSourceBadgeRow {
         provider_slug: "prehrajto".to_string(),
         provider_host: "prehraj.to".to_string(),
         provider_display_name: "Prehraj.to".to_string(),
         sort_priority: 20,
-        external_id: format!("hint-{}", hint.id),
-        playback_id: format!("by-hint:film:{}:{}", film_id, hint.variant),
+        external_id: candidate.upload_id.clone(),
+        playback_id: format!("by-upload:{}", candidate.upload_id),
         title: Some(title),
         lang_class,
         audio_lang,
         audio_confidence: None,
         audio_detected_by: None,
         resolution_hint,
-        cdn: None,
+        // Reuse `cdn` to carry the direct/unverified flag. The template
+        // reads it via `cdn_label()` which we already render as a chip
+        // on existing sktorrent rows. "direct" → 🟢 chip; "?" → 🟡 chip.
+        cdn: Some(if is_direct_cached { "direct" } else { "?" }.to_string()),
         is_primary: is_first,
         subtitle_langs,
     }
@@ -1046,18 +1053,59 @@ pub async fn films_detail(
         Vec::new()
     });
 
-    // Synthetic prehraj.to rows from `prehrajto_search_hints` (#634).
-    // Each row's `playback_id` carries `by-hint:film:{id}:{variant}` so the
-    // JS in `playPrehrajtoUrl` can route to the new resolver endpoint
-    // (`/api/movies/stream/by-hint/...`) instead of the legacy upload-id
-    // flow. The synthetic rows are inserted at provider sort_priority=20
-    // (matches `video_providers.prehrajto.sort_priority` from migration 058)
-    // so they land between sktorrent (10) and sledujteto (30) in the list.
-    if let Ok(hints) = super::movies_api::prehrajto_hints::find_for_film(&state.db, film.id).await {
-        for (i, h) in hints.iter().enumerate() {
-            video_sources_for_badges.push(synthetic_prehrajto_row(film.id, h, i == 0));
+    // Synthetic prehraj.to rows from a live `action=search` (#634
+    // follow-up). Replaces the hint-based per-variant buttons with one
+    // row per actual prehraj.to upload, so the user sees what's
+    // currently on prehraj.to and can pick whichever filename suits
+    // them. Each row's `playback_id` carries `by-upload:{upload_id}`;
+    // the frontend dispatch hits `/api/movies/stream/by-upload/...`
+    // which resolves through the same search-then-video flow with
+    // shared caches.
+    //
+    // Search query comes from any prehrajto_search_hint (#632) for the
+    // film — the hint table is the stable record of "what to ask
+    // prehraj.to for"; the live results are ephemeral. If the film has
+    // no hints at all, no rows render — same UX as today's "Variant
+    // nedostupný" path.
+    if let Ok(hints) = super::movies_api::prehrajto_hints::find_for_film(&state.db, film.id).await
+        && let Some(query) = hints.iter().map(|h| h.search_query.as_str()).next()
+        && let Ok(candidates) = super::movies_api::search_candidates(&state, query).await
+    {
+        // Filter to candidates whose filename suggests it's actually
+        // this film (CZ dub / CZ sub variant or matches custom regex).
+        // Keeps unrelated noise out — search for "Spasitel" returns
+        // entries like "Posledná šanca" too.
+        let custom_re = hints.iter().find_map(|h| {
+            h.title_filter_regex
+                .as_deref()
+                .and_then(|p| Regex::new(p).ok())
+        });
+        let mut prehrajto_rows: Vec<(SearchCandidate, bool)> = Vec::new();
+        for c in candidates {
+            // Match against either CZ_DUB or CZ_SUB (we don't differentiate
+            // the row by variant — that's now a chip on the row itself).
+            let dub = super::movies_api::variant_matches(&c.title, "CZ_DUB", custom_re.as_ref());
+            let sub = super::movies_api::variant_matches(&c.title, "CZ_SUB", custom_re.as_ref());
+            if !(dub || sub) {
+                continue;
+            }
+            let is_direct = super::movies_api::cached_url_is_fresh(&state, &c.upload_id).await;
+            prehrajto_rows.push((c, is_direct));
         }
-        // Re-sort so synthetic prehrajto rows sit at sort_priority=20.
+        // Stable sort: 🟢 direct-cached first, then 🟡 unverified. Within
+        // each bucket we keep prehraj.to's native search order (their
+        // relevance ranking is good enough; no secondary sort).
+        prehrajto_rows.sort_by_key(|(_, is_direct)| if *is_direct { 0 } else { 1 });
+
+        for (i, (candidate, is_direct)) in prehrajto_rows.iter().enumerate() {
+            video_sources_for_badges.push(synthetic_prehrajto_row(candidate, *is_direct, i == 0));
+        }
+
+        // Re-stitch the badges so prehrajto rows sit at sort_priority=20
+        // (between sktorrent=10 and sledujteto=30) without disturbing the
+        // intra-provider order returned by the DB / search above.
+        // `Vec::sort_by` is stable since Rust 1.32 — same-key rows keep
+        // insertion order, which is what we want here (#634 Copilot review).
         video_sources_for_badges.sort_by(|a, b| {
             a.sort_priority
                 .cmp(&b.sort_priority)
