@@ -6,9 +6,6 @@ Documentation=https://github.com/Olbrasoft/cr/issues/646
 # the same morning's snapshot.
 After=docker.service network-online.target cr-backup-db.service
 Wants=network-online.target
-StartLimitBurst=2
-StartLimitIntervalSec=300
-
 [Service]
 Type=oneshot
 User=root
@@ -22,11 +19,11 @@ ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} /usr/bin
 ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} /usr/bin/python3 -u /opt/cr/scripts/import-prehrajto-uploads.py --sitemap-dir /var/cache/cr/prehrajto-sitemap --from-films-table'
 StandardOutput=append:/var/log/cr-prehrajto-sync.log
 StandardError=append:/var/log/cr-prehrajto-sync.log
-# Single retry on transient failures (e.g. prehraj.to 502). Subsequent
-# attempts would re-run the full pipeline; better skip and surface the
-# failure tomorrow.
-Restart=on-failure
-RestartSec=120
+# No auto-restart: an importer failure (DB-side) would trigger a full
+# pipeline restart and pointlessly re-download the ~15 GB sitemap. Both
+# sub-steps are idempotent — the operator can re-run via
+# `systemctl start cr-prehrajto-sync.service` after fixing the cause.
+# Transient HTTP retries are handled inside sync-prehrajto-sitemap.py.
 
 [Install]
 WantedBy=multi-user.target

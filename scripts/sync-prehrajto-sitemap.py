@@ -132,6 +132,7 @@ def main() -> int:
 
     # --- 4. Parallel downloads ---
     failed: list[str] = []
+    succeeded: set[str] = set()
     t1 = time.time()
 
     def fetch_one(url: str) -> tuple[str, bool]:
@@ -152,13 +153,26 @@ def main() -> int:
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         for url, ok in ex.map(fetch_one, to_download):
-            if not ok:
+            if ok:
+                succeeded.add(url)
+            else:
                 failed.append(url)
     print(f"  downloaded {len(to_download) - len(failed)}/{len(to_download)} "
           f"in {time.time()-t1:.1f}s ({len(failed)} failures)", flush=True)
 
-    # --- 5. Persist ETags (merge new over old) ---
-    merged = {**old_etags, **new_etags}
+    # --- 5. Persist ETags ---
+    # Only persist the new ETag for shards we successfully downloaded.
+    # Shards we did NOT attempt to download (incremental: ETag unchanged)
+    # also keep their refreshed ETag — they match the on-disk file by
+    # definition. Shards whose download FAILED keep the OLD ETag (or no
+    # entry) so the next run re-attempts them. Without this, a failed
+    # download would persist its new ETag and be silently skipped forever.
+    merged: dict[str, str] = dict(old_etags)
+    untouched_set = set(sub_urls) - set(to_download)
+    for url, etag in new_etags.items():
+        if url in succeeded or url in untouched_set:
+            merged[url] = etag
+        # else: failure during this run — leave old_etags entry as-is
     etag_file.write_text(json.dumps(merged, indent=2, sort_keys=True))
 
     # --- 6. Fail-fast in full mode if any download failed ---

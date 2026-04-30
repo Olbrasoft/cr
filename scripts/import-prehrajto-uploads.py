@@ -304,7 +304,7 @@ def load_matches(path: Path) -> dict[tuple, dict]:
     return matches_by_key
 
 
-def load_matches_from_films(cur) -> dict[tuple, dict]:
+def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
     Replaces the original CSV path (#646) — the pilot CSV was a one-off
@@ -317,32 +317,55 @@ def load_matches_from_films(cur) -> dict[tuple, dict]:
     (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
 
     Cluster key strategy: prehraj.to clusters use a 3-min duration
-    bucket, but films don't have a single canonical duration we can
-    bucket-match against (multiple uploads, theatrical/extended cuts).
-    We emit a row per likely bucket spanning 60-240 min in 3-min steps,
-    so any sitemap entry whose duration lies in that band attaches.
+    bucket. We anchor each film at `runtime_min // 3` and emit ±`bucket_window`
+    buckets to absorb minor variance between TMDB runtime and the
+    sitemap's reported duration (intros/outros, slight re-encodes). Films
+    without `runtime_min` are skipped here — without a duration anchor we
+    risk false-positive matches across the entire 60-240 min band.
+
+    Determinism: rows are read `ORDER BY id` so collisions on the same
+    `(title_core, year, bucket)` key always resolve to the lowest film
+    id, and each collision is logged so the operator can investigate.
     """
     cur.execute(
-        "SELECT id, title, year, imdb_id FROM films "
-        "WHERE imdb_id IS NOT NULL AND year IS NOT NULL"
+        "SELECT id, title, year, imdb_id, runtime_min FROM films "
+        "WHERE imdb_id IS NOT NULL AND year IS NOT NULL "
+        "ORDER BY id"
     )
     matches: dict[tuple, dict] = {}
-    for film_id, title, year, imdb_id in cur.fetchall():
+    collisions: list[tuple[tuple, int, int]] = []
+    skipped_no_runtime = 0
+    for film_id, title, year, imdb_id, runtime_min in cur.fetchall():
         if not title or not imdb_id:
+            continue
+        if runtime_min is None or runtime_min <= 0:
+            skipped_no_runtime += 1
             continue
         core = normalize(strip_title(title))
         if not core:
             continue
-        # Duration bucket = duration_sec // (3*60). Films span 60-240 min
-        # per `film_shape` filter, so buckets 20..79 cover the full range.
-        for dur_bucket in range(20, 80):
+        anchor = int(runtime_min) // 3
+        for dur_bucket in range(anchor - bucket_window, anchor + bucket_window + 1):
+            if dur_bucket < 0:
+                continue
             key = (core, year, dur_bucket)
-            if key not in matches:
+            existing = matches.get(key)
+            if existing is None:
                 matches[key] = {
                     "imdb_id": imdb_id,
                     "_film_id": film_id,
                     "_source": "films_table",
                 }
+            elif existing["_film_id"] != film_id:
+                collisions.append((key, existing["_film_id"], film_id))
+    if skipped_no_runtime:
+        print(f"  load_matches_from_films: skipped {skipped_no_runtime} films "
+              f"without runtime_min (would match too widely)", flush=True)
+    if collisions:
+        print(f"  load_matches_from_films: {len(collisions)} key collisions "
+              f"(kept lowest film_id; first 5 below)", flush=True)
+        for key, kept_id, dropped_id in collisions[:5]:
+            print(f"    key={key} kept=film#{kept_id} dropped=film#{dropped_id}", flush=True)
     return matches
 
 
