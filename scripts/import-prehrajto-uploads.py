@@ -304,12 +304,83 @@ def load_matches(path: Path) -> dict[tuple, dict]:
     return matches_by_key
 
 
+def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
+    """Build the cluster_key → imdb_id map directly from the `films` table.
+
+    Replaces the original CSV path (#646) — the pilot CSV was a one-off
+    snapshot of TMDB→sitemap matching, but `films` is now the canonical
+    source: every row already carries `imdb_id` + a normalized title and
+    year. Using it here means cron-driven syncs don't drift from new TMDB
+    imports landing in `films`.
+
+    Returns the same shape `load_matches()` does so the downstream code
+    (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
+
+    Cluster key strategy: prehraj.to clusters use a 3-min duration
+    bucket. We anchor each film at `runtime_min // 3` and emit ±`bucket_window`
+    buckets to absorb minor variance between TMDB runtime and the
+    sitemap's reported duration (intros/outros, slight re-encodes). Films
+    without `runtime_min` are skipped here — without a duration anchor we
+    risk false-positive matches across the entire 60-240 min band.
+
+    Determinism: rows are read `ORDER BY id` so collisions on the same
+    `(title_core, year, bucket)` key always resolve to the lowest film
+    id, and each collision is logged so the operator can investigate.
+    """
+    cur.execute(
+        "SELECT id, title, year, imdb_id, runtime_min FROM films "
+        "WHERE imdb_id IS NOT NULL AND year IS NOT NULL "
+        "ORDER BY id"
+    )
+    matches: dict[tuple, dict] = {}
+    collisions: list[tuple[tuple, int, int]] = []
+    skipped_no_runtime = 0
+    for film_id, title, year, imdb_id, runtime_min in cur.fetchall():
+        if not title or not imdb_id:
+            continue
+        if runtime_min is None or runtime_min <= 0:
+            skipped_no_runtime += 1
+            continue
+        core = normalize(strip_title(title))
+        if not core:
+            continue
+        anchor = int(runtime_min) // 3
+        for dur_bucket in range(anchor - bucket_window, anchor + bucket_window + 1):
+            if dur_bucket < 0:
+                continue
+            key = (core, year, dur_bucket)
+            existing = matches.get(key)
+            if existing is None:
+                matches[key] = {
+                    "imdb_id": imdb_id,
+                    "_film_id": film_id,
+                    "_source": "films_table",
+                }
+            elif existing["_film_id"] != film_id:
+                collisions.append((key, existing["_film_id"], film_id))
+    if skipped_no_runtime:
+        print(f"  load_matches_from_films: skipped {skipped_no_runtime} films "
+              f"without runtime_min (would match too widely)", flush=True)
+    if collisions:
+        print(f"  load_matches_from_films: {len(collisions)} key collisions "
+              f"(kept lowest film_id; first 5 below)", flush=True)
+        for key, kept_id, dropped_id in collisions[:5]:
+            print(f"    key={key} kept=film#{kept_id} dropped=film#{dropped_id}", flush=True)
+    return matches
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sitemap-dir", required=True,
                     help="Directory containing video-sitemap-*.xml files")
-    ap.add_argument("--matches", required=True,
-                    help="Path to matches-full.csv (from pilot)")
+    ap.add_argument("--matches",
+                    help="Path to a pilot matches-full.csv. Mutually exclusive "
+                         "with --from-films-table.")
+    ap.add_argument("--from-films-table", action="store_true",
+                    help="Build the cluster→imdb_id map from the films table "
+                         "instead of a pilot CSV. Required for cron-driven runs "
+                         "on the server where no pilot CSV exists. Mutually "
+                         "exclusive with --matches.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Parse, compute, but ROLLBACK at the end — no changes committed")
     ap.add_argument("--limit", type=int, default=0,
@@ -328,6 +399,11 @@ def main() -> int:
         print("ERROR: DATABASE_URL env var required", file=sys.stderr)
         return 2
 
+    if bool(args.matches) == bool(args.from_films_table):
+        print("ERROR: pass exactly one of --matches or --from-films-table",
+              file=sys.stderr)
+        return 2
+
     sitemap_dir = Path(args.sitemap_dir)
     files = sorted(sitemap_dir.glob("video-sitemap-*.xml"),
                    key=lambda p: int(re.search(r"(\d+)", p.stem).group(1)))
@@ -335,13 +411,26 @@ def main() -> int:
         print(f"ERROR: no video-sitemap-*.xml files in {sitemap_dir}", file=sys.stderr)
         return 2
 
-    # ---- Load IMDB matches from pilot CSV first ----
+    # ---- Open DB early so --from-films-table can use it ----
+    conn_for_matches = psycopg2.connect(dsn) if args.from_films_table else None
+
+    # ---- Load IMDB matches ----
     # We need the wanted cluster-key set up front so we can discard sitemap rows
     # outside it as we stream, instead of materialising the full 9M-entry catalog.
-    print(f"Loading matches from {args.matches}...")
-    matches_by_key = load_matches(Path(args.matches))
+    if args.matches:
+        print(f"Loading matches from CSV {args.matches}...")
+        matches_by_key = load_matches(Path(args.matches))
+        print(f"  {len(matches_by_key):,} IMDB-matched clusters in CSV")
+    else:
+        print("Building matches map from films table...")
+        cur_m = conn_for_matches.cursor()
+        matches_by_key = load_matches_from_films(cur_m)
+        cur_m.close()
+        # cluster keys are duration-bucket-expanded; report distinct films
+        distinct_films = len({m["imdb_id"] for m in matches_by_key.values()})
+        print(f"  {distinct_films:,} films with imdb_id+year → "
+              f"{len(matches_by_key):,} cluster keys (duration-expanded)")
     wanted_keys = set(matches_by_key.keys())
-    print(f"  {len(matches_by_key):,} IMDB-matched clusters in CSV")
 
     # ---- Stream-parse sitemaps, clustering only rows whose key is wanted ----
     print(f"Parsing {len(files)} sitemaps from {sitemap_dir}...")
@@ -361,6 +450,9 @@ def main() -> int:
     print(f"  {total_entries:,} total entries scanned in {time.time()-t0:.1f}s")
     print(f"  {film_shape_count:,} film-shape entries")
     print(f"  {len(clusters):,} clusters matched wanted set")
+
+    if conn_for_matches is not None:
+        conn_for_matches.close()
 
     # ---- Connect + find films in DB ----
     conn = psycopg2.connect(dsn)

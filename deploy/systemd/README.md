@@ -1,11 +1,12 @@
 # Systemd units (produkční VPS)
 
-Dvě nezávislé noční úlohy:
+Tři nezávislé noční úlohy:
 
 | Unit | Čas | Účel | Admin přehled |
 |------|-----|------|---------------|
-| `cr-auto-import.timer` | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
-| `cr-backup-db.timer`   | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
+| `cr-backup-db.timer`       | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
+| `cr-prehrajto-sync.timer`  | 04:00 UTC | prehraj.to sitemap → DB + mark-dead rotated IDs | (TODO) |
+| `cr-auto-import.timer`     | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
 
 ## Auto-import (issue #423)
 
@@ -69,6 +70,65 @@ Every run writes a row to `import_runs` visible at
 <https://ceskarepublika.wiki/admin/import/>.
 
 ---
+
+## Prehraj.to sitemap sync (issue #646, epic #642)
+
+Daily sync prehraj.to XML sitemap → `video_sources(prehrajto)`. Two-step
+service (sequential ExecStart=):
+
+1. `scripts/sync-prehrajto-sitemap.py --mode full --keep-days 2`
+   downloads all 487 sub-sitemaps in parallel, prunes >2-day-old files
+   (~15 GB per snapshot, ~30 GB peak during overlap).
+2. `scripts/import-prehrajto-uploads.py --from-films-table` matches
+   sitemap clusters against the `films` table, upserts uploads, and
+   runs the end-of-run mark-dead pass that flips rotated upload_ids
+   to `is_alive=FALSE`.
+
+Runs at 04:00 UTC — between the 03:00 backup and the 05:00 SK Torrent
+import, so a bad sync can be rolled back from that morning's snapshot.
+
+### Install / enable on VPS
+
+```bash
+# Copy unit files
+scp -P "$VPS_PORT" deploy/systemd/cr-prehrajto-sync.{service,timer} \
+    "root@$VPS_HOST:/etc/systemd/system/"
+
+# Copy scripts (rsync the whole scripts/ dir is the simplest)
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "mkdir -p /opt/cr/scripts /var/cache/cr/prehrajto-sitemap"
+scp -P "$VPS_PORT" scripts/sync-prehrajto-sitemap.py \
+                   scripts/import-prehrajto-uploads.py \
+                   scripts/video_sources_helper.py \
+    "root@$VPS_HOST:/opt/cr/scripts/"
+
+# Enable + smoke-run
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "systemctl daemon-reload && \
+     systemctl enable --now cr-prehrajto-sync.timer && \
+     systemctl start cr-prehrajto-sync.service && \
+     journalctl -u cr-prehrajto-sync.service -f"
+```
+
+### Smoke checks after first run
+
+```bash
+# Disk usage (~15 GB, prune keeps it bounded)
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "du -sh /var/cache/cr/prehrajto-sitemap"
+
+# DB freshness
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "docker exec cr-db-1 psql -U cr -d cr -c \\
+  \"SELECT COUNT(*) FILTER (WHERE is_alive) AS alive,
+           COUNT(*) FILTER (WHERE NOT is_alive) AS dead,
+           MAX(updated_at) AS most_recent
+     FROM video_sources WHERE provider_id=2;\""
+
+# Spasitel (test case from #642)
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "docker exec cr-db-1 psql -U cr -d cr -c \\
+  \"SELECT external_id, is_alive FROM video_sources
+     WHERE film_id=(SELECT id FROM films WHERE slug='spasitel') AND provider_id=2
+     ORDER BY is_alive DESC, external_id;\""
+```
 
 ## Auto-zálohy DB (task #97)
 
