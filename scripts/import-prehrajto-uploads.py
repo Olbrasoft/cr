@@ -509,6 +509,16 @@ def main() -> int:
         # `--limit` partial run only touches the films it actually visited.
         seen_per_film: dict[int, set[str]] = defaultdict(set)
 
+        # `uq_fpu_upload_id` enforces upload_id uniqueness across the whole
+        # table — the migration's design intent (20260508_048) is that "same
+        # upload_id must not belong to two different films; on cluster-key
+        # collision the importer must pick one film_id and reject the
+        # other." We use `upload_id` as the conflict target (matches that
+        # global unique index) and a WHERE clause so the UPDATE only fires
+        # when the existing row's film_id matches — otherwise the row is
+        # silently skipped, preserving the original parent. This handles
+        # both same-film re-imports (the normal idempotent path) and
+        # cross-film cluster collisions (defensive: keep first parent).
         upsert_sql = """
         INSERT INTO film_prehrajto_uploads
             (film_id, upload_id, url, title, duration_sec, view_count,
@@ -516,7 +526,7 @@ def main() -> int:
         VALUES
             (%(film_id)s, %(upload_id)s, %(url)s, %(title)s, %(duration_sec)s, %(view_count)s,
              %(lang_class)s, %(resolution_hint)s, NOW(), TRUE)
-        ON CONFLICT (film_id, upload_id) DO UPDATE SET
+        ON CONFLICT (upload_id) DO UPDATE SET
             url             = EXCLUDED.url,
             title           = EXCLUDED.title,
             duration_sec    = EXCLUDED.duration_sec,
@@ -525,6 +535,7 @@ def main() -> int:
             resolution_hint = EXCLUDED.resolution_hint,
             last_seen_at    = EXCLUDED.last_seen_at,
             is_alive        = TRUE
+        WHERE film_prehrajto_uploads.film_id = EXCLUDED.film_id
         """
 
         # films update — rollup flags are assigned directly from the current
@@ -620,14 +631,55 @@ def main() -> int:
             # `films.prehrajto_primary_upload_id`; passing it here makes the
             # same upload's video_sources row `is_primary=TRUE`.
             providers = get_provider_ids(cur)
+            # The partial unique index `uq_vs_primary_film` only permits ONE
+            # is_primary=TRUE row per (provider, film). When prehraj.to
+            # rotates upload_ids, the new primary's external_id differs from
+            # the prior winner that's still flagged primary in DB → INSERT
+            # would violate the index. Demote any prior primaries for this
+            # film first; the loop below then sets is_primary on exactly the
+            # new winner (or none, if the chosen primary's row is updated
+            # via ON CONFLICT and demoted siblings already exist).
+            cur.execute(
+                """
+                UPDATE video_sources
+                   SET is_primary = FALSE,
+                       updated_at = now()
+                 WHERE provider_id = %s
+                   AND film_id     = %s
+                   AND is_primary  = TRUE
+                   AND external_id <> %s
+                """,
+                (providers["prehrajto"], film_id, primary_upload_id),
+            )
+            # Each dual_write runs inside a SAVEPOINT so a single ambiguous
+            # upload (e.g. partial-unique-index conflict from a stale prior
+            # row, or a cross-film cluster overlap the helper can't repair
+            # in-place) doesn't abort the whole run. The savepoint pattern
+            # is the standard way to recover from constraint violations
+            # mid-transaction in psycopg2 (the alternative — a fresh
+            # transaction per row — would lose the importer's batched
+            # legacy-table upserts).
             for upload in per_upload:
-                dual_write_prehrajto_upload(
-                    cur,
-                    providers=providers,
-                    film_id=film_id,
-                    upload_row=upload,
-                    primary_upload_id=primary_upload_id,
-                )
+                cur.execute("SAVEPOINT dw")
+                try:
+                    dual_write_prehrajto_upload(
+                        cur,
+                        providers=providers,
+                        film_id=film_id,
+                        upload_row=upload,
+                        primary_upload_id=primary_upload_id,
+                    )
+                    cur.execute("RELEASE SAVEPOINT dw")
+                except psycopg2.errors.UniqueViolation as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT dw")
+                    cur.execute("RELEASE SAVEPOINT dw")
+                    print(
+                        f"  WARN dual_write skipped: film_id={film_id} "
+                        f"upload_id={upload.get('upload_id')} "
+                        f"is_primary={upload['upload_id'] == primary_upload_id} "
+                        f"({e.diag.constraint_name})",
+                        flush=True,
+                    )
 
             if commit_every and i % commit_every == 0:
                 flush()
