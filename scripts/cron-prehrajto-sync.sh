@@ -25,6 +25,7 @@
 #   ETAG_DIR      — default /var/cache/cr/prehrajto-sitemap/etags/
 #   LOG_FILE      — default /var/log/cr/prehrajto-sync.log
 #   IMPORTER      — default $(dirname "$0")/import-prehrajto-uploads.py
+#   LOCK_FILE     — default $SITEMAP_DIR/sync.lock (flock to prevent overlap)
 
 set -euo pipefail
 
@@ -40,6 +41,7 @@ ETAG_DIR="${ETAG_DIR:-$SITEMAP_DIR/etags}"
 ETAG_FILE="$ETAG_DIR/etags.json"
 LOG_FILE="${LOG_FILE:-/var/log/cr/prehrajto-sync.log}"
 IMPORTER="${IMPORTER:-$SCRIPT_DIR/import-prehrajto-uploads.py}"
+LOCK_FILE="${LOCK_FILE:-$SITEMAP_DIR/sync.lock}"
 INDEX_URL="https://prehraj.to/sitemap/index.xml"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
@@ -57,6 +59,17 @@ fi
 
 mkdir -p "$SITEMAP_DIR" "$ETAG_DIR" "$(dirname "$LOG_FILE")"
 
+# --- Lock to prevent overlapping runs (#650 Copilot review) ----------------
+# A `full` run can take 15-30 min; if a 4-hourly `incremental` fires while
+# a `full` is still running (or two `full`s overlap on a slow VPS), they'd
+# race on the same sitemap dir + etags.json + DB transaction. flock makes
+# the second invocation exit immediately so cron just skips it.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [$MODE] another sync already running, skipping" >> "$LOG_FILE"
+    exit 0
+fi
+
 log() {
     printf "[%s] [%s] %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODE" "$*" | tee -a "$LOG_FILE"
 }
@@ -71,20 +84,30 @@ if ! curl -fsS -o "$INDEX_FILE.tmp" -m 60 "$INDEX_URL"; then
     exit 1
 fi
 mv "$INDEX_FILE.tmp" "$INDEX_FILE"
-SUB_URLS=$(grep -oE "https://prehrajto\.cz/sitemap/video-sitemap-[0-9]+\.xml" "$INDEX_FILE" | sort -u)
+# Host-agnostic <loc> extraction (#650 Copilot review): the index.xml hostname
+# (`prehraj.to`) and the sub-sitemap hostnames inside it (`prehrajto.cz` today)
+# don't have to match, and prehraj.to has switched between them before.
+# Match any host serving the canonical /sitemap/video-sitemap-N.xml path.
+SUB_URLS=$(grep -oE "https?://[^<]*/sitemap/video-sitemap-[0-9]+\.xml" "$INDEX_FILE" | sort -u || true)
+if [[ -z "$SUB_URLS" ]]; then
+    log "ERROR: index.xml contained zero sub-sitemap URLs (host change?)"
+    exit 1
+fi
 SUB_COUNT=$(echo "$SUB_URLS" | wc -l)
 log "$SUB_COUNT sub-sitemaps listed in index"
 
 # --- 2. Decide which sub-sitemaps to download -------------------------------
 # Incremental: HEAD each sub-sitemap, compare ETag against $ETAG_FILE, fetch
 # only changes. Full: download everything unconditionally so a stale or
-# corrupt cache can't poison the importer's view.
+# corrupt cache can't poison the importer's view, but ALSO HEAD them to
+# capture fresh ETags so the next incremental has a correct baseline (#650
+# Copilot review).
 declare -A OLD_ETAGS=()
 if [[ -f "$ETAG_FILE" ]]; then
     while IFS=$'\t' read -r url etag; do
         OLD_ETAGS[$url]=$etag
     done < <(python3 -c "
-import json,sys
+import json
 try:
     d = json.load(open('$ETAG_FILE'))
     for k,v in d.items(): print(f'{k}\\t{v}')
@@ -98,18 +121,21 @@ TO_DOWNLOAD=()
 declare -A NEW_ETAGS=()
 while IFS= read -r url; do
     [[ -z "$url" ]] && continue
+    # HEAD in both modes: incremental uses it to skip unchanged shards;
+    # full uses it just to capture ETags for the baseline.
+    etag=$(curl -sIfm 30 "$url" | grep -i "^etag:" | tr -d '\r' | awk '{print $2}' || true)
+    if [[ -n "$etag" ]]; then
+        NEW_ETAGS[$url]=$etag
+    fi
     if [[ "$MODE" == "full" ]]; then
         TO_DOWNLOAD+=("$url")
         continue
     fi
-    # Incremental: HEAD to get ETag, skip if unchanged
-    etag=$(curl -sIfm 30 "$url" | grep -i "^etag:" | tr -d '\r' | awk '{print $2}' || true)
     if [[ -z "$etag" ]]; then
         # No ETag — treat as changed to be safe
         TO_DOWNLOAD+=("$url")
         continue
     fi
-    NEW_ETAGS[$url]=$etag
     if [[ "${OLD_ETAGS[$url]:-}" != "$etag" ]]; then
         TO_DOWNLOAD+=("$url")
         ((CHANGED_COUNT++))
@@ -120,20 +146,36 @@ log "$( [[ "$MODE" == full ]] && echo "${#TO_DOWNLOAD[@]} files to download (ful
                               || echo "$CHANGED_COUNT of $SUB_COUNT changed (incremental)" )"
 
 # --- 3. Download (parallel curls, capped at 8 concurrent) -------------------
+# Track failures explicitly: in `full` mode we ABORT before running the
+# importer, because a partial snapshot + mark-dead would incorrectly flip
+# uploads to dead just because their sub-sitemap was missing from this
+# run (#650 Copilot review). In `incremental` mode partial download is
+# fine — `--no-mark-dead` is set, so missing sub-sitemaps just defer
+# their freshening to the next run.
+FAILED_DIR=$(mktemp -d)
+# shellcheck disable=SC2064
+trap "rm -rf '$FAILED_DIR'" EXIT
 if (( ${#TO_DOWNLOAD[@]} > 0 )); then
     printf "%s\n" "${TO_DOWNLOAD[@]}" | xargs -P 8 -I {} sh -c '
         url="$1"
         out_dir="$2"
+        failed_dir="$3"
         fname=$(basename "$url")
         if curl -fsSL -o "$out_dir/$fname.tmp" -m 300 "$url"; then
             mv "$out_dir/$fname.tmp" "$out_dir/$fname"
         else
             echo "WARN: failed $url" >&2
             rm -f "$out_dir/$fname.tmp"
+            : > "$failed_dir/$fname"
         fi
-    ' _ {} "$SITEMAP_DIR"
+    ' _ {} "$SITEMAP_DIR" "$FAILED_DIR"
 fi
-log "downloads complete"
+FAILED_COUNT=$(find "$FAILED_DIR" -type f | wc -l)
+log "downloads complete (${FAILED_COUNT} failures)"
+if (( FAILED_COUNT > 0 )) && [[ "$MODE" == "full" ]]; then
+    log "ABORT: full mode requires complete sitemap snapshot before mark-dead"
+    exit 1
+fi
 
 # Persist ETags for next incremental run (full runs also update so subsequent
 # incrementals start from a correct baseline).
