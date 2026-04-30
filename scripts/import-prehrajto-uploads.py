@@ -162,8 +162,17 @@ def parse_sitemap(path: Path, chunk_size: int = 1 << 20) -> Iterator[dict]:
                 dur_m = _DUR_RE.search(block)
                 views_m = _VIEWS_RE.search(block)
                 live_m = _LIVE_RE.search(block)
+                # Canonicalize to prehraj.to. The XML sitemap publishes URLs
+                # under the `prehrajto.cz` mirror, but the CZ proxy
+                # (chobotnice) validates against the canonical `prehraj.to`
+                # host and rejects `prehrajto.cz` with
+                # "Missing or invalid prehraj.to URL". Storing the canonical
+                # form keeps the resolver's `action=video` calls working
+                # without an extra rewrite step on every request.
+                raw_loc = _unescape(loc_m.group(1))
+                canonical = raw_loc.replace("https://prehrajto.cz/", "https://prehraj.to/", 1)
                 yield {
-                    "url": _unescape(loc_m.group(1)),
+                    "url": canonical,
                     "title": _unescape(title_m.group(1)),
                     "duration": int(dur_m.group(1)) if dur_m else 0,
                     "views": int(views_m.group(1)) if views_m else 0,
@@ -599,6 +608,29 @@ def main() -> int:
                 films_with_no_upload_id += 1
                 continue
 
+            # Cross-film cluster collisions: the legacy table enforces a
+            # global unique on `upload_id`, so an upload already linked to
+            # ANOTHER film won't be accepted here. Filter those out before
+            # computing the primary pointer + rollup flags so
+            # `films.prehrajto_primary_upload_id` doesn't end up pointing
+            # at an upload this film doesn't actually own (Copilot review
+            # on #653: rollup flags would otherwise reflect uploads owned
+            # by a different film).
+            ids_in_batch = [u["upload_id"] for u in per_upload]
+            cur.execute(
+                "SELECT upload_id, film_id FROM film_prehrajto_uploads "
+                "WHERE upload_id = ANY(%s)",
+                (ids_in_batch,),
+            )
+            owners = {row[0]: row[1] for row in cur.fetchall()}
+            per_upload = [
+                u for u in per_upload
+                if owners.get(u["upload_id"], film_id) == film_id
+            ]
+            if not per_upload:
+                films_with_no_upload_id += 1
+                continue
+
             per_upload.sort(key=lambda d: -d["_rank"])
             primary_upload_id = per_upload[0]["upload_id"]
             has_cz_audio = any(u["lang_class"] in ("CZ_DUB", "CZ_NATIVE") for u in per_upload)
@@ -673,11 +705,13 @@ def main() -> int:
                 except psycopg2.errors.UniqueViolation as e:
                     cur.execute("ROLLBACK TO SAVEPOINT dw")
                     cur.execute("RELEASE SAVEPOINT dw")
+                    constraint = getattr(getattr(e, "diag", None),
+                                         "constraint_name", None)
                     print(
                         f"  WARN dual_write skipped: film_id={film_id} "
                         f"upload_id={upload.get('upload_id')} "
                         f"is_primary={upload['upload_id'] == primary_upload_id} "
-                        f"({e.diag.constraint_name})",
+                        f"({constraint})",
                         flush=True,
                     )
 
