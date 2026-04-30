@@ -1,6 +1,6 @@
 mod cz_proxy;
 mod prehrajto;
-mod prehrajto_hints;
+pub(crate) mod prehrajto_hints;
 mod prehrajto_resolver;
 mod sledujteto;
 mod stream;

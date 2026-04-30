@@ -602,13 +602,23 @@ function playSktorrent(index, btn) {
     document.getElementById('source-status').textContent = '';
 }
 
-function playPrehrajtoUrl(url, onDone) {
+function playPrehrajtoUrl(idOrHint, onDone) {
+    /* #634: synthetic source rows fed by `prehrajto_search_hints` carry a
+       `by-hint:{owner_kind}:{owner_id}:{variant}` playback id. Detect the
+       prefix and route to the new resolver endpoint, which 302-redirects
+       to a fresh tokenized CDN URL — no `/api/movies/video-url` round-trip
+       needed because the resolver already does the search-then-video
+       dance and caches the result. */
+    if (typeof idOrHint === 'string' && idOrHint.indexOf('by-hint:') === 0) {
+        return playPrehrajtoByHint(idOrHint.substring('by-hint:'.length), onDone);
+    }
+
     var player = document.getElementById('film-player');
     var status = document.getElementById('source-status');
     if (!player) { if (onDone) onDone(); return; }
 
     if (status) status.textContent = 'Načítání Přehraj.to...';
-    return fetch('/api/movies/video-url?url=' + encodeURIComponent(url))
+    return fetch('/api/movies/video-url?url=' + encodeURIComponent(idOrHint))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (onDone) onDone();
@@ -627,6 +637,39 @@ function playPrehrajtoUrl(url, onDone) {
             if (onDone) onDone();
             if (status) status.textContent = 'Zdroj nedostupný';
         });
+}
+
+/* #634: play a prehraj.to source described by a search hint reference of
+   the form `{owner_kind}:{owner_id}:{variant}` (the JS dispatch already
+   stripped the leading `by-hint:` prefix). The resolver endpoint 302s
+   straight to a fresh CDN URL, so we point `<video src>` at it and let
+   the browser follow the redirect. The browser handles the redirect
+   transparently, including byte-range requests for seek. */
+function playPrehrajtoByHint(hintRef, onDone) {
+    var player = document.getElementById('film-player');
+    var status = document.getElementById('source-status');
+    if (!player) { if (onDone) onDone(); return; }
+
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    if (status) status.textContent = 'Načítání Přehraj.to...';
+    var url = '/api/movies/stream/by-hint/' + hintRef.split(':').map(encodeURIComponent).join('/');
+    /* The resolver returns 302 → premiumcdn.net signed mp4. We can't
+       distinguish HLS from MP4 here without the underlying URL, but
+       prehraj.to never serves HLS, so direct MP4 is correct. */
+    player.src = url;
+    /* Removing previous textTracks — variant buttons don't carry subtitle
+       URLs (the resolver doesn't expose them yet). Keeps the controls
+       row consistent across switches between sources. */
+    while (player.firstChild) {
+        if (player.firstChild.tagName === 'TRACK') {
+            player.removeChild(player.firstChild);
+        } else {
+            break;
+        }
+    }
+    player.play().catch(function(){});
+    if (status) status.textContent = 'Přehraj.to';
+    if (onDone) onDone();
 }
 
 function playSledujtetoFile(fileId, onDone) {

@@ -229,6 +229,81 @@ pub(crate) struct VideoSourceBadgeRow {
     pub(crate) subtitle_langs: Vec<String>,
 }
 
+/// Build a synthetic [`VideoSourceBadgeRow`] for a prehraj.to search hint
+/// (#634). The row carries `playback_id = "by-hint:film:{id}:{variant}"`
+/// so the JS playback dispatch sees the `by-hint:` prefix and routes to
+/// the new resolver endpoint instead of the legacy upload-id flow.
+///
+/// Variant labelling:
+/// - `CZ_DUB`  → audio_lang `cs`, lang_class `CZ_DUB`, title "CZ dabing"
+/// - `CZ_SUB`  → no audio_lang; subtitle_langs `["cs"]`, title "CZ titulky"
+/// - `RES_*`   → resolution_hint set, title is the resolution
+///
+/// Whichever variant is rendered first becomes the auto-play target by
+/// the existing "click first .source-row on load" effect — so the caller
+/// passes `is_first = true` for whichever hint should auto-play.
+pub(crate) fn synthetic_prehrajto_row(
+    film_id: i32,
+    hint: &super::movies_api::prehrajto_hints::PrehrajtoSearchHint,
+    is_first: bool,
+) -> VideoSourceBadgeRow {
+    let (title, audio_lang, subtitle_langs, resolution_hint, lang_class) =
+        match hint.variant.as_str() {
+            "CZ_DUB" => (
+                "Přehraj.to — CZ dabing".to_string(),
+                Some("cs".to_string()),
+                Vec::new(),
+                None,
+                "CZ_DUB".to_string(),
+            ),
+            "CZ_SUB" => (
+                "Přehraj.to — CZ titulky".to_string(),
+                None,
+                vec!["cs".to_string()],
+                None,
+                "CZ_SUB".to_string(),
+            ),
+            "RES_2160P" => (
+                "Přehraj.to — 2160p".to_string(),
+                None,
+                Vec::new(),
+                Some("2160p".to_string()),
+                "UNKNOWN".to_string(),
+            ),
+            "RES_1080P" => (
+                "Přehraj.to — 1080p".to_string(),
+                None,
+                Vec::new(),
+                Some("1080p".to_string()),
+                "UNKNOWN".to_string(),
+            ),
+            other => (
+                format!("Přehraj.to — {other}"),
+                None,
+                Vec::new(),
+                None,
+                "UNKNOWN".to_string(),
+            ),
+        };
+    VideoSourceBadgeRow {
+        provider_slug: "prehrajto".to_string(),
+        provider_host: "prehraj.to".to_string(),
+        provider_display_name: "Prehraj.to".to_string(),
+        sort_priority: 20,
+        external_id: format!("hint-{}", hint.id),
+        playback_id: format!("by-hint:film:{}:{}", film_id, hint.variant),
+        title: Some(title),
+        lang_class,
+        audio_lang,
+        audio_confidence: None,
+        audio_detected_by: None,
+        resolution_hint,
+        cdn: None,
+        is_primary: is_first,
+        subtitle_langs,
+    }
+}
+
 impl VideoSourceBadgeRow {
     /// Human-readable label for the audio language (or "—" when unknown).
     pub(crate) fn audio_label(&self) -> String {
@@ -931,7 +1006,12 @@ pub async fn films_detail(
     // film, with an array-aggregated list of subtitle languages. Ordered by
     // `video_providers.sort_priority` so the tab order matches the badge
     // order — the frontend scroll-anchor logic relies on that.
-    let video_sources_for_badges = sqlx::query_as::<_, VideoSourceBadgeRow>(
+    //
+    // Prehraj.to rows are deliberately excluded here (#634) — their cached
+    // `external_id`s rotate every few days/weeks and most are stale 404s.
+    // We render variant buttons fed by `prehrajto_search_hints` (#632)
+    // instead, which the resolver (#633) re-discovers live at play time.
+    let mut video_sources_for_badges = sqlx::query_as::<_, VideoSourceBadgeRow>(
         "SELECT p.slug AS provider_slug, \
                     p.host AS provider_host, \
                     p.display_name AS provider_display_name, \
@@ -954,7 +1034,7 @@ pub async fn films_detail(
                     ) AS subtitle_langs \
              FROM video_sources vs \
              JOIN video_providers p ON p.id = vs.provider_id \
-             WHERE vs.film_id = $1 AND vs.is_alive \
+             WHERE vs.film_id = $1 AND vs.is_alive AND p.slug <> 'prehrajto' \
              ORDER BY p.sort_priority, vs.is_primary DESC, vs.updated_at DESC",
     )
     .bind(film.id)
@@ -965,6 +1045,25 @@ pub async fn films_detail(
                 "video_sources badge query failed; detail page renders without badges");
         Vec::new()
     });
+
+    // Synthetic prehraj.to rows from `prehrajto_search_hints` (#634).
+    // Each row's `playback_id` carries `by-hint:film:{id}:{variant}` so the
+    // JS in `playPrehrajtoUrl` can route to the new resolver endpoint
+    // (`/api/movies/stream/by-hint/...`) instead of the legacy upload-id
+    // flow. The synthetic rows are inserted at provider sort_priority=20
+    // (matches `video_providers.prehrajto.sort_priority` from migration 058)
+    // so they land between sktorrent (10) and sledujteto (30) in the list.
+    if let Ok(hints) = super::movies_api::prehrajto_hints::find_for_film(&state.db, film.id).await {
+        for (i, h) in hints.iter().enumerate() {
+            video_sources_for_badges.push(synthetic_prehrajto_row(film.id, h, i == 0));
+        }
+        // Re-sort so synthetic prehrajto rows sit at sort_priority=20.
+        video_sources_for_badges.sort_by(|a, b| {
+            a.sort_priority
+                .cmp(&b.sort_priority)
+                .then_with(|| b.is_primary.cmp(&a.is_primary))
+        });
+    }
 
     let has_source_sktorrent = video_sources_for_badges
         .iter()
