@@ -202,9 +202,12 @@ def cluster_key(row: dict) -> tuple:
 
 # Separators that uploaders use between localized and original (or
 # alternate) titles: " - Project Hail Mary", "/Project Hail Mary",
-# " | Posledná šanca", " : Spasitel". Splitting on these gives us cleaner
-# candidate cores.
-_TITLE_SEPARATOR_RE = re.compile(r"\s+[-|/:]\s+")
+# " | Posledná šanca", " : Spasitel", "Title:Original", "Title -Original".
+# Allow whitespace on only one side for "-", "/", "|" and optional
+# spacing around ":" — but require at least one whitespace adjacency for
+# the dash/slash/pipe forms so we don't split inside hyphenated words
+# like "Spider-Man" or path-shaped tokens.
+_TITLE_SEPARATOR_RE = re.compile(r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*)")
 
 
 def cluster_key_candidates(row: dict) -> list[tuple]:
@@ -219,7 +222,8 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
 
     We try (in order):
       1. The full normalized core (current behavior).
-      2. Each segment after splitting on `" - " | "/" | ":"` separators.
+      2. Each segment after splitting on `" - " | " / " | " : " | " | "`
+         separators (and one-sided variants — see `_TITLE_SEPARATOR_RE`).
       3. The first whitespace-separated word — catches descriptive
          uploads like "Spasitel sci-fi-drama USA Ryan Gosling".
 
