@@ -1,0 +1,15 @@
+[Unit]
+Description=CR — prehraj.to sitemap sync (daily after DB backup)
+Documentation=https://github.com/Olbrasoft/cr/issues/646
+
+[Timer]
+# 04:00 UTC — runs after cr-backup-db.service (03:04 UTC) so a sync that
+# unexpectedly corrupts state can be rolled back from the same morning's
+# backup. Persistent + RandomizedDelay match the cr-auto-import pattern.
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=cr-prehrajto-sync.service
+
+[Install]
+WantedBy=timers.target

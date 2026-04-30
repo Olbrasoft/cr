@@ -1,0 +1,32 @@
+[Unit]
+Description=CR — prehraj.to sitemap sync (sitemap → DB, with mark-dead)
+Documentation=https://github.com/Olbrasoft/cr/issues/646
+# Wait for docker so cr-db-1 is listening on 127.0.0.1:5432, and chain
+# after the morning DB backup so a corrupt sync can be rolled back from
+# the same morning's snapshot.
+After=docker.service network-online.target cr-backup-db.service
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+# Step 1: refresh sitemap (full mode — downloads ~15 GB, prunes >2-day
+# files). Step 2: import into DB with mark-dead. Each is idempotent.
+# DATABASE_URL in /opt/cr/.env points at `db:5432` (container hostname);
+# host-side scripts need 127.0.0.1, mirroring the cr-auto-import service.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} /usr/bin/python3 -u /opt/cr/scripts/sync-prehrajto-sitemap.py --sitemap-dir /var/cache/cr/prehrajto-sitemap --mode full --keep-days 2'
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} /usr/bin/python3 -u /opt/cr/scripts/import-prehrajto-uploads.py --sitemap-dir /var/cache/cr/prehrajto-sitemap --from-films-table'
+StandardOutput=append:/var/log/cr-prehrajto-sync.log
+StandardError=append:/var/log/cr-prehrajto-sync.log
+# Single retry on transient failures (e.g. prehraj.to 502). Subsequent
+# attempts would re-run the full pipeline; better skip and surface the
+# failure tomorrow.
+Restart=on-failure
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target
