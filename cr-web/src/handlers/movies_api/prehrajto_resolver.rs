@@ -30,13 +30,12 @@
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use regex::Regex;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::state::{AppState, CachedStreamUrl};
 
@@ -46,11 +45,12 @@ use super::prehrajto_hints::{
 };
 use super::thumbnail::is_allowed_stream_url;
 
-/// Outbound concurrency cap against prehraj.to (via the CZ proxy). The
-/// underlying static lives in [`super::prehrajto::PREHRAJTO_SCRAPE_SEMAPHORE`]
-/// and is shared by both resolvers so the global budget stays at 3 in-flight
-/// `action=video` scrapes — not 3 + 3 (#634 Copilot review).
-use super::prehrajto::PREHRAJTO_SCRAPE_SEMAPHORE;
+/// Outbound concurrency cap against prehraj.to (via the CZ proxy). Mirrors
+/// the limit used by the legacy resolver in [`super::prehrajto`] — three
+/// concurrent scrapes keep peak load modest while still letting unrelated
+/// hints progress in parallel. Shared across both flows so a burst here
+/// doesn't blow past the legacy budget either.
+static PREHRAJTO_VIDEO_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 
 // Per-`upload_id` async locks for in-flight `action=video` deduplication
 // reuse the shared [`AppState::prehrajto_in_flight`] map (defined in
@@ -316,88 +316,12 @@ pub async fn prehrajto_resolve_by_hint(
     }
 }
 
-/// `GET /api/movies/stream/by-upload/{upload_id}`
-///
-/// Resolve an arbitrary prehraj.to `upload_id` to a tokenized CDN URL,
-/// without requiring the upload to be in our local `video_sources` table.
-/// Used by the live-search row UI (#634 follow-up) where each row backs a
-/// search candidate the user can click directly.
-///
-/// 307 → CDN URL on success; 404 if the upload is dead; 502 on transient
-/// proxy errors. Reuses the shared semaphore + per-upload lock + stream
-/// cache so concurrent requests for the same upload only do one scrape.
-pub async fn prehrajto_resolve_by_upload(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-) -> Response {
-    if !is_valid_upload_id_shape(&upload_id) {
-        return (StatusCode::BAD_REQUEST, "Invalid upload_id").into_response();
-    }
-    let candidate = SearchCandidate {
-        url: format!("https://prehraj.to/x/{upload_id}"),
-        title: String::new(),
-        upload_id: upload_id.clone(),
-    };
-    match resolve_candidate(&state, &candidate).await {
-        Ok(Some(url)) => Redirect::temporary(&url).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Soubor nenalezen").into_response(),
-        Err(reason) => {
-            tracing::warn!(
-                upload_id,
-                reason,
-                "prehrajto resolver by-upload: transient error"
-            );
-            (StatusCode::BAD_GATEWAY, "Zdroj zatím nedostupný").into_response()
-        }
-    }
-}
-
-/// `GET /api/movies/prehrajto/cache-status/{upload_id}` — non-resolving
-/// peek into [`AppState::prehrajto_stream_cache`]. Returns JSON
-/// `{"cached": bool, "fresh": bool}` so the frontend can render a 🟢
-/// "ověřeno" chip without forcing an `action=video` round-trip just to
-/// label the row. The films handler does the same check during SSR;
-/// this endpoint is for after-click cache-flip UI updates.
-pub async fn prehrajto_cache_status(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-) -> Json<serde_json::Value> {
-    let cached = state.prehrajto_stream_cache.get(&upload_id).await;
-    let fresh = cached
-        .as_ref()
-        .map(|e| e.expires_at > Instant::now())
-        .unwrap_or(false);
-    Json(serde_json::json!({ "cached": cached.is_some(), "fresh": fresh }))
-}
-
-/// 13- or 16-hex shape, lower-case ASCII only. Same predicate as the
-/// legacy `prehrajto::is_valid_upload_id`.
-fn is_valid_upload_id_shape(s: &str) -> bool {
-    matches!(s.len(), 13 | 16)
-        && s.chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-}
-
-/// Quick non-mutating cache check used by `films.rs` SSR to decide whether
-/// to mark a row 🟢 (cached fresh CDN URL) vs 🟡 (not yet resolved).
-pub(crate) async fn cached_url_is_fresh(state: &AppState, upload_id: &str) -> bool {
-    state
-        .prehrajto_stream_cache
-        .get(&upload_id.to_string())
-        .await
-        .map(|e| e.expires_at > Instant::now())
-        .unwrap_or(false)
-}
-
 // --- Search step ---------------------------------------------------------
 
 /// Hit the proxy with `action=search`, parse to [`SearchCandidate`], cache.
 /// Caching is keyed by the raw search query so every variant of the same
 /// hint shares one round-trip per 30-min window.
-///
-/// `pub(crate)` so the films handler (#634 follow-up) can reuse it during
-/// SSR to render one row per live candidate.
-pub(crate) async fn search_candidates(
+async fn search_candidates(
     state: &AppState,
     query: &str,
 ) -> Result<Vec<SearchCandidate>, &'static str> {
@@ -467,7 +391,7 @@ async fn per_upload_lock(state: &AppState, upload_id: &str) -> Arc<Mutex<()>> {
 /// Resolve a single candidate to a tokenized CDN URL. Reuses
 /// [`AppState::prehrajto_stream_cache`] (so the legacy upload-id endpoint
 /// and this resolver share cached URLs), the shared
-/// [`PREHRAJTO_SCRAPE_SEMAPHORE`] (bounded outbound concurrency), and the
+/// [`PREHRAJTO_VIDEO_SEMAPHORE`] (bounded outbound concurrency), and the
 /// shared [`AppState::prehrajto_in_flight`] map (per-upload stampede
 /// prevention).
 ///
@@ -501,7 +425,7 @@ async fn resolve_candidate(
     // Outbound concurrency cap — bounds total parallel `action=video`
     // calls across the whole process (legacy resolver shares the same
     // semantics with its own semaphore, sized identically).
-    let _permit = PREHRAJTO_SCRAPE_SEMAPHORE
+    let _permit = PREHRAJTO_VIDEO_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "semaphore-closed")?;

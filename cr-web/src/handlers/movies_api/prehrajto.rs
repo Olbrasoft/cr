@@ -35,11 +35,7 @@ use super::thumbnail::is_allowed_stream_url;
 /// concurrent scrapes keep peak load modest while still letting unrelated
 /// upload_ids progress in parallel. Shared with future prehraj.to code
 /// paths — defined here to live close to its first user.
-/// Shared with [`super::prehrajto_resolver`] — both code paths hit the
-/// same upstream (CZ proxy → prehraj.to), so the cap must be process-wide
-/// rather than per-handler. `PREHRAJTO_VIDEO_SEMAPHORE` re-exported here
-/// under the historical name to keep the legacy call sites unchanged.
-pub(super) static PREHRAJTO_SCRAPE_SEMAPHORE: Semaphore = Semaphore::const_new(3);
+static PREHRAJTO_SCRAPE_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 
 /// Maximum number of resolve attempts per request — the initial upload
 /// plus up to N-1 dead-upload fallbacks. Three is a pragmatic ceiling:
