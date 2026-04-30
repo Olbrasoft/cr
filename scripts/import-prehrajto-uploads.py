@@ -200,6 +200,56 @@ def cluster_key(row: dict) -> tuple:
     return (core, year, dur_bucket)
 
 
+# Separators that uploaders use between localized and original (or
+# alternate) titles: " - Project Hail Mary", "/Project Hail Mary",
+# " | Posledná šanca", " : Spasitel". Splitting on these gives us cleaner
+# candidate cores.
+_TITLE_SEPARATOR_RE = re.compile(r"\s+[-|/:]\s+")
+
+
+def cluster_key_candidates(row: dict) -> list[tuple]:
+    """Return all plausible cluster keys for a sitemap row (#654).
+
+    Uploaders combine the localized title with the original / alternate
+    title in many forms — "Spasitel - Project Hail Mary HD CZ DABING",
+    "Spasitel sci-fi-drama USA Ryan Gosling cztit", etc. The strict
+    full-string normalization in `cluster_key` only matches when the
+    upload's title is essentially just the film's title; for everything
+    else we need to surface the underlying canonical name(s).
+
+    We try (in order):
+      1. The full normalized core (current behavior).
+      2. Each segment after splitting on `" - " | "/" | ":"` separators.
+      3. The first whitespace-separated word — catches descriptive
+         uploads like "Spasitel sci-fi-drama USA Ryan Gosling".
+
+    Year + duration anchor unchanged across all candidates, so false
+    positives stay bounded by those fields. The films-table side now
+    emits both `title` and `original_title` cores, so candidate-core
+    matching is effective in both directions.
+    """
+    title = row["title"]
+    year = extract_year(title)
+    dur_bucket = row["duration"] // (3 * 60)
+    stripped = strip_title(title)
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        c = normalize(s)
+        if c and c not in seen:
+            seen.add(c)
+            candidates.append(c)
+
+    _add(stripped)
+    for seg in _TITLE_SEPARATOR_RE.split(stripped):
+        _add(seg)
+    first_word = stripped.split(" ", 1)[0] if stripped else ""
+    if first_word:
+        _add(first_word)
+    return [(c, year, dur_bucket) for c in candidates]
+
+
 def extract_upload_id(url: str) -> str | None:
     m = _UPLOAD_ID_RE.search(url or "")
     return m.group(1) if m else None
@@ -337,36 +387,51 @@ def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
     id, and each collision is logged so the operator can investigate.
     """
     cur.execute(
-        "SELECT id, title, year, imdb_id, runtime_min FROM films "
+        "SELECT id, title, original_title, year, imdb_id, runtime_min "
+        "FROM films "
         "WHERE imdb_id IS NOT NULL AND year IS NOT NULL "
         "ORDER BY id"
     )
     matches: dict[tuple, dict] = {}
     collisions: list[tuple[tuple, int, int]] = []
     skipped_no_runtime = 0
-    for film_id, title, year, imdb_id, runtime_min in cur.fetchall():
+    for film_id, title, original_title, year, imdb_id, runtime_min in cur.fetchall():
         if not title or not imdb_id:
             continue
         if runtime_min is None or runtime_min <= 0:
             skipped_no_runtime += 1
             continue
-        core = normalize(strip_title(title))
-        if not core:
+        # Emit both the localized and the original title as candidate
+        # cores (#654). Spasitel (cs) ↔ Project Hail Mary (en) is the
+        # canonical example — sitemap titles like
+        # "Spasitel - Project Hail Mary HD CZ DABING" expand on the
+        # parser side into ['spasitel', 'projecthailmary'] candidates,
+        # so both forms produce a match key here.
+        cores: set[str] = set()
+        c1 = normalize(strip_title(title))
+        if c1:
+            cores.add(c1)
+        if original_title and original_title.strip():
+            c2 = normalize(strip_title(original_title))
+            if c2:
+                cores.add(c2)
+        if not cores:
             continue
         anchor = int(runtime_min) // 3
-        for dur_bucket in range(anchor - bucket_window, anchor + bucket_window + 1):
-            if dur_bucket < 0:
-                continue
-            key = (core, year, dur_bucket)
-            existing = matches.get(key)
-            if existing is None:
-                matches[key] = {
-                    "imdb_id": imdb_id,
-                    "_film_id": film_id,
-                    "_source": "films_table",
-                }
-            elif existing["_film_id"] != film_id:
-                collisions.append((key, existing["_film_id"], film_id))
+        for core in cores:
+            for dur_bucket in range(anchor - bucket_window, anchor + bucket_window + 1):
+                if dur_bucket < 0:
+                    continue
+                key = (core, year, dur_bucket)
+                existing = matches.get(key)
+                if existing is None:
+                    matches[key] = {
+                        "imdb_id": imdb_id,
+                        "_film_id": film_id,
+                        "_source": "films_table",
+                    }
+                elif existing["_film_id"] != film_id:
+                    collisions.append((key, existing["_film_id"], film_id))
     if skipped_no_runtime:
         print(f"  load_matches_from_films: skipped {skipped_no_runtime} films "
               f"without runtime_min (would match too widely)", flush=True)
@@ -453,9 +518,15 @@ def main() -> int:
             if not film_shape(r):
                 continue
             film_shape_count += 1
-            k = cluster_key(r)
-            if k in wanted_keys:
-                clusters[k].append(r)
+            # Try multiple candidate cluster cores (#654). First match
+            # wins, so the order in cluster_key_candidates() matters:
+            # full-title core first (preserves prior behaviour for
+            # exact matches), then split segments, then first-word.
+            # Using a single bucket per row keeps de-duplication trivial.
+            for k in cluster_key_candidates(r):
+                if k in wanted_keys:
+                    clusters[k].append(r)
+                    break
     print(f"  {total_entries:,} total entries scanned in {time.time()-t0:.1f}s")
     print(f"  {film_shape_count:,} film-shape entries")
     print(f"  {len(clusters):,} clusters matched wanted set")
