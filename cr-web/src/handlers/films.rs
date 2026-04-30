@@ -251,11 +251,16 @@ pub(crate) fn synthetic_prehrajto_row(
     is_direct_cached: bool,
     is_first: bool,
 ) -> VideoSourceBadgeRow {
-    // Crude language / resolution heuristics from the filename. Same
-    // intent as `prehrajto_resolver::variant_matches`, but applied here
-    // for the badge chips so the user sees what we know without having
-    // to click. False positives are visual noise; false negatives just
-    // omit a chip.
+    // Crude language heuristics from the filename. False positives are
+    // visual noise; false negatives just omit a chip.
+    //
+    // We intentionally do NOT extract a resolution chip from filenames
+    // ("2160p", "1080p", etc.) on prehrajto rows: prehraj.to free
+    // accounts transcode every upload to ~720p regardless of label
+    // (verified via ffprobe — filename "2160p WEBrip h265" actually
+    // returns 1334x720 h264 1.6 Mbps). Showing the filename's claimed
+    // resolution would mislead users into expecting quality they won't
+    // get.
     let title = candidate.title.clone();
     let lower = title.to_lowercase();
     let has_cz_dub = lower.contains("cz dab")
@@ -271,16 +276,6 @@ pub(crate) fn synthetic_prehrajto_row(
         || lower.contains("cz titulky")
         || lower.contains("czsub")
         || lower.contains("cz sub");
-    let resolution_hint =
-        if lower.contains("2160p") || lower.contains("4k") || lower.contains("uhd") {
-            Some("2160p".to_string())
-        } else if lower.contains("1080p") {
-            Some("1080p".to_string())
-        } else if lower.contains("720p") {
-            Some("720p".to_string())
-        } else {
-            None
-        };
     let (audio_lang, subtitle_langs, lang_class) = if has_cz_dub {
         (Some("cs".to_string()), Vec::new(), "CZ_DUB".to_string())
     } else if has_cz_sub {
@@ -301,7 +296,8 @@ pub(crate) fn synthetic_prehrajto_row(
         audio_lang,
         audio_confidence: None,
         audio_detected_by: None,
-        resolution_hint,
+        // Resolution intentionally omitted — see comment above.
+        resolution_hint: None,
         // Reuse `cdn` to carry the direct/unverified flag. The template
         // reads it via `cdn_label()` which we already render as a chip
         // on existing sktorrent rows. "direct" → 🟢 chip; "?" → 🟡 chip.
