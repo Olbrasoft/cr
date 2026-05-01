@@ -78,6 +78,11 @@ TMDB_RATE_DELAY_S = 0.05  # TMDB allows 40 req/10s, we stay well under
 # in) and the English title — TMDB can fail on a Czech-only search if
 # its database carries a different Czech translation than the one we
 # extracted, but the English/original title almost always hits.
+# NOTE: This is a string template using `.replace()` for substitution
+# rather than `str.format(...)`. Reason: sample_title may itself contain
+# `{` or `}` (e.g. "Some.Movie.{2018}.x264") which would crash
+# `str.format()` with `KeyError`/`ValueError` mid-run. Substitution via
+# `.replace()` is brace-safe at the cost of explicit placeholder names.
 PROMPT_TEMPLATE = """\
 Below is an uploaded filename or label from a Czech video site. Identify
 which film it most likely is — give the canonical title in the original
@@ -99,11 +104,11 @@ For 2 fields:
   `title`, else the same string.
 
 Return JSON only (no prose, no markdown). Schema:
-{{"is_film": <bool>, "title": "<string or null>", "title_en": "<string or null>", "year": <int or null>, "confidence": "<high|medium|low>"}}
+{"is_film": <bool>, "title": "<string or null>", "title_en": "<string or null>", "year": <int or null>, "confidence": "<high|medium|low>"}
 
-Upload string: "{title}"
-Hint year (may be wrong): {year}
-Hint duration in minutes (may be wrong): {duration}
+Upload string: "__TITLE__"
+Hint year (may be wrong): __YEAR__
+Hint duration in minutes (may be wrong): __DURATION__
 """
 
 
@@ -111,33 +116,74 @@ _JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    """Gemma sometimes prefixes JSON with stray prose / markdown fences.
-    Pull the first balanced object out with a regex fallback."""
+    """Gemma sometimes prefixes JSON with stray prose / markdown fences,
+    or echoes the prompt schema example before emitting the real
+    response. Try a direct parse first, then iterate over EVERY
+    `{...}` match and return the first one that parses as a dict —
+    this handles the schema-echo case where the literal example
+    `{...}` appears before the actual answer."""
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, (dict, list)):
+            return parsed
     except ValueError:
-        m = _JSON_RE.search(text)
-        if not m:
-            return None
+        pass
+    for m in _JSON_RE.finditer(text):
         try:
-            return json.loads(m.group(0))
+            parsed = json.loads(m.group(0))
         except ValueError:
-            return None
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
-def call_gemini(api_key: str, sample_title: str, year: Optional[int],
-                duration: Optional[int]) -> Optional[dict]:
-    """Return the parsed JSON response from the LLM, or None on failure.
+def _coerce_gemini(raw: Optional[dict]) -> Optional[dict]:
+    """Normalize LLM-returned types — Gemma occasionally returns
+    string-y values where bools/ints are expected ("false" instead of
+    false, "1999" instead of 1999). Coerce conservatively so the
+    downstream `is_film==True` truthiness and `int(year) - other_year`
+    arithmetic work correctly."""
+    if not isinstance(raw, dict):
+        return None
+    is_film_raw = raw.get("is_film", True)
+    if isinstance(is_film_raw, str):
+        is_film = is_film_raw.strip().lower() in ("true", "yes", "1")
+    else:
+        is_film = bool(is_film_raw)
+    year_raw = raw.get("year")
+    year_int: Optional[int] = None
+    if isinstance(year_raw, int):
+        year_int = year_raw
+    elif isinstance(year_raw, str):
+        try:
+            year_int = int(year_raw.strip())
+        except ValueError:
+            year_int = None
+    title = raw.get("title")
+    title_en = raw.get("title_en")
+    return {
+        "is_film": is_film,
+        "title": title if isinstance(title, str) and title.strip() else None,
+        "title_en": title_en if isinstance(title_en, str) and title_en.strip() else None,
+        "year": year_int,
+        "confidence": raw.get("confidence"),
+    }
+
+
+def call_gemini(session: requests.Session, api_key: str, sample_title: str,
+                year: Optional[int], duration: Optional[int]) -> Optional[dict]:
+    """Return the parsed (and type-coerced) JSON response from the LLM,
+    or None on failure.
 
     Retries once on transient 429 / 5xx with a 5-second backoff. Gemma
     sometimes wraps JSON in prose despite the request, so we also fall
     back to regex extraction.
     """
-    prompt = PROMPT_TEMPLATE.format(
-        title=sample_title.replace('"', "'")[:300],
-        year=year if year is not None else "unknown",
-        duration=duration if duration is not None else "unknown",
-    )
+    prompt = (PROMPT_TEMPLATE
+              .replace("__TITLE__", sample_title.replace('"', "'")[:300])
+              .replace("__YEAR__", str(year) if year is not None else "unknown")
+              .replace("__DURATION__", str(duration) if duration is not None else "unknown"))
     # Gemma models don't support `responseMimeType: application/json`,
     # so we just rely on the prompt to enforce JSON-only output and
     # use `_extract_json` (regex fallback) on the response.
@@ -149,7 +195,7 @@ def call_gemini(api_key: str, sample_title: str, year: Optional[int],
     }
     for attempt in (1, 2):
         try:
-            r = requests.post(
+            r = session.post(
                 f"{GEMINI_URL}?key={api_key}",
                 json=body, timeout=60,
             )
@@ -177,13 +223,13 @@ def call_gemini(api_key: str, sample_title: str, year: Optional[int],
         except (KeyError, IndexError, ValueError) as e:
             print(f"  GEMINI_RESP: {type(e).__name__}", file=sys.stderr)
             return None
-        return _extract_json(text)
+        return _coerce_gemini(_extract_json(text))
     return None
 
 
-def _tmdb_get(url: str) -> Optional[list]:
+def _tmdb_get(session: requests.Session, url: str) -> Optional[list]:
     try:
-        r = requests.get(url, timeout=15)
+        r = session.get(url, timeout=15)
     except requests.RequestException as e:
         print(f"  TMDB_ERR: {type(e).__name__}", file=sys.stderr)
         return None
@@ -197,7 +243,8 @@ def _tmdb_get(url: str) -> Optional[list]:
         return None
 
 
-def search_tmdb(api_key: str, title: str, year: Optional[int]) -> Optional[dict]:
+def search_tmdb(session: requests.Session, api_key: str, title: str,
+                year: Optional[int]) -> Optional[dict]:
     """Return the top TMDB result matching `title` + `year`, or None.
 
     Tries primary_release_year first (strict), then year (broader),
@@ -214,7 +261,7 @@ def search_tmdb(api_key: str, title: str, year: Optional[int]) -> Optional[dict]
     queries.append(base)
 
     for url in queries:
-        results = _tmdb_get(url)
+        results = _tmdb_get(session, url)
         if not results:
             continue
         if year is not None:
@@ -227,10 +274,11 @@ def search_tmdb(api_key: str, title: str, year: Optional[int]) -> Optional[dict]
     return None
 
 
-def fetch_tmdb_runtime(api_key: str, tmdb_id: int) -> Optional[int]:
+def fetch_tmdb_runtime(session: requests.Session, api_key: str,
+                       tmdb_id: int) -> Optional[int]:
     """Return runtime in minutes (or None)."""
     try:
-        r = requests.get(
+        r = session.get(
             f"{TMDB_URL}/movie/{tmdb_id}",
             params={"api_key": api_key, "language": "en-US"},
             timeout=15,
@@ -250,6 +298,11 @@ def main() -> int:
                     help="Process at most N clusters (default 30, smoke-test mode)")
     ap.add_argument("--min-uploads", type=int, default=1,
                     help="Only process clusters with ≥ this many uploads (default 1)")
+    ap.add_argument("--retry-after-days", type=int, default=7,
+                    help="Skip clusters whose `last_attempt_at` is newer than "
+                         "this many days (default 7). Avoids burning Gemma "
+                         "quota on the same backlog every day. Pass 0 to "
+                         "force re-processing of everything.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Show resolutions but DO NOT update the registry")
     args = ap.parse_args()
@@ -262,21 +315,45 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
+    # One connection-pooled `Session` reused across all Gemini + TMDB
+    # calls. With 30+ requests per cluster, fresh sessions per call
+    # add measurable TLS-handshake overhead and break HTTP keep-alive.
+    http = requests.Session()
+    http.headers.update({"User-Agent": "ceskarepublika.wiki llm-resolver"})
+
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
     cur = conn.cursor()
 
+    # Skip-window: don't reprocess clusters we (the LLM resolver, NOT
+    # the regex importer) already touched within the last
+    # `--retry-after-days` days. The importer also writes `last_attempt_at`
+    # on every nightly sync — that's a different signal and must NOT
+    # block this resolver. We tell the two sources apart by the
+    # `last_failure_reason` prefix: the importer writes "no films match
+    # for cluster key (importer skip)"; this resolver writes codes
+    # starting with `llm_`, `tmdb_`, or the literal `awaiting_film_import`
+    # for NEW_TMDB candidates.
+    resolver_reasons = (
+        "llm_gemini_failed", "llm_bad_shape", "llm_not_film", "llm_no_title",
+        "tmdb_no_hit", "tmdb_runtime_mismatch", "awaiting_film_import",
+    )
     cur.execute("""
         SELECT id, sample_title, year, duration_bucket * 3 AS dur_min, upload_count
           FROM prehrajto_unmatched_clusters
          WHERE resolved_at IS NULL
            AND sample_title IS NOT NULL
            AND upload_count >= %s
+           AND NOT (last_failure_reason = ANY(%s)
+                    AND last_attempt_at IS NOT NULL
+                    AND last_attempt_at >= NOW() - %s::interval)
          ORDER BY upload_count DESC, id ASC
          LIMIT %s
-    """, (args.min_uploads, args.limit))
+    """, (args.min_uploads, list(resolver_reasons),
+          f"{args.retry_after_days} days", args.limit))
     rows = cur.fetchall()
-    print(f"Loaded {len(rows)} unresolved clusters", flush=True)
+    print(f"Loaded {len(rows)} unresolved clusters "
+          f"(retry-after-days={args.retry_after_days})", flush=True)
 
     counters = {k: 0 for k in
                 ("RESOLVED", "NEW_TMDB", "NOT_FILM", "NO_TMDB", "SKIP")}
@@ -286,16 +363,61 @@ def main() -> int:
     cur.execute("SELECT tmdb_id, id FROM films WHERE tmdb_id IS NOT NULL")
     tmdb_to_film = {tmdb: fid for tmdb, fid in cur.fetchall()}
     print(f"DB maps {len(tmdb_to_film)} TMDB IDs → film_ids", flush=True)
+    # Commit the read transaction so the per-row update transactions
+    # below don't pile up locks behind a long-held SELECT snapshot.
+    conn.commit()
+
+    def _record_attempt(rid: int, *, reason: Optional[str],
+                        film_id: Optional[int] = None,
+                        tmdb_id: Optional[int] = None) -> None:
+        """Persist one resolver attempt. Always bumps `attempt_count` +
+        `last_attempt_at`; sets `resolved_at` + `resolved_film_id`
+        when the cluster maps to an existing film, or
+        `resolved_tmdb_id` (without `resolved_at`) when only the TMDB
+        ID is known. Each attempt commits in its own transaction so
+        long runs don't hold registry locks for the dashboard."""
+        if args.dry_run:
+            return
+        if film_id is not None:
+            cur.execute("""
+                UPDATE prehrajto_unmatched_clusters
+                   SET resolved_at         = NOW(),
+                       resolved_film_id    = %s,
+                       resolved_tmdb_id    = %s,
+                       last_attempt_at     = NOW(),
+                       attempt_count       = attempt_count + 1,
+                       last_failure_reason = NULL
+                 WHERE id = %s AND resolved_at IS NULL
+            """, (film_id, tmdb_id, rid))
+        elif tmdb_id is not None:
+            cur.execute("""
+                UPDATE prehrajto_unmatched_clusters
+                   SET resolved_tmdb_id    = %s,
+                       last_attempt_at     = NOW(),
+                       attempt_count       = attempt_count + 1,
+                       last_failure_reason = %s
+                 WHERE id = %s AND resolved_at IS NULL
+            """, (tmdb_id, reason, rid))
+        else:
+            cur.execute("""
+                UPDATE prehrajto_unmatched_clusters
+                   SET last_attempt_at     = NOW(),
+                       attempt_count       = attempt_count + 1,
+                       last_failure_reason = %s
+                 WHERE id = %s AND resolved_at IS NULL
+            """, (reason, rid))
+        conn.commit()
 
     for i, (rid, sample_title, year, dur_min, upload_count) in enumerate(rows, 1):
         if not sample_title:
             counters["SKIP"] += 1
             continue
 
-        gem = call_gemini(gemini_key, sample_title, year, dur_min)
+        gem = call_gemini(http, gemini_key, sample_title, year, dur_min)
         time.sleep(GEMINI_RATE_DELAY_S)
         if gem is None:
             counters["SKIP"] += 1
+            _record_attempt(rid, reason="llm_gemini_failed")
             print(f"[{i:>3}] SKIP    (gemini failed)  {sample_title[:80]}",
                   flush=True)
             continue
@@ -305,12 +427,14 @@ def main() -> int:
             gem = next((x for x in gem if isinstance(x, dict)), None)
         if not isinstance(gem, dict):
             counters["SKIP"] += 1
+            _record_attempt(rid, reason="llm_bad_shape")
             print(f"[{i:>3}] SKIP    (gemini bad shape)  {sample_title[:80]}",
                   flush=True)
             continue
 
         if not gem.get("is_film", True):
             counters["NOT_FILM"] += 1
+            _record_attempt(rid, reason="llm_not_film")
             print(f"[{i:>3}] NOT_FILM   {sample_title[:80]}", flush=True)
             continue
 
@@ -319,6 +443,7 @@ def main() -> int:
         year_extr = gem.get("year") or year
         if not title_extr and not title_en:
             counters["NO_TMDB"] += 1
+            _record_attempt(rid, reason="llm_no_title")
             print(f"[{i:>3}] NO_TMDB    {sample_title[:80]} (gemini gave no title)",
                   flush=True)
             continue
@@ -329,12 +454,13 @@ def main() -> int:
         for candidate in (title_extr, title_en):
             if not candidate:
                 continue
-            tmdb_hit = search_tmdb(tmdb_key, candidate, year_extr)
+            tmdb_hit = search_tmdb(http, tmdb_key, candidate, year_extr)
             time.sleep(TMDB_RATE_DELAY_S)
             if tmdb_hit:
                 break
         if not tmdb_hit:
             counters["NO_TMDB"] += 1
+            _record_attempt(rid, reason="tmdb_no_hit")
             print(f"[{i:>3}] NO_TMDB    {sample_title[:80]} → "
                   f"gemini='{title_extr}' year={year_extr}",
                   flush=True)
@@ -352,10 +478,11 @@ def main() -> int:
         # Sole title agreement isn't enough; the duration anchor
         # must also coincide.
         if dur_min and dur_min > 0:
-            tmdb_runtime = fetch_tmdb_runtime(tmdb_key, tmdb_id)
+            tmdb_runtime = fetch_tmdb_runtime(http, tmdb_key, tmdb_id)
             time.sleep(TMDB_RATE_DELAY_S)
             if tmdb_runtime and abs(tmdb_runtime - dur_min) > 30:
                 counters["NO_TMDB"] += 1
+                _record_attempt(rid, reason="tmdb_runtime_mismatch")
                 print(f"[{i:>3}] NO_TMDB    {sample_title[:80]} → "
                       f"tmdb={tmdb_id} '{tmdb_title}' {tmdb_year} "
                       f"runtime={tmdb_runtime} ≠ cluster={dur_min} (rejected)",
@@ -365,17 +492,15 @@ def main() -> int:
         existing_film_id = tmdb_to_film.get(tmdb_id)
         if existing_film_id:
             counters["RESOLVED"] += 1
+            _record_attempt(rid, reason=None,
+                            film_id=existing_film_id, tmdb_id=tmdb_id)
             print(f"[{i:>3}] RESOLVED   {sample_title[:60]} → "
                   f"film_id={existing_film_id} tmdb={tmdb_id} '{tmdb_title}' {tmdb_year}",
                   flush=True)
-            if not args.dry_run:
-                cur.execute("""
-                    UPDATE prehrajto_unmatched_clusters
-                       SET resolved_at = NOW(), resolved_film_id = %s
-                     WHERE id = %s AND resolved_at IS NULL
-                """, (existing_film_id, rid))
         else:
             counters["NEW_TMDB"] += 1
+            _record_attempt(rid, reason="awaiting_film_import",
+                            tmdb_id=tmdb_id)
             new_tmdb_candidates.append({
                 "registry_id": rid,
                 "tmdb_id": tmdb_id,
@@ -388,12 +513,8 @@ def main() -> int:
                   f"tmdb={tmdb_id} '{tmdb_title}' {tmdb_year} (NOT in films)",
                   flush=True)
 
-    if not args.dry_run:
-        conn.commit()
-        print("COMMIT", flush=True)
-    else:
-        conn.rollback()
-        print("DRY-RUN: ROLLBACK", flush=True)
+    if args.dry_run:
+        print("DRY-RUN: no DB changes committed", flush=True)
 
     print()
     print("=== Summary ===")
