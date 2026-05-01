@@ -1,12 +1,13 @@
 # Systemd units (produkční VPS)
 
-Tři nezávislé noční úlohy:
+Čtyři nezávislé noční úlohy:
 
 | Unit | Čas | Účel | Admin přehled |
 |------|-----|------|---------------|
 | `cr-backup-db.timer`       | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
 | `cr-prehrajto-sync.timer`  | 04:00 UTC | prehraj.to sitemap → DB + mark-dead rotated IDs | (TODO) |
 | `cr-auto-import.timer`     | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
+| `cr-llm-resolver.timer`    | 06:30 UTC | LLM resolver: prehraj.to unmatched clusters → TMDB ID (Gemma + TMDB API) | `/admin/prehrajto/unmatched` |
 
 ## Auto-import (issue #423)
 
@@ -189,3 +190,60 @@ Každý běh zapíše row do `backup_runs` viditelnou na
 Mimo skript — nastavit jednou v R2 dashboardu na bucketu `cr-backups`:
 - Prefix: `auto/`
 - Expire objects: 30 days after upload
+
+---
+
+## LLM resolver (issue #652)
+
+Daily resolver for prehraj.to unmatched clusters using Gemma 3 27B
+(via Google AI Studio free tier) + TMDB API. Reads
+`prehrajto_unmatched_clusters` rows where the regex importer couldn't
+match the upload string against the `films` table — extracts a
+canonical title with Gemma, resolves to a stable TMDB ID, and writes
+either `resolved_film_id` (existing film) or `resolved_tmdb_id`
+(NEW_TMDB candidate, awaiting #652 auto-import).
+
+Capped at `--limit 200 --min-uploads 2` per run — drains the ~10k
+backlog over weeks, not days, so a buggy resolver iteration can't burn
+the whole backlog before false positives surface. Skip-window
+(`--retry-after-days 7`) avoids paying Gemma quota for the same
+already-attempted clusters daily.
+
+### Install / enable on VPS
+
+```bash
+# Copy unit files + script
+scp -P "$VPS_PORT" deploy/systemd/cr-llm-resolver.{service,timer} \
+    "root@$VPS_HOST:/etc/systemd/system/"
+scp -P "$VPS_PORT" scripts/resolve-unmatched-via-llm.py \
+    "root@$VPS_HOST:/opt/cr/scripts/"
+
+# Required env vars in /opt/cr/.env (already present from auto-import):
+#   DATABASE_URL=postgres://cr:...@db:5432/cr
+#   GEMINI_API_KEY=...
+#   TMDB_API_KEY=...
+
+# Enable + smoke-run
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "systemctl daemon-reload && \
+     systemctl enable --now cr-llm-resolver.timer && \
+     systemctl start cr-llm-resolver.service && \
+     tail -f /var/log/cr-llm-resolver.log"
+```
+
+### Logs
+
+```bash
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "tail -300 /var/log/cr-llm-resolver.log"
+```
+
+### Dashboard
+
+Resolution outcomes are written back to `prehrajto_unmatched_clusters`:
+- `resolved_film_id IS NOT NULL` — cluster mapped to existing film
+- `resolved_tmdb_id IS NOT NULL AND resolved_film_id IS NULL` —
+  candidate awaiting auto-import (separate pipeline #652)
+- `last_failure_reason` — `tmdb_no_hit`, `tmdb_runtime_mismatch`,
+  `tmdb_title_mismatch`, `llm_not_film`, `llm_no_title`, `llm_gemini_failed`
+
+Visible at <https://ceskarepublika.wiki/admin/prehrajto/unmatched>.
