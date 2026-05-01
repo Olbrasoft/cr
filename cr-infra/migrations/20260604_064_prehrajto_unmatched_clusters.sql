@@ -38,17 +38,27 @@ CREATE TABLE IF NOT EXISTS prehrajto_unmatched_clusters (
     -- One representative prehraj.to URL — clickable link in the admin
     -- table so the operator can verify the upload is real.
     sample_url            TEXT        NOT NULL,
-    -- Number of distinct sitemap entries (uploads) that fell into this
-    -- cluster across all runs. Sortable signal for the admin view.
+    -- Number of distinct upload_ids in the cluster *as observed by the
+    -- most recent importer run* — a per-run snapshot, NOT cumulative. We
+    -- replace the value on each UPSERT instead of summing because the
+    -- same uploads stay in sitemap day after day; summing would inflate
+    -- the count without adding signal. Sortable signal for the admin view.
     upload_count          INTEGER     NOT NULL DEFAULT 1,
     first_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- Last time we ATTEMPTED to resolve this cluster. Today the importer
-    -- doesn't call TMDB, so this equals `last_seen_at`. Once #652 lands,
-    -- the auto-import will set this independently from `last_seen_at`
-    -- (e.g. seen today but skipped TMDB because attempted < 7 days ago).
+    -- Last time we attempted to *resolve* this cluster — i.e. tried to
+    -- match it to something concrete. Today the importer doesn't call
+    -- TMDB, so this is set only on INSERT and stays put on subsequent
+    -- sightings. #652 (auto-import via TMDB) will UPDATE it whenever
+    -- it actually tries a lookup, so its 7-day skip-window arithmetic
+    -- works without being reset by every nightly sitemap parse.
     last_attempt_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     attempt_count         INTEGER     NOT NULL DEFAULT 1,
+    -- Set on INSERT to a generic "no match" string; #652 will overwrite
+    -- with TMDB-specific failure reasons when it tries lookups. The
+    -- importer never overwrites an existing value (COALESCE protects it),
+    -- so #652's diagnostic text isn't clobbered by a nightly sitemap
+    -- parse that didn't actually retry the lookup.
     last_failure_reason   TEXT,
     -- Set when a later run successfully matched this cluster — either
     -- because someone added the film manually, or because #652 resolved

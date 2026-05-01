@@ -61,6 +61,7 @@ struct AdminPrehrajtoUnmatchedTemplate {
     total_uploads: i64,
 }
 
+/// HTML table is capped — operator only ever needs the loudest entries.
 const QUERY_LIST_UNRESOLVED: &str = "SELECT id, cluster_key, year, duration_bucket, \
      sample_title, sample_url, upload_count, first_seen_at, last_seen_at, \
      attempt_count \
@@ -68,6 +69,16 @@ const QUERY_LIST_UNRESOLVED: &str = "SELECT id, cluster_key, year, duration_buck
      WHERE resolved_at IS NULL \
      ORDER BY upload_count DESC, last_seen_at DESC \
      LIMIT 500";
+
+/// CSV export streams every unresolved row — no LIMIT — because the
+/// whole point of CSV is offline analysis where the top-500 slice would
+/// hide long-tail entries the operator might want to grep through.
+const QUERY_FULL_UNRESOLVED: &str = "SELECT id, cluster_key, year, duration_bucket, \
+     sample_title, sample_url, upload_count, first_seen_at, last_seen_at, \
+     attempt_count \
+     FROM prehrajto_unmatched_clusters \
+     WHERE resolved_at IS NULL \
+     ORDER BY upload_count DESC, last_seen_at DESC";
 
 fn noindex(html: String) -> Response {
     let mut resp = Html(html).into_response();
@@ -78,7 +89,9 @@ fn noindex(html: String) -> Response {
     resp
 }
 
-/// GET /admin/prehrajto/unmatched — paginated table of unresolved clusters.
+/// GET /admin/prehrajto/unmatched — table of unresolved clusters, capped at
+/// the top 500 rows by `upload_count` / `last_seen_at`. No pagination
+/// controls — the long tail belongs in the CSV export, not in the UI.
 pub async fn admin_prehrajto_unmatched(State(state): State<AppState>) -> WebResult<Response> {
     let rows = sqlx::query_as::<_, UnmatchedRow>(QUERY_LIST_UNRESOLVED)
         .fetch_all(&state.db)
@@ -105,9 +118,9 @@ pub async fn admin_prehrajto_unmatched(State(state): State<AppState>) -> WebResu
     Ok(noindex(tmpl.render()?))
 }
 
-/// GET /admin/prehrajto/unmatched.csv — CSV export for offline review.
+/// GET /admin/prehrajto/unmatched.csv — CSV export of EVERY unresolved row.
 pub async fn admin_prehrajto_unmatched_csv(State(state): State<AppState>) -> WebResult<Response> {
-    let rows = sqlx::query_as::<_, UnmatchedRow>(QUERY_LIST_UNRESOLVED)
+    let rows = sqlx::query_as::<_, UnmatchedRow>(QUERY_FULL_UNRESOLVED)
         .fetch_all(&state.db)
         .await?;
 

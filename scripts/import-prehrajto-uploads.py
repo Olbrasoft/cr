@@ -575,11 +575,19 @@ def main() -> int:
         print(f"films baseline count: {films_count_before:,}")
 
         # ---- #657: persist unmatched-cluster registry ----
-        # UPSERT happens up front (separate from the films loop) so the
-        # observability data lands on disk even if a later step aborts.
-        # `upload_count` is replaced with this run's snapshot rather than
-        # accumulated — repeated sightings of the same upload_id should
-        # not inflate the count.
+        # UPSERT happens before the films loop so this observability data
+        # lands within the same transaction as the films work — keeping
+        # them coupled means a fatal error rolls both back together
+        # (including dry-run, which is the desired behavior). On
+        # subsequent sightings we refresh `last_seen_at` + the snapshot
+        # fields, but explicitly leave `last_attempt_at`,
+        # `attempt_count`, and `last_failure_reason` untouched: the
+        # current importer doesn't call TMDB / try to resolve, so a
+        # sitemap parse is NOT a resolution attempt and bumping those
+        # fields would defeat #652's planned 7-day skip-window arithmetic
+        # and overwrite TMDB-specific failure diagnostics it will set.
+        # `last_failure_reason` uses COALESCE so the initial generic
+        # reason persists only until #652 sets a more specific one.
         if unmatched_clusters:
             unmatched_upsert_sql = """
                 INSERT INTO prehrajto_unmatched_clusters
@@ -597,9 +605,9 @@ def main() -> int:
                     sample_url          = EXCLUDED.sample_url,
                     upload_count        = EXCLUDED.upload_count,
                     last_seen_at        = EXCLUDED.last_seen_at,
-                    last_attempt_at     = EXCLUDED.last_attempt_at,
-                    attempt_count       = prehrajto_unmatched_clusters.attempt_count + 1,
-                    last_failure_reason = EXCLUDED.last_failure_reason
+                    last_failure_reason = COALESCE(
+                        prehrajto_unmatched_clusters.last_failure_reason,
+                        EXCLUDED.last_failure_reason)
                 WHERE prehrajto_unmatched_clusters.resolved_at IS NULL
             """
             unmatched_rows = [
