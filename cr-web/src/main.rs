@@ -337,6 +337,18 @@ async fn main() -> Result<()> {
             "/admin/import/{run_id}",
             axum::routing::get(handlers::admin_import::admin_import_detail),
         )
+        .route(
+            "/admin/prehrajto/unmatched",
+            axum::routing::get(handlers::admin_prehrajto::admin_prehrajto_unmatched),
+        )
+        .route(
+            "/admin/prehrajto/unmatched/",
+            axum::routing::get(handlers::admin_prehrajto::admin_prehrajto_unmatched),
+        )
+        .route(
+            "/admin/prehrajto/unmatched.csv",
+            axum::routing::get(handlers::admin_prehrajto::admin_prehrajto_unmatched_csv),
+        )
         .route("/pamatky", axum::routing::get(handlers::landmarks_index))
         .route("/pamatky/", axum::routing::get(handlers::landmarks_index))
         .route("/audioknihy", axum::routing::get(handlers::audiobooks))

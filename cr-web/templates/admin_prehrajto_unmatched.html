@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Prehraj.to — nesparované clustery{% endblock %}
+{% block meta_description %}Filmy v prehraj.to sitemap, které importer neuměl spárovat s naší films tabulkou.{% endblock %}
+
+{% block og_title %}Prehraj.to — nesparované clustery{% endblock %}
+{% block og_description %}Filmy v prehraj.to sitemap, které importer neuměl spárovat.{% endblock %}
+
+{% block header_left %}
+<div class="logo-group">
+    <h1>Prehraj.to — nesparované clustery</h1>
+</div>
+{% endblock %}
+
+{% block content %}
+<main class="admin-prehrajto-page">
+    <nav class="breadcrumb">
+        <a href="/" title="Domů">Česká republika</a>
+        <span>›</span> <a href="/admin/" title="Admin">Admin</a>
+        <span>›</span> <span>Prehraj.to — nesparované</span>
+    </nav>
+
+    <p class="lead">
+        Filmy ze sitemap <code>prehraj.to</code>, které denní importer
+        neuměl spárovat s žádným řádkem v tabulce <code>films</code>.
+        Bývá to buď tím, že film u nás zatím nemáme (kandidát pro
+        <a href="https://github.com/Olbrasoft/cr/issues/652">#652</a>),
+        nebo tím, že matching heuristika je moc přísná
+        (<a href="https://github.com/Olbrasoft/cr/issues/657">#657</a> kontext).
+    </p>
+
+    <div class="stats">
+        <div class="stat">
+            <span class="stat-num">{{ total_rows }}</span>
+            <span class="stat-label">nesparovaných clusterů</span>
+        </div>
+        <div class="stat">
+            <span class="stat-num">{{ total_uploads }}</span>
+            <span class="stat-label">celkem uploadů na prehraj.to</span>
+        </div>
+        <div class="stat">
+            <a class="csv-link" href="/admin/prehrajto/unmatched.csv">⬇ CSV export</a>
+        </div>
+    </div>
+
+    {% if rows.is_empty() %}
+    <p class="empty-state">Žádné nesparované clustery. 🎉</p>
+    {% else %}
+    <p class="hint">
+        Zobrazeno top {{ rows.len() }} podle <strong>upload_count DESC</strong>
+        (kolik různých uploadů na prehraj.to do clusteru spadlo). Klikni na
+        sample URL, ověř, že jde o film, a buď přidej do <code>films</code>
+        ručně, nebo otevři issue na úpravu matching heuristiky.
+    </p>
+    <table class="unmatched-table">
+        <thead>
+            <tr>
+                <th class="num">#</th>
+                <th>Cluster key</th>
+                <th class="num">Rok</th>
+                <th class="num">Délka (min)</th>
+                <th class="num" title="Počet různých uploadů na prehraj.to s tímto klíčem">Uploady</th>
+                <th class="num" title="Kolikrát tento cluster prošel importerem">Pokusy</th>
+                <th>Sample title</th>
+                <th>Naposledy</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in rows %}
+            <tr>
+                <td class="num"><code>{{ r.id }}</code></td>
+                <td><code>{{ r.cluster_key }}</code></td>
+                <td class="num">{{ r.year_str() }}</td>
+                <td class="num">{% match r.duration_min() %}{% when Some with (m) %}≥ {{ m }}{% when None %}—{% endmatch %}</td>
+                <td class="num"><strong>{{ r.upload_count }}</strong></td>
+                <td class="num">{{ r.attempt_count }}</td>
+                <td><a href="{{ r.sample_url }}" target="_blank" rel="noopener noreferrer">{{ r.sample_title }}</a></td>
+                <td title="První viděno: {{ r.first_seen_at_str() }}">{{ r.last_seen_at_str() }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</main>
+
+<style>
+.admin-prehrajto-page { max-width: 1280px; margin: 0 auto; padding: 1rem; }
+.admin-prehrajto-page .lead { color: #555; margin: 1rem 0; }
+.admin-prehrajto-page .lead code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85em; }
+.admin-prehrajto-page .lead a { color: #11457E; text-decoration: none; }
+.admin-prehrajto-page .lead a:hover { text-decoration: underline; }
+.stats { display: flex; gap: 1.5rem; margin: 1.2rem 0; align-items: center; }
+.stat { display: flex; flex-direction: column; padding: 0.6rem 1rem; background: #f8fafc; border-radius: 6px; min-width: 140px; }
+.stat-num { font-size: 1.4rem; font-weight: 700; color: #11457E; }
+.stat-label { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+.csv-link { color: #11457E; text-decoration: none; font-weight: 600; padding: 0.6rem 1rem; background: #f8fafc; border-radius: 6px; }
+.csv-link:hover { background: #e2e8f0; }
+.hint { color: #666; font-size: 0.85rem; margin: 0.8rem 0; }
+.unmatched-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.unmatched-table th, .unmatched-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+.unmatched-table th.num, .unmatched-table td.num { text-align: right; }
+.unmatched-table th { background: #f8fafc; font-weight: 600; color: #555; position: sticky; top: 0; }
+.unmatched-table a { color: #11457E; text-decoration: none; }
+.unmatched-table a:hover { text-decoration: underline; }
+.unmatched-table code { font-size: 0.78rem; color: #555; }
+.empty-state { color: #888; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; }
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+</style>
+{% endblock %}
