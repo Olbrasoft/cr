@@ -116,11 +116,11 @@ def strip_title(title: str) -> str:
         t = re.sub(g, " ", t, flags=re.IGNORECASE)
     t = re.sub(
         r"\b(cz|sk|en|cesky|slovensky|titulky|tit|subs?|dub|dab|eng|"
-        r"hd|fhd|full\s*hd|1080p?|720p?|480p|360p|4k|2160p|uhd|hdr10?\+?|"
+        r"hd|fhd|full\s*hd|1080p?|720p?|480p|360p|4k|2160p|uhd|hdr10\+?|"
         r"webrip|web\.?dl|web|bluray|brrip|bdrip|dvdrip|hdtv|tvrip|hd\s*rip|"
         r"dvd\s*rip|hdcam|telesync|telecine|trailer|"
         r"x264|x265|h\.?264|h\.?265|hevc|xvid|divx|"
-        r"aac|ac3|dts(?:\.?hd)?|ddp?(?:5\.1|7\.1)?|truehd|atmos|5\.1(?:ch)?|7\.1(?:ch)?|"
+        r"aac|ac3|dts(?:\.?hd)?|ddp(?:5\.1|7\.1)?|truehd|atmos|5\.1(?:ch)?|7\.1(?:ch)?|"
         r"avi|mkv|mp4|m4v|3gp|"
         r"cely\s*film|cely|remastered|extended|uncut|unrated|directors?\s*cut|imax|"
         r"novinka|top\s*hit|hit|novinka|premiera|"
@@ -260,8 +260,15 @@ def _digit_variants(core: str) -> list[str]:
             out.append(core[:m.start()] + _ARABIC_TO_ROMAN[d])
         if d == 1 and len(core) > 1:
             out.append(core[:m.start()])
-    # Trailing roman numeral (greedy — try longest first)
-    for r in sorted(_ROMAN_TO_ARABIC.keys(), key=len, reverse=True):
+    # Trailing roman numeral (greedy — try longest first). Require
+    # ≥2-char roman to avoid false positives on ordinary words ending
+    # in `i`/`v`/`x` (Taxi, Bambi, Lex, Roxy, …) — single-char romans
+    # would normalize-collide every common terminal-vowel/consonant
+    # title with a fictional sequel-numbered variant. Films legitimately
+    # named "<Base> V" / "<Base> X" still match exactly because we keep
+    # the unmodified core in `out` regardless.
+    for r in sorted([k for k in _ROMAN_TO_ARABIC if len(k) >= 2],
+                    key=len, reverse=True):
         if core.endswith(r) and len(core) > len(r):
             out.append(core[:-len(r)] + str(_ROMAN_TO_ARABIC[r]))
             break
