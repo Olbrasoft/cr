@@ -35,7 +35,6 @@ import time
 
 try:
     import psycopg2
-    import psycopg2.extras
 except ImportError:
     print("ERROR: psycopg2 not installed. apt install python3-psycopg2", file=sys.stderr)
     sys.exit(2)
@@ -57,6 +56,12 @@ def fetch_runtime(session: requests.Session, tmdb_id: int, api_key: str) -> tupl
     `runtime` is `None` when TMDB has no value for the field; we treat
     `0` the same way (TMDB sometimes stores it as 0 instead of null for
     incomplete entries — neither is useful as a matching anchor).
+
+    Errors are returned as short strings that DO NOT echo the request
+    URL — `requests`' default repr includes the full URL with the
+    `api_key` query param, which would leak the secret into stdout/log
+    files. We deliberately surface only the exception class name (which
+    is what an operator needs to triage transient vs. permanent issues).
     """
     try:
         r = session.get(
@@ -65,7 +70,7 @@ def fetch_runtime(session: requests.Session, tmdb_id: int, api_key: str) -> tupl
             timeout=10,
         )
     except requests.RequestException as e:
-        return None, f"http error: {e}"
+        return None, f"http error: {type(e).__name__}"
     if r.status_code == 404:
         return None, "tmdb 404"
     if r.status_code != 200:
@@ -73,7 +78,7 @@ def fetch_runtime(session: requests.Session, tmdb_id: int, api_key: str) -> tupl
     try:
         data = r.json()
     except ValueError as e:
-        return None, f"json parse: {e}"
+        return None, f"json parse: {type(e).__name__}"
     runtime = data.get("runtime")
     if not runtime:  # None or 0 — same outcome (no usable value)
         return None, None
@@ -83,12 +88,16 @@ def fetch_runtime(session: requests.Session, tmdb_id: int, api_key: str) -> tupl
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true",
-                    help="Print what would be updated; ROLLBACK at the end.")
+                    help="Hit TMDB and tally results, but ROLLBACK at the end — no DB "
+                         "writes commit. Output is aggregate counters only (no per-row "
+                         "planned-update list — pass --limit N for a smoke check on a "
+                         "small sample if you need to inspect specific rows).")
     ap.add_argument("--limit", type=int, default=0,
                     help="Process at most N films (0 = all). Useful for smoke tests.")
     ap.add_argument("--sleep", type=float, default=0.3,
-                    help="Seconds between TMDB requests (default 0.3 → ~33/s, well under "
-                         "TMDB's 40-req/10s limit).")
+                    help="Seconds between TMDB requests (default 0.3 → ~3.3 req/s, "
+                         "comfortably under TMDB's 40-req/10s free-tier limit with "
+                         "headroom for retries).")
     ap.add_argument("--commit-every", type=int, default=200,
                     help="Commit after every N updates (default 200). Set 0 for one big "
                          "transaction (with --dry-run this is the always rollback case).")
@@ -141,7 +150,15 @@ def main() -> int:
             UPDATE films SET runtime_min = %s WHERE id = %s AND runtime_min IS NULL
         """
 
-        filled = 0
+        # `runtime_returned` = TMDB gave us an integer; `db_updated` = the
+        # UPDATE actually changed a row. They diverge when another process
+        # populated runtime_min between our SELECT and our UPDATE — the
+        # `WHERE runtime_min IS NULL` guard then drops our write
+        # (rowcount=0) but the value from TMDB was still valid. Tracking
+        # both lets the operator distinguish "TMDB gave value" from
+        # "row state actually changed" for incident analysis.
+        runtime_returned = 0
+        db_updated = 0
         tmdb_no_value = 0
         api_errors = 0
         t0 = time.time()
@@ -155,10 +172,12 @@ def main() -> int:
             elif runtime is None:
                 tmdb_no_value += 1
             else:
+                runtime_returned += 1
                 if not args.dry_run:
                     cur.execute(update_sql, (runtime, film_id))
-                filled += 1
-                if args.commit_every and not args.dry_run and filled % args.commit_every == 0:
+                    db_updated += cur.rowcount
+                if args.commit_every and not args.dry_run \
+                        and runtime_returned % args.commit_every == 0:
                     conn.commit()
 
             time.sleep(args.sleep)
@@ -168,7 +187,8 @@ def main() -> int:
                 rate = i / (now - t0) if now > t0 else 0.0
                 eta = (total - i) / rate if rate > 0 else 0
                 print(
-                    f"  [{i:>5}/{total}]  filled={filled}  tmdb_null={tmdb_no_value}  "
+                    f"  [{i:>5}/{total}]  runtime_returned={runtime_returned}  "
+                    f"db_updated={db_updated}  tmdb_null={tmdb_no_value}  "
                     f"errors={api_errors}  rate={rate:.1f}/s  eta={int(eta)}s",
                     flush=True,
                 )
@@ -182,11 +202,13 @@ def main() -> int:
             print("COMMIT")
 
         print(f"\nSummary:")
-        print(f"  films processed:           {len(work):,}")
-        print(f"  runtime_min updated:       {filled:,}")
-        print(f"  TMDB has no runtime value: {tmdb_no_value:,}")
-        print(f"  API errors:                {api_errors:,}")
-        print(f"  total elapsed:             {time.time()-t0:.0f}s")
+        print(f"  films processed:                {len(work):,}")
+        print(f"  TMDB returned a runtime value:  {runtime_returned:,}")
+        print(f"  DB rows actually updated:       {db_updated:,}"
+              + ("  (dry-run: 0 by design)" if args.dry_run else ""))
+        print(f"  TMDB has no runtime value:      {tmdb_no_value:,}")
+        print(f"  API errors:                     {api_errors:,}")
+        print(f"  total elapsed:                  {time.time()-t0:.0f}s")
 
         return 0 if api_errors == 0 else 1
     except Exception:
