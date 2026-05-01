@@ -332,6 +332,17 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
     first_word = stripped.split(" ", 1)[0] if stripped else ""
     if first_word:
         _add(first_word)
+    # Token tier — every word ≥`_TOKEN_MIN_LEN` chars in the stripped
+    # title becomes a candidate. Catches sitemap titles where only one
+    # word is the actual film name (e.g. "Keep Watching [CZ dabing,
+    # 2017, horor] Home invasion" — token `watching` matches film
+    # "Keep Watching"). The films-side index restricts the token tier
+    # to a tighter ±2-bucket duration window AND drops tokens that
+    # appear in more than one film per year, so the cluster side can
+    # emit liberally — the index does the discrimination.
+    for tok in re.split(r"[^A-Za-z0-9]+", stripped):
+        if len(tok) >= _TOKEN_MIN_LEN:
+            _add(tok)
     return [(c, year, dur_bucket) for c in candidates]
 
 
@@ -448,10 +459,57 @@ def load_matches(path: Path) -> dict[tuple, dict]:
     return matches_by_key
 
 
+_TOKEN_MIN_LEN = 6
+_TOKEN_MAX_FILMS_PER_YEAR = 1
+
+
+def _emit_cores(s: str) -> tuple[set[str], set[str], set[str]]:
+    """Decompose `s` into three tiers of normalized cores:
+
+      - **full**: the entire string normalized as one token
+        (e.g. "twilightsaganovymesic" from "Twilight sága: Nový měsíc").
+      - **segments**: each separator-split segment of length ≥4 chars
+        (e.g. "twilightsaga", "novymesic" from the same input).
+      - **tokens**: each whitespace-or-punctuation-bounded word of
+        length ≥`_TOKEN_MIN_LEN` chars (e.g. "twilight", "novymesic"
+        from the same input — `saga` is 4 chars so dropped).
+
+    The token tier is what catches uploads where the sitemap title is
+    a long descriptive line of which only one word is actually the
+    film's name (`"Keep Watching [CZ dabing, 2017, horor] Home invasion"`
+    — token `watching` matches film "Keep Watching"). To control the
+    false-positive rate that comes with single-word matching, the
+    caller filters tokens by per-year uniqueness — see
+    `load_matches_from_films`'s collision-count pass.
+
+    Returns three disjoint sets: tokens that already appear as a full
+    or segment core are dropped from the token set so each core is
+    classified into exactly one tier (and indexed with that tier's
+    bucket-window appetite for risk).
+    """
+    full_set: set[str] = set()
+    seg_set: set[str] = set()
+    tok_set: set[str] = set()
+    stripped = strip_title(s) if s else ""
+    full = normalize(stripped)
+    if full:
+        full_set.add(full)
+    for sg in _TITLE_SEPARATOR_RE.split(stripped):
+        sc = normalize(sg)
+        if sc and len(sc) >= 4 and sc != full:
+            seg_set.add(sc)
+    for tok in re.split(r"[^A-Za-z0-9]+", stripped):
+        nc = normalize(tok)
+        if nc and len(nc) >= _TOKEN_MIN_LEN and nc != full and nc not in seg_set:
+            tok_set.add(nc)
+    return full_set, seg_set, tok_set
+
+
 def load_matches_from_films(
     cur,
     bucket_window_full: int = 5,
     bucket_window_segment: int = 3,
+    bucket_window_token: int = 2,
 ) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
@@ -496,63 +554,77 @@ def load_matches_from_films(
         "WHERE imdb_id IS NOT NULL AND year IS NOT NULL "
         "ORDER BY id"
     )
+    rows = cur.fetchall()
+
+    # First pass — build the per-(token, year) film-id census so we
+    # can apply the token-tier collision filter in pass 2. Generic
+    # Czech adjectives like "posledni"/"velka"/"modra" appear in
+    # many films per year; matching on them alone produces false
+    # positives (e.g. "Insidious 4 - Poslední klíč" cluster's
+    # `posledni` token would otherwise pair with any year-2017 film
+    # whose title contains "Poslední"). The filter keeps only tokens
+    # unique to a single film for that release year.
+    token_year_films: dict[tuple[str, int], set[int]] = {}
+    for film_id, title, original_title, year, imdb_id, runtime_min in rows:
+        if not title or not imdb_id or runtime_min is None or runtime_min <= 0:
+            continue
+        full_a, seg_a, tok_a = _emit_cores(title)
+        if original_title and original_title.strip():
+            f2, s2, t2 = _emit_cores(original_title)
+            full_a |= f2; seg_a |= s2; tok_a |= t2
+        full_v = {v for c in full_a for v in _digit_variants(c)}
+        seg_v  = {v for c in seg_a  for v in _digit_variants(c)}
+        tok_v  = {v for c in tok_a  for v in _digit_variants(c)}
+        tok_v -= full_v; tok_v -= seg_v
+        for tok in tok_v:
+            token_year_films.setdefault((tok, year), set()).add(film_id)
+
     matches: dict[tuple, dict] = {}
     collisions: list[tuple[tuple, int, int]] = []
     skipped_no_runtime = 0
-    for film_id, title, original_title, year, imdb_id, runtime_min in cur.fetchall():
+    for film_id, title, original_title, year, imdb_id, runtime_min in rows:
         if not title or not imdb_id:
             continue
         if runtime_min is None or runtime_min <= 0:
             skipped_no_runtime += 1
             continue
         # Emit both the localized and the original title as candidate
-        # cores (#654). Spasitel (cs) ↔ Project Hail Mary (en) is the
-        # canonical example — sitemap titles like
-        # "Spasitel - Project Hail Mary HD CZ DABING" expand on the
-        # parser side into ['spasitel', 'projecthailmary'] candidates,
-        # so both forms produce a match key here.
-        full_cores: set[str] = set()
-        seg_cores: set[str] = set()
-
-        def _emit(s: str) -> None:
-            """Decompose `s` into one full-title core plus its
-            segment cores (split on `_TITLE_SEPARATOR_RE`, same
-            separator the cluster side uses). Cluster "After -
-            Přiznání" matches film "After: Přiznání" via the segment
-            `priznani`; cluster "Stmívání 2-Nový Měsíc" matches film
-            "Twilight sága: Nový měsíc" via the segment `novymesic`.
-            Segment cores ≤3 chars are dropped to avoid `the`/`a`/
-            `of` spuriously matching every film starting with that
-            token (year+duration anchor would catch most but not
-            all)."""
-            stripped = strip_title(s) if s else ""
-            full = normalize(stripped)
-            if full:
-                full_cores.add(full)
-            for seg in _TITLE_SEPARATOR_RE.split(stripped):
-                seg_core = normalize(seg)
-                if seg_core and len(seg_core) >= 4 and seg_core != full:
-                    seg_cores.add(seg_core)
-
-        _emit(title)
+        # cores in three tiers (#654 / token-tier extension): full,
+        # segment, and individual ≥6-char tokens. Spasitel (cs) ↔
+        # Project Hail Mary (en) is a canonical example — sitemap
+        # titles like "Spasitel - Project Hail Mary HD CZ DABING"
+        # decompose on the parser side into ["spasitel",
+        # "projecthailmary"] candidates, so both forms produce a
+        # match key here.
+        full_cores, seg_cores, tok_cores = _emit_cores(title)
         if original_title and original_title.strip():
-            _emit(original_title)
+            f2, s2, t2 = _emit_cores(original_title)
+            full_cores |= f2; seg_cores |= s2; tok_cores |= t2
         # Numeric-notation variants (Roman ↔ Arabic, trailing "1" drop).
         # Symmetrical to the cluster-side emission in
         # `cluster_key_candidates` so a single canonical comparison
         # suffices regardless of which side carries which notation.
         full_cores = {v for c in full_cores for v in _digit_variants(c)}
-        seg_cores = {v for c in seg_cores for v in _digit_variants(c)}
-        # Segments that happen to equal the full core (one-segment
-        # title, no separator) are already in `full_cores` — drop the
-        # duplicate so the wider full-tier window is used.
+        seg_cores  = {v for c in seg_cores  for v in _digit_variants(c)}
+        tok_cores  = {v for c in tok_cores  for v in _digit_variants(c)}
+        # Tier dedup: a segment or token that equals the full core is
+        # the same string — keep it only in the highest-confidence
+        # tier so the index uses that tier's bucket window.
         seg_cores -= full_cores
-        if not (full_cores or seg_cores):
+        tok_cores -= full_cores
+        tok_cores -= seg_cores
+        # Token-tier collision filter (see token_year_films above).
+        tok_cores = {
+            t for t in tok_cores
+            if len(token_year_films.get((t, year), ())) <= _TOKEN_MAX_FILMS_PER_YEAR
+        }
+        if not (full_cores or seg_cores or tok_cores):
             continue
         anchor = int(runtime_min) // 3
         for cores, window in (
             (full_cores, bucket_window_full),
             (seg_cores,  bucket_window_segment),
+            (tok_cores,  bucket_window_token),
         ):
             for core in cores:
                 for dur_bucket in range(anchor - window, anchor + window + 1):
