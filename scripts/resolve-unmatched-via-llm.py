@@ -166,20 +166,26 @@ def _title_match_acceptable(best_sim: float,
        - sim ≥ 0.95 (near-exact) → accept regardless of year. Handles
          "2001: Vesmírná Odysea (2001)" → 1968 Kubrick: title nails it,
          the upload "year" is the in-title number not release year.
-       - 0.85 ≤ sim < 0.95 → accept only if year_diff ≤ 15 (block the
-         remake trap: "Freaky Friday 2003" → 'Freakier Friday' 2025
-         scored sim=0.86, year_diff=25 → reject).
-       - 0.50 ≤ sim < 0.85 → accept only if year_diff ≤ 5 (typical
-         medium-confidence match where year is the disambiguator).
+       - 0.85 ≤ sim < 0.95 → accept only if year_diff is known AND
+         year_diff ≤ 15 (block the remake trap: "Freaky Friday 2003"
+         → 'Freakier Friday' 2025 scored sim=0.86, year_diff=25 →
+         reject). Unknown year_diff falls into the same bucket as
+         too-far year_diff because the year gate's whole point is to
+         catch these strong-but-not-exact cases — accepting on title
+         alone there reintroduces the false positives this guard was
+         added to block.
+       - 0.50 ≤ sim < 0.85 → accept only if year_diff is known AND
+         year_diff ≤ 5 (typical medium-confidence match where year
+         is the disambiguator).
        - sim < 0.50 → always reject.
     """
     if best_sim >= _TITLE_SIM_NEAR_EXACT:
         return True
     if best_sim >= _TITLE_SIM_STRONG:
-        return year_diff is None or year_diff <= _YEAR_DIFF_REMAKE
+        return year_diff is not None and year_diff <= _YEAR_DIFF_REMAKE
     if best_sim < _TITLE_SIM_MIN:
         return False
-    return year_diff is None or year_diff <= _YEAR_DIFF_MAX
+    return year_diff is not None and year_diff <= _YEAR_DIFF_MAX
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -403,7 +409,8 @@ def main() -> int:
     # for NEW_TMDB candidates.
     resolver_reasons = (
         "llm_gemini_failed", "llm_bad_shape", "llm_not_film", "llm_no_title",
-        "tmdb_no_hit", "tmdb_runtime_mismatch", "awaiting_film_import",
+        "tmdb_no_hit", "tmdb_runtime_mismatch", "tmdb_title_mismatch",
+        "awaiting_film_import",
     )
     cur.execute("""
         SELECT id, sample_title, year, duration_bucket * 3 AS dur_min, upload_count
@@ -556,9 +563,13 @@ def main() -> int:
             [tmdb_title, tmdb_original_title],
         )
         if not _title_match_acceptable(best_sim, year_diff):
+            # Record the failure reason WITHOUT writing `resolved_tmdb_id`
+            # — that column is reserved for "TMDB ID known and ready for
+            # auto-import" (#652) and is partially indexed for the
+            # dashboard. Storing a rejected candidate there would
+            # pollute the import queue.
             counters["NO_TMDB"] += 1
-            _record_attempt(rid, reason="tmdb_title_mismatch",
-                            tmdb_id=tmdb_id)
+            _record_attempt(rid, reason="tmdb_title_mismatch")
             print(f"[{i:>3}] NO_TMDB    {sample_title[:60]} → "
                   f"tmdb={tmdb_id} '{tmdb_title}' {tmdb_year} "
                   f"sim={best_sim:.2f} year_diff={year_diff} (rejected)",
