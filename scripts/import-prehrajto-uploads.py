@@ -94,8 +94,31 @@ def normalize(s: str) -> str:
 
 def strip_title(title: str) -> str:
     t = title
+    # Dashification on raw input — if the uploader uses dashes
+    # systematically as word-separators, every dash is a separator,
+    # not a hyphen. Examples that need dashifying:
+    #   "ALIEN-vs-NINJA-scifi-fantasy-akční-novinka-2011-cz-title" (12 dashes, 0 spaces)
+    #   "Sklenena-past_[scifi-katastrofa-2004]-CZ-dab_DivX" (5 dashes, 0 spaces)
+    #   "Norimberský-proces-1-část-cz-dabing-2000" (6 dashes, 0 spaces)
+    #   "Vlčák Rain-válečný-cz dab.-2001-jad" (4 dashes, 2 spaces)
+    # Examples that must NOT dashify (real hyphenated titles):
+    #   "Spider-Man (2002) HD CZ Dabing" (1 dash, 4 spaces)
+    #   "X-Men: Apocalypse 2016" (1 dash, 2 spaces)
+    # Threshold "dashes ≥ max(3, spaces + 1)" requires at least 3
+    # dashes AND that dashes outnumber spaces by 1+, so a
+    # one-hyphen title with metadata can never trigger.
+    n_dash = t.count("-")
+    n_space = t.count(" ")
+    if n_dash >= 3 and n_dash >= n_space + 1:
+        t = t.replace("-", " ")
     t = re.sub(r"\[([^\]]*)\]", r" \1 ", t)
     t = re.sub(r"\(([^)]*)\)", r" \1 ", t)
+    # Underscore and tilde are space-equivalents in uploader-typed
+    # filenames ("Sklenena-past_[scifi-katastrofa]-CZ-dab_DivX",
+    # "Mamma Mia! 2 ~ (2018) HD cz"). Always normalize them to space
+    # before further processing so they participate in the separator
+    # split downstream.
+    t = re.sub(r"[_~]+", " ", t)
     t = _YEAR_RE.sub(" ", t)
     t = re.sub(r"\.(?=[A-Za-z])", " ", t)
     # Decompose diacritics here so the ASCII-only `\b...\b` keyword
@@ -124,6 +147,10 @@ def strip_title(title: str) -> str:
         r"avi|mkv|mp4|m4v|3gp|"
         r"cely\s*film|cely|remastered|extended|uncut|unrated|directors?\s*cut|imax|"
         r"novinka|top\s*hit|hit|novinka|premiera|"
+        r"vlozen[ae]|vlozenymi|nove|novy|nova|"
+        r"prodlouzen[aey]|verze|"
+        r"pametnik[uy]?|pametniky|"
+        r"dabovany|dabovana|nadabovan[oey]|"
         r"3d|2d|"
         r"v\s*obraze|vobraze|vobratu|vyborna|"
         r"romant\.?|drama|horor|thriller|akc\.?|komedie|sci[-.]?fi|fantasy|rodinny|"
@@ -228,8 +255,17 @@ def cluster_key(row: dict) -> tuple:
 # whitespace-bordered patterns miss. Restricting to digit→letter avoids
 # accidentally splitting "Spider-Man", "X-Men", "PG-13", or hyphenated
 # Czech compound nouns like "high-tech".
+#
+# Comma is a separator too — uploaders frequently append descriptive
+# context after the actual title ("Ctihodný občan, Gerard Butler Jamie
+# Fox", "Hledá se Dori, CZ dabing"). Without splitting on comma, the
+# trailing actor list / metadata gets fused into the full normalized
+# core and the segment tier never gets a clean shot at the title.
+# Czech titles that genuinely contain commas ("Ne, ne, Nanette") will
+# split into segments — that's fine, the segment tier will still find
+# the longer fragment that uniquely names the film.
 _TITLE_SEPARATOR_RE = re.compile(
-    r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*|(?<=\d)-(?=[A-Za-z]))"
+    r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*|\s*,\s*|(?<=\d)-(?=[A-Za-z]))"
 )
 
 
@@ -353,6 +389,26 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
     first_word = stripped.split(" ", 1)[0] if stripped else ""
     if first_word:
         _add(first_word)
+    # Prefix tier — emit every word-prefix of the stripped title as a
+    # candidate. Catches uploads where the actual film title is the
+    # leading words of a longer descriptive sitemap label that doesn't
+    # use any explicit separator. "365 dni 365 Days 2020 1080p WEBRip
+    # CZ dabing 5 1 MIKI" → after strip "365 dni 365 Days MIKI" →
+    # prefixes ["365", "365 dni", "365 dni 365", "365 dni 365 Days"].
+    # The 2-word prefix "365 dni" matches film 10427 "365 dní"'s full
+    # core. Similarly "Padesát Odstínů Temnoty Prodloužená Verze" →
+    # 3-word prefix matches film 9705's full core. Each prefix passes
+    # through the same normalize + `_digit_variants` flow as other
+    # candidates, so it lands in the films-side index at the
+    # full-tier window with no special handling. Per-(core, year,
+    # bucket) uniqueness in `matches` already prevents prefixes that
+    # are too generic from causing FPs — only films whose full core
+    # equals the cluster's prefix exactly will hit, and those are
+    # rare enough that bucket+year disambiguates.
+    words = stripped.split()
+    if len(words) > 1:
+        for n in range(1, len(words)):
+            _add(" ".join(words[:n]))
     # Token tier — every word ≥`_TOKEN_MIN_LEN` chars in the stripped
     # title becomes a candidate. Catches sitemap titles where only one
     # word is the actual film name (e.g. "Keep Watching [CZ dabing,
@@ -507,6 +563,44 @@ _SKELETON_MIN_LEN = 4
 _SKELETON_VOWEL_RE = re.compile(r"[aeiouy]")
 
 
+# TV-episode detector for the unmatched-clusters registry. The registry
+# is meant to surface films that uploaders ship but we haven't TMDB-
+# imported yet (#652 backlog); episode entries (S01E03, "5.díl",
+# "Hry.bez.hranic.E11.…", "TV seriál") aren't candidates for the films
+# table at all and just clutter the dashboard. Patterns are deliberately
+# conservative — `\bE\d{2,3}\b` rather than `\bE\d+\b`, so a bare "E1"
+# (could be part of a film title) doesn't trigger.
+_TV_EPISODE_RE = re.compile(
+    r"\b(?:"
+    r"S\d{1,2}E\d{1,3}"             # S01E03
+    r"|E\d{1,3}S\d{1,2}"            # E03S01 (some uploaders flip)
+    r"|E\d{2,3}"                    # E01..E999
+    r"|\d+\s*\.?\s*d[ií]l"          # 5.díl / 5 díl / 12.dil
+    r"|\d{1,2}x\d{1,3}"             # 1x05
+    r"|TV\s*seri[aá]l"
+    r"|seri[aá]l"
+    r"|epizoda"
+    r"|sez[oó]na"
+    r"|TV\s*show"
+    r"|episode"
+    r"|\d{4}-\d{2}-\d{2}"           # 2021-12-12 (broadcast date)
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_tv_episode(sample_title: str) -> bool:
+    return bool(sample_title) and _TV_EPISODE_RE.search(sample_title) is not None
+
+# Prefix-tier minimum length (in normalized chars). Films-side prefix
+# tier emits each first-N-word prefix as a candidate core, gated by
+# per-year uniqueness so generic short prefixes ("doba", "padesat")
+# never make it into the index when 2+ films share them. 5 chars is
+# enough to be discriminating but short enough to catch "Mamma Mia!"
+# (5 chars: "mammam"... actually 8 chars: "mammamia") or "365 dni".
+_PREFIX_MIN_LEN = 5
+
+
 def _emit_cores(s: str) -> tuple[set[str], set[str], set[str]]:
     """Decompose `s` into three tiers of normalized cores:
 
@@ -562,6 +656,8 @@ def load_matches_from_films(
     bucket_window_segment: int = 3,
     bucket_window_token: int = 2,
     bucket_window_skeleton: int = 5,
+    bucket_window_prefix: int = 5,
+    year_tolerance: int = 1,
 ) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
@@ -658,6 +754,15 @@ def load_matches_from_films(
     # that uniquely identify a film within their release year.
     token_year_films: dict[tuple[str, int], set[int]] = {}
     skel_year_films: dict[tuple[str, int], set[int]] = {}
+    # Prefix census — for each film, which (prefix, year) pairs does it
+    # own? Prefix tier indexes only films that uniquely own a prefix in
+    # their year. Catches uploads where the cluster's first N words ARE
+    # the film title proper but the rest is descriptive padding (e.g.
+    # cluster "Mamma Mia! 2 ~ HD cz" with year 2018 → prefix "mammamia"
+    # uniquely owned by film 3826 "Mamma Mia! Here We Go Again" in
+    # 2018, despite that film having no `_TOKEN_MIN_LEN`-qualifying
+    # tokens at all).
+    prefix_year_films: dict[tuple[str, int], set[int]] = {}
     for film_id, title, original_title, year, imdb_id, runtime_min in rows:
         if not title or not imdb_id or runtime_min is None or runtime_min <= 0:
             continue
@@ -678,9 +783,25 @@ def load_matches_from_films(
             sk = _skeleton(fc)
             if len(sk) >= _SKELETON_MIN_LEN:
                 skel_year_films.setdefault((sk, year), set()).add(film_id)
+        # Prefix census — emit prefix-N for N=1..wordcount-1 from each
+        # source title. Length filter (≥`_PREFIX_MIN_LEN`) + per-year
+        # uniqueness in the index pass keeps generic short prefixes out.
+        for src in (title, original_title):
+            if not src or not src.strip():
+                continue
+            words = strip_title(src).split()
+            for n in range(1, len(words)):
+                pref = normalize(" ".join(words[:n]))
+                if not pref or len(pref) < _PREFIX_MIN_LEN:
+                    continue
+                for v in _digit_variants(pref):
+                    prefix_year_films.setdefault((v, year), set()).add(film_id)
 
-    matches: dict[tuple, dict] = {}
-    collisions: list[tuple[tuple, int, int]] = []
+    # Build per-film core sets once; reuse across exact-year + year-tolerance
+    # passes. Storing the precomputed sets avoids re-running `_emit_cores`,
+    # `_digit_variants`, and the per-year uniqueness lookups twice for every
+    # row in the films table when `year_tolerance > 0`.
+    film_index: list[tuple[int, str, int, int, set, set, set, set]] = []
     skipped_no_runtime = 0
     for film_id, title, original_title, year, imdb_id, runtime_min in rows:
         if not title or not imdb_id:
@@ -728,15 +849,45 @@ def load_matches_from_films(
             sk = _skeleton(fc)
             if len(sk) >= _SKELETON_MIN_LEN and len(skel_year_films.get((sk, year), ())) == 1:
                 skel_cores.add(sk)
-        if not (full_cores or seg_cores or tok_cores or skel_cores):
+        # Prefix-tier — first-N-word prefixes (length ≥`_PREFIX_MIN_LEN`)
+        # that uniquely identify this film in its release year. Emit
+        # both `title` and `original_title` prefixes so the tier works
+        # in both directions.
+        prefix_cores: set[str] = set()
+        for src in (title, original_title):
+            if not src or not src.strip():
+                continue
+            words = strip_title(src).split()
+            for n in range(1, len(words)):
+                pref = normalize(" ".join(words[:n]))
+                if not pref or len(pref) < _PREFIX_MIN_LEN:
+                    continue
+                for v in _digit_variants(pref):
+                    if len(prefix_year_films.get((v, year), ())) == 1:
+                        prefix_cores.add(v)
+        # Tier dedup — keep prefixes only if they don't already land in
+        # a higher-confidence tier (a prefix that equals the full core
+        # is just the full core).
+        prefix_cores -= full_cores
+        prefix_cores -= seg_cores
+        prefix_cores -= tok_cores
+        if not (full_cores or seg_cores or tok_cores or skel_cores or prefix_cores):
             continue
-        anchor = int(runtime_min) // 3
-        for cores, window in (
-            (full_cores, bucket_window_full),
-            (seg_cores,  bucket_window_segment),
-            (tok_cores,  bucket_window_token),
-            (skel_cores, bucket_window_skeleton),
-        ):
+        film_index.append((film_id, imdb_id, year, int(runtime_min) // 3,
+                           full_cores, seg_cores, tok_cores, skel_cores, prefix_cores))
+
+    matches: dict[tuple, dict] = {}
+    collisions: list[tuple[tuple, int, int]] = []
+    tier_windows = (bucket_window_full, bucket_window_segment,
+                    bucket_window_token, bucket_window_skeleton,
+                    bucket_window_prefix)
+
+    # Pass 1: exact year. Films whose release year matches the cluster's
+    # reported year always win — this is the canonical match path and the
+    # one with strongest disambiguation (a sequel filmed two years later
+    # never claims the prequel's year).
+    for film_id, imdb_id, year, anchor, full_c, seg_c, tok_c, skel_c, pref_c in film_index:
+        for cores, window in zip((full_c, seg_c, tok_c, skel_c, pref_c), tier_windows):
             for core in cores:
                 for dur_bucket in range(anchor - window, anchor + window + 1):
                     if dur_bucket < 0:
@@ -751,6 +902,30 @@ def load_matches_from_films(
                         }
                     elif existing["_film_id"] != film_id:
                         collisions.append((key, existing["_film_id"], film_id))
+
+    # Pass 2: year tolerance fallback (off-by-one uploads). Many uploaders
+    # tag the upload year, the festival year, or simply mistype — "Ladíme 1"
+    # uploaded with year 2013 is film 1940 (release year 2012), "Nic nás
+    # nerozdělí 2013" is film 964 (release year 2012). Emit each film at
+    # year ± 1..year_tolerance via `setdefault` so exact-year claims from
+    # pass 1 always win — the tolerance entry only fills empty slots.
+    if year_tolerance > 0:
+        for film_id, imdb_id, year, anchor, full_c, seg_c, tok_c, skel_c, pref_c in film_index:
+            for cores, window in zip((full_c, seg_c, tok_c, skel_c, pref_c), tier_windows):
+                for core in cores:
+                    for dur_bucket in range(anchor - window, anchor + window + 1):
+                        if dur_bucket < 0:
+                            continue
+                        for dy in range(1, year_tolerance + 1):
+                            for offset in (-dy, +dy):
+                                matches.setdefault(
+                                    (core, year + offset, dur_bucket),
+                                    {
+                                        "imdb_id": imdb_id,
+                                        "_film_id": film_id,
+                                        "_source": "films_table",
+                                    },
+                                )
     if skipped_no_runtime:
         print(f"  load_matches_from_films: skipped {skipped_no_runtime} films "
               f"without runtime_min (would match too widely)", flush=True)
@@ -936,6 +1111,12 @@ def main() -> int:
                         EXCLUDED.last_failure_reason)
                 WHERE prehrajto_unmatched_clusters.resolved_at IS NULL
             """
+            # Filter out clusters whose sample_title is clearly a TV
+            # episode rather than a film. The unmatched registry powers
+            # the #652 dashboard ("films that uploaders provide but we
+            # haven't TMDB-imported yet"); TV episodes belong to the
+            # series/episodes pipeline instead, and inflating the
+            # registry with them obscures the actual film backlog.
             unmatched_rows = [
                 {
                     "cluster_key": k[0],
@@ -946,6 +1127,7 @@ def main() -> int:
                     "upload_count": len(v["upload_ids"]),
                 }
                 for k, v in unmatched_clusters.items()
+                if not _looks_like_tv_episode(v["sample_title"])
             ]
             psycopg2.extras.execute_batch(
                 cur, unmatched_upsert_sql, unmatched_rows, page_size=500,
