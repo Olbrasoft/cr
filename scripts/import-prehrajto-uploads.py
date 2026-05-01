@@ -308,11 +308,13 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
          filter and a tighter ±2-bucket duration window so generic
          tokens are discarded server-side and don't generate matches.
       5. The vowel-stripped skeleton of the full core — catches sk↔cs
-         title variants and small typos (cluster "Antropoid" ↔ film
-         "Anthropoid", cluster "Lichožrúti" ↔ film "Lichožrouti",
-         cluster "Snowbordaci" ↔ film "Snowboarďáci"). The films-side
-         index requires per-year skeleton-uniqueness and uses a ±5
-         bucket window for safety.
+         title variants and small typos that differ only in vowels
+         (cluster "Lichožrúti" ↔ film "Lichožrouti", cluster
+         "Snowbordaci" ↔ film "Snowboarďáci"). Pure consonant
+         differences (e.g. silent "h" in "Antropoid" vs "Anthropoid")
+         are NOT covered — vowel-stripping leaves consonants intact.
+         The films-side index requires per-year skeleton-uniqueness
+         and uses a ±5 bucket window for safety.
 
     Order is also priority order — at lookup time the importer takes
     the first candidate that hits a `wanted_keys` entry, so more
@@ -363,11 +365,13 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
         if len(tok) >= _TOKEN_MIN_LEN:
             _add(tok)
     # Skeleton tier — vowel-stripped form of the full core. Catches
-    # cs↔sk title variants and small typos ("Lichožrúti" ↔ "Lichožrouti",
-    # "Snowbordaci" ↔ "Snowboarďáci", "Antropoid" ↔ "Anthropoid"). The
-    # films-side index allows this candidate to land only when the
-    # skeleton uniquely identifies a single film in that release year,
-    # keeping FP risk bounded even though we emit the candidate liberally.
+    # cs↔sk title variants and small typos that differ only in vowels
+    # ("Lichožrúti" ↔ "Lichožrouti", "Snowbordaci" ↔ "Snowboarďáci").
+    # Pure consonant changes (e.g. silent "h" in "Antropoid" vs
+    # "Anthropoid") are NOT covered. The films-side index allows this
+    # candidate to land only when the skeleton uniquely identifies a
+    # single film in that release year, keeping FP risk bounded even
+    # though we emit the candidate liberally.
     full_core = normalize(stripped)
     if full_core:
         sk = _skeleton(full_core)
@@ -571,8 +575,8 @@ def load_matches_from_films(
     (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
 
     Cluster key strategy: prehraj.to clusters use a 3-min duration
-    bucket. We anchor each film at `runtime_min // 3` and emit three
-    tiers of variant cores around it:
+    bucket. We anchor each film at `runtime_min // 3` and emit four
+    tiers of variant cores around it (full, segment, token, skeleton):
 
       - *Full-title* cores (e.g. "twilightsaganovymesic" from
         "Twilight sága: Nový měsíc") are highly distinctive — once a
@@ -611,10 +615,13 @@ def load_matches_from_films(
 
       - *Skeleton* cores (e.g. "lchzrt" from "Lichožrouti", "snwbrdc"
         from "Snowboarďáci") are vowel-stripped versions of the full
-        core, used as a cs↔sk-tolerant fuzzy fallback. "Lichožrúti"
-        (Slovak) and "Lichožrouti" (Czech) reduce to the same
-        skeleton; same for "Snowbordaci" (typo) ↔ "Snowboarďáci",
-        "Antropoid" ↔ "Anthropoid", "Constantin" ↔ "Constantine".
+        core, used as a cs↔sk-tolerant fuzzy fallback for variants
+        differing only in vowels. "Lichožrúti" (Slovak) and
+        "Lichožrouti" (Czech) reduce to the same skeleton; same for
+        "Snowbordaci" (typo) ↔ "Snowboarďáci". Pure consonant
+        differences (e.g. silent "h" in "Antropoid" vs "Anthropoid",
+        or trailing-e in "Constantin" vs "Constantine") are NOT
+        covered — vowel-stripping leaves consonants intact.
         Held to ±`bucket_window_skeleton` (default ±5 buckets ≈
         ±15 min) AND a per-year skeleton-uniqueness filter — only
         indexed when exactly one film owns the (skeleton, year)
@@ -682,8 +689,9 @@ def load_matches_from_films(
             skipped_no_runtime += 1
             continue
         # Emit both the localized and the original title as candidate
-        # cores in three tiers (#654 / token-tier extension): full,
-        # segment, and individual ≥6-char tokens. Spasitel (cs) ↔
+        # cores in four tiers (#654 token-tier + skeleton tier): full,
+        # segment, individual ≥6-char tokens, and vowel-stripped
+        # skeleton. Spasitel (cs) ↔
         # Project Hail Mary (en) is a canonical example — sitemap
         # titles like "Spasitel - Project Hail Mary HD CZ DABING"
         # decompose on the parser side into ["spasitel",
