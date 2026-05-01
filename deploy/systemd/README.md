@@ -195,7 +195,7 @@ Mimo skript — nastavit jednou v R2 dashboardu na bucketu `cr-backups`:
 
 ## LLM resolver (issue #652)
 
-Daily resolver for prehraj.to unmatched clusters using Gemma 3 27b
+Daily resolver for prehraj.to unmatched clusters using Gemma 3 27B
 (via Google AI Studio free tier) + TMDB API. Reads
 `prehrajto_unmatched_clusters` rows where the regex importer couldn't
 match the upload string against the `films` table — extracts a
