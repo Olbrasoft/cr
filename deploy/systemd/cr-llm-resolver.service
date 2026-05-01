@@ -1,5 +1,5 @@
 [Unit]
-Description=CR — LLM-based TMDB-ID resolver for prehraj.to unmatched clusters (#668)
+Description=CR — prehraj.to LLM resolver + NEW_TMDB → films auto-import (#652)
 Documentation=https://github.com/Olbrasoft/cr/issues/652
 # Wait for Docker / Postgres to be up. `After=cr-prehrajto-sync` only
 # orders start jobs in the same transaction — it does NOT prevent the
