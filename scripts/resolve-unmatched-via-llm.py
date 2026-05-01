@@ -40,11 +40,13 @@ Output: prints one line per cluster with the resolution outcome:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.parse
 from typing import Optional
 
@@ -113,6 +115,77 @@ Hint duration in minutes (may be wrong): __DURATION__
 
 
 _JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
+
+# Title similarity acceptance — see `_title_match_acceptable()` for the
+# combined title × year decision logic. Tuned against the false-positive
+# inventory from the first 500-cluster batch (e.g. "MÉDA TED 2"→Bear with
+# Two Lovers, "SAW 8"→Příchozí 2017, "Skurvenej Pátek 2000"→Freakier
+# Friday 2025): Gemma + TMDB-popularity sort can both point at a wrong
+# film when the upload string is ambiguous, so we cross-check Gemma's
+# extracted title (original AND English form) against TMDB's localized
+# `title` AND `original_title` and gate by year proximity.
+_TITLE_SIM_NEAR_EXACT = 0.95  # accept regardless of year
+_TITLE_SIM_STRONG     = 0.85  # accept if year_diff ≤ remake-window
+_TITLE_SIM_MIN        = 0.50  # below: reject outright
+_YEAR_DIFF_REMAKE     = 15    # strong-similarity, far years → likely remake
+_YEAR_DIFF_MAX        = 5     # medium-similarity gate
+
+_NORMALIZE_KEEP_RE = re.compile(r"[^a-z0-9 ]+")
+
+
+def _normalize_for_match(s: str) -> str:
+    """Lowercase + strip diacritics + drop punctuation, for fuzzy title
+    comparison. Mirrors how the regex matcher normalizes — keeps Czech
+    "Doba ľadová"/"Doba ledová" / English-Czech variants comparable."""
+    nfd = unicodedata.normalize("NFD", s)
+    no_marks = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    return _NORMALIZE_KEEP_RE.sub(" ", no_marks.lower()).strip()
+
+
+def _title_similarity(a: Optional[str], b: Optional[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(
+        None, _normalize_for_match(a), _normalize_for_match(b)
+    ).ratio()
+
+
+def _best_title_similarity(gemma_titles: list[Optional[str]],
+                           tmdb_titles: list[Optional[str]]) -> float:
+    return max(
+        (_title_similarity(g, t) for g in gemma_titles for t in tmdb_titles),
+        default=0.0,
+    )
+
+
+def _title_match_acceptable(best_sim: float,
+                            year_diff: Optional[int]) -> bool:
+    """3-tier accept rule, tuned to reject the remake/sequel trap
+    without false-rejecting legitimate diacritic / language variants:
+
+       - sim ≥ 0.95 (near-exact) → accept regardless of year. Handles
+         "2001: Vesmírná Odysea (2001)" → 1968 Kubrick: title nails it,
+         the upload "year" is the in-title number not release year.
+       - 0.85 ≤ sim < 0.95 → accept only if year_diff is known AND
+         year_diff ≤ 15 (block the remake trap: "Freaky Friday 2003"
+         → 'Freakier Friday' 2025 scored sim=0.86, year_diff=25 →
+         reject). Unknown year_diff falls into the same bucket as
+         too-far year_diff because the year gate's whole point is to
+         catch these strong-but-not-exact cases — accepting on title
+         alone there reintroduces the false positives this guard was
+         added to block.
+       - 0.50 ≤ sim < 0.85 → accept only if year_diff is known AND
+         year_diff ≤ 5 (typical medium-confidence match where year
+         is the disambiguator).
+       - sim < 0.50 → always reject.
+    """
+    if best_sim >= _TITLE_SIM_NEAR_EXACT:
+        return True
+    if best_sim >= _TITLE_SIM_STRONG:
+        return year_diff is not None and year_diff <= _YEAR_DIFF_REMAKE
+    if best_sim < _TITLE_SIM_MIN:
+        return False
+    return year_diff is not None and year_diff <= _YEAR_DIFF_MAX
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -336,7 +409,8 @@ def main() -> int:
     # for NEW_TMDB candidates.
     resolver_reasons = (
         "llm_gemini_failed", "llm_bad_shape", "llm_not_film", "llm_no_title",
-        "tmdb_no_hit", "tmdb_runtime_mismatch", "awaiting_film_import",
+        "tmdb_no_hit", "tmdb_runtime_mismatch", "tmdb_title_mismatch",
+        "awaiting_film_import",
     )
     cur.execute("""
         SELECT id, sample_title, year, duration_bucket * 3 AS dur_min, upload_count
@@ -468,7 +542,39 @@ def main() -> int:
 
         tmdb_id = tmdb_hit["id"]
         tmdb_title = tmdb_hit.get("title")
+        tmdb_original_title = tmdb_hit.get("original_title")
         tmdb_year = tmdb_hit.get("release_date", "????")[:4]
+
+        # Title similarity check — drop matches where Gemma's extracted
+        # title doesn't actually look like the TMDB hit's title. Without
+        # this, ambiguous upload strings ("MÉDA TED 2"→'Dva milenci a
+        # medvěd', "SAW 8"→'Příchozí', "Skurvenej Pátek (2000)"→
+        # 'Mezi námi děvčaty 2' (2025)) slip through because both
+        # Gemma and TMDB-popularity sort happily point at a wrong film.
+        # Compare Gemma's `title` AND `title_en` against TMDB's
+        # `title` (cs-CZ localized) AND `original_title`, take the
+        # max — and gate by year proximity for medium-similarity
+        # cases. See module-level `_TITLE_SIM_*` constants.
+        year_diff: Optional[int] = None
+        if tmdb_year.isdigit() and year_extr is not None:
+            year_diff = abs(int(tmdb_year) - int(year_extr))
+        best_sim = _best_title_similarity(
+            [title_extr, title_en],
+            [tmdb_title, tmdb_original_title],
+        )
+        if not _title_match_acceptable(best_sim, year_diff):
+            # Record the failure reason WITHOUT writing `resolved_tmdb_id`
+            # — that column is reserved for "TMDB ID known and ready for
+            # auto-import" (#652) and is partially indexed for the
+            # dashboard. Storing a rejected candidate there would
+            # pollute the import queue.
+            counters["NO_TMDB"] += 1
+            _record_attempt(rid, reason="tmdb_title_mismatch")
+            print(f"[{i:>3}] NO_TMDB    {sample_title[:60]} → "
+                  f"tmdb={tmdb_id} '{tmdb_title}' {tmdb_year} "
+                  f"sim={best_sim:.2f} year_diff={year_diff} (rejected)",
+                  flush=True)
+            continue
 
         # Runtime sanity check — drop matches where TMDB's runtime
         # differs from the cluster's reported duration by more than
