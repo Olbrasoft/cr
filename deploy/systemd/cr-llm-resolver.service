@@ -1,0 +1,36 @@
+[Unit]
+Description=CR — LLM-based TMDB-ID resolver for prehraj.to unmatched clusters (#668)
+Documentation=https://github.com/Olbrasoft/cr/issues/652
+# Wait for Docker / Postgres to be up. Chain after the prehraj.to sitemap
+# sync so the resolver always works against the freshest unmatched
+# cluster set (sync runs at 04:00 UTC, this runs after 06:00).
+After=docker.service network-online.target cr-prehrajto-sync.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+# DATABASE_URL in /opt/cr/.env points at `db:5432` (container hostname);
+# host-side scripts need 127.0.0.1 — same translation as the
+# cr-auto-import / cr-prehrajto-sync services.
+#
+# --limit 200: caps each daily run at ~7 minutes wall-clock and ~3% of
+#   Gemma's 14,400/day free quota. The 10k+ backlog drains over weeks,
+#   not days — that's intentional, so a buggy resolver iteration can't
+#   burn the entire backlog before we notice false positives.
+# --min-uploads 2: ignore single-upload clusters (long-tail noise).
+# --retry-after-days 7: don't reprocess clusters the resolver already
+#   touched within the last 7 days.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} /usr/bin/python3 -u /opt/cr/scripts/resolve-unmatched-via-llm.py --limit 200 --min-uploads 2 --retry-after-days 7'
+StandardOutput=append:/var/log/cr-llm-resolver.log
+StandardError=append:/var/log/cr-llm-resolver.log
+# No auto-restart: a Gemma quota / TMDB outage shouldn't cause an
+# immediate retry that re-enters quota issues. The next daily timer
+# tick will pick up where this left off (per-row commits + skip-window
+# make this safe).
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

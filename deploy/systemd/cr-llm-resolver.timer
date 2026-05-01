@@ -1,0 +1,17 @@
+[Unit]
+Description=CR — LLM resolver for prehraj.to unmatched clusters (daily after sitemap sync)
+Documentation=https://github.com/Olbrasoft/cr/issues/652
+
+[Timer]
+# 06:30 UTC — runs after cr-prehrajto-sync (04:00 UTC, ~30-60 min) and
+# cr-auto-import (05:00 UTC, ~5-10 min). Matches the morning import
+# pattern but the resolver depends on a fresh
+# `prehrajto_unmatched_clusters` registry (output of the sync), so
+# starting later guarantees we never resolve against stale data.
+OnCalendar=*-*-* 06:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=cr-llm-resolver.service
+
+[Install]
+WantedBy=timers.target
