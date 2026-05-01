@@ -307,11 +307,19 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
          liberally; the films-side index applies a per-year-uniqueness
          filter and a tighter ±2-bucket duration window so generic
          tokens are discarded server-side and don't generate matches.
+      5. The vowel-stripped skeleton of the full core — catches sk↔cs
+         title variants and small typos that differ only in vowels
+         (cluster "Lichožrúti" ↔ film "Lichožrouti", cluster
+         "Snowbordaci" ↔ film "Snowboarďáci"). Pure consonant
+         differences (e.g. silent "h" in "Antropoid" vs "Anthropoid")
+         are NOT covered — vowel-stripping leaves consonants intact.
+         The films-side index requires per-year skeleton-uniqueness
+         and uses a ±5 bucket window for safety.
 
     Order is also priority order — at lookup time the importer takes
     the first candidate that hits a `wanted_keys` entry, so more
-    specific cores (full → segment → first-word → token) win when
-    multiple variants would match.
+    specific cores (full → segment → first-word → token → skeleton)
+    win when multiple variants would match.
 
     Year + duration anchor unchanged across all candidates, so false
     positives stay bounded by those fields. The films-table side now
@@ -356,6 +364,20 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
     for tok in re.split(r"[^A-Za-z0-9]+", stripped):
         if len(tok) >= _TOKEN_MIN_LEN:
             _add(tok)
+    # Skeleton tier — vowel-stripped form of the full core. Catches
+    # cs↔sk title variants and small typos that differ only in vowels
+    # ("Lichožrúti" ↔ "Lichožrouti", "Snowbordaci" ↔ "Snowboarďáci").
+    # Pure consonant changes (e.g. silent "h" in "Antropoid" vs
+    # "Anthropoid") are NOT covered. The films-side index allows this
+    # candidate to land only when the skeleton uniquely identifies a
+    # single film in that release year, keeping FP risk bounded even
+    # though we emit the candidate liberally.
+    full_core = normalize(stripped)
+    if full_core:
+        sk = _skeleton(full_core)
+        if len(sk) >= _SKELETON_MIN_LEN and sk not in seen:
+            seen.add(sk)
+            candidates.append(sk)
     return [(c, year, dur_bucket) for c in candidates]
 
 
@@ -474,6 +496,15 @@ def load_matches(path: Path) -> dict[tuple, dict]:
 
 _TOKEN_MIN_LEN = 6
 _TOKEN_MAX_FILMS_PER_YEAR = 1
+# Consonant-skeleton fuzzy tier — strip vowels (a/e/i/o/u/y) from a
+# normalized core to get a cs↔sk-tolerant signature. "Lichožrouti"
+# (cs) and "Lichožrúti" (sk) both reduce to `lchzrt`; "Snowboarďáci"
+# and the typo'd "Snowbordaci" both reduce to `snwbrdc`. Indexed
+# only when the skeleton is unique within its release year — one
+# film per (skeleton, year) is the entry condition — and used as a
+# last-resort tier with a tight bucket window.
+_SKELETON_MIN_LEN = 4
+_SKELETON_VOWEL_RE = re.compile(r"[aeiouy]")
 
 
 def _emit_cores(s: str) -> tuple[set[str], set[str], set[str]]:
@@ -518,11 +549,19 @@ def _emit_cores(s: str) -> tuple[set[str], set[str], set[str]]:
     return full_set, seg_set, tok_set
 
 
+def _skeleton(core: str) -> str:
+    """Vowel-stripped form of a normalized core for cs↔sk fuzzy
+    matching. Only used when a single film owns the skeleton in a
+    given year (uniqueness enforced at index time)."""
+    return _SKELETON_VOWEL_RE.sub("", core)
+
+
 def load_matches_from_films(
     cur,
-    bucket_window_full: int = 5,
+    bucket_window_full: int = 10,
     bucket_window_segment: int = 3,
     bucket_window_token: int = 2,
+    bucket_window_skeleton: int = 5,
 ) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
@@ -536,16 +575,20 @@ def load_matches_from_films(
     (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
 
     Cluster key strategy: prehraj.to clusters use a 3-min duration
-    bucket. We anchor each film at `runtime_min // 3` and emit three
-    tiers of variant cores around it:
+    bucket. We anchor each film at `runtime_min // 3` and emit four
+    tiers of variant cores around it (full, segment, token, skeleton):
 
       - *Full-title* cores (e.g. "twilightsaganovymesic" from
         "Twilight sága: Nový měsíc") are highly distinctive — once a
         cluster's full normalized core matches a film's full core,
         the title alone is enough to disambiguate. We allow
-        ±`bucket_window_full` (default ±5 buckets ≈ ±15 min) to
-        absorb TV cuts vs theatrical, broadcast trims, regional
-        re-edits, and minor re-encodes.
+        ±`bucket_window_full` (default ±10 buckets ≈ ±30 min) to
+        absorb TV cuts vs theatrical roadshow vs streaming versions
+        ("Osm hrozných" 167 vs 188 min, "After: Přiznání" 84 vs
+        105 min, "Volyň" 129 vs 150 min). Same-title same-year films
+        with wildly different runtimes are vanishingly rare, so the
+        wide window is safe at this tier — narrower would lose
+        legitimate matches.
 
       - *Segment* cores (e.g. "novymesic" from the same film, after
         splitting on ":") are weaker — `novymesic` could in principle
@@ -570,8 +613,23 @@ def load_matches_from_films(
         films table to build the per-(token, year) census; the second
         pass actually indexes.
 
-    Tier dedup ensures every core lands in exactly one tier (full
-    wins over segment wins over token) so the index uses that tier's
+      - *Skeleton* cores (e.g. "lchzrt" from "Lichožrouti", "snwbrdc"
+        from "Snowboarďáci") are vowel-stripped versions of the full
+        core, used as a cs↔sk-tolerant fuzzy fallback for variants
+        differing only in vowels. "Lichožrúti" (Slovak) and
+        "Lichožrouti" (Czech) reduce to the same skeleton; same for
+        "Snowbordaci" (typo) ↔ "Snowboarďáci". Pure consonant
+        differences (e.g. silent "h" in "Antropoid" vs "Anthropoid",
+        or trailing-e in "Constantin" vs "Constantine") are NOT
+        covered — vowel-stripping leaves consonants intact.
+        Held to ±`bucket_window_skeleton` (default ±5 buckets ≈
+        ±15 min) AND a per-year skeleton-uniqueness filter — only
+        indexed when exactly one film owns the (skeleton, year)
+        pair, so cs/sk title variants and small typos resolve while
+        truly different films with same consonants don't collide.
+
+    Tier dedup ensures every core lands in exactly one tier
+    (full > segment > token > skeleton) so the index uses that tier's
     bucket window and not a wider one.
 
     Films without `runtime_min` are skipped here — without a duration
@@ -590,15 +648,16 @@ def load_matches_from_films(
     )
     rows = cur.fetchall()
 
-    # First pass — build the per-(token, year) film-id census so we
-    # can apply the token-tier collision filter in pass 2. Generic
-    # Czech adjectives like "posledni"/"velka"/"modra" appear in
-    # many films per year; matching on them alone produces false
-    # positives (e.g. "Insidious 4 - Poslední klíč" cluster's
-    # `posledni` token would otherwise pair with any year-2017 film
-    # whose title contains "Poslední"). The filter keeps only tokens
-    # unique to a single film for that release year.
+    # First pass — per-(token, year) and per-(skeleton, year)
+    # film-id censuses so we can apply the uniqueness filters in
+    # pass 2. Generic Czech adjectives like "posledni"/"velka"/
+    # "modra" appear in many films per year; matching on them alone
+    # produces false positives. Same risk on the skeleton tier —
+    # vowel-stripped consonants of common short words can collide
+    # across genuinely different films. Both tiers index only entries
+    # that uniquely identify a film within their release year.
     token_year_films: dict[tuple[str, int], set[int]] = {}
+    skel_year_films: dict[tuple[str, int], set[int]] = {}
     for film_id, title, original_title, year, imdb_id, runtime_min in rows:
         if not title or not imdb_id or runtime_min is None or runtime_min <= 0:
             continue
@@ -612,6 +671,13 @@ def load_matches_from_films(
         tok_v -= full_v; tok_v -= seg_v
         for tok in tok_v:
             token_year_films.setdefault((tok, year), set()).add(film_id)
+        # Skeleton census: derive from full cores only (segment/token
+        # skeletons are too short / too noisy for a reliable fuzzy
+        # signature).
+        for fc in full_v:
+            sk = _skeleton(fc)
+            if len(sk) >= _SKELETON_MIN_LEN:
+                skel_year_films.setdefault((sk, year), set()).add(film_id)
 
     matches: dict[tuple, dict] = {}
     collisions: list[tuple[tuple, int, int]] = []
@@ -623,8 +689,9 @@ def load_matches_from_films(
             skipped_no_runtime += 1
             continue
         # Emit both the localized and the original title as candidate
-        # cores in three tiers (#654 / token-tier extension): full,
-        # segment, and individual ≥6-char tokens. Spasitel (cs) ↔
+        # cores in four tiers (#654 token-tier + skeleton tier): full,
+        # segment, individual ≥6-char tokens, and vowel-stripped
+        # skeleton. Spasitel (cs) ↔
         # Project Hail Mary (en) is a canonical example — sitemap
         # titles like "Spasitel - Project Hail Mary HD CZ DABING"
         # decompose on the parser side into ["spasitel",
@@ -652,13 +719,23 @@ def load_matches_from_films(
             t for t in tok_cores
             if len(token_year_films.get((t, year), ())) <= _TOKEN_MAX_FILMS_PER_YEAR
         }
-        if not (full_cores or seg_cores or tok_cores):
+        # Skeleton-tier: only films that own a unique skeleton in
+        # their release year contribute. Derived from full_cores so
+        # sk↔cs variants of the same canonical title both produce the
+        # same skeleton.
+        skel_cores: set[str] = set()
+        for fc in full_cores:
+            sk = _skeleton(fc)
+            if len(sk) >= _SKELETON_MIN_LEN and len(skel_year_films.get((sk, year), ())) == 1:
+                skel_cores.add(sk)
+        if not (full_cores or seg_cores or tok_cores or skel_cores):
             continue
         anchor = int(runtime_min) // 3
         for cores, window in (
             (full_cores, bucket_window_full),
             (seg_cores,  bucket_window_segment),
             (tok_cores,  bucket_window_token),
+            (skel_cores, bucket_window_skeleton),
         ):
             for core in cores:
                 for dur_bucket in range(anchor - window, anchor + window + 1):
