@@ -13,6 +13,7 @@ pub mod admin_backups;
 pub mod admin_cache;
 pub mod admin_dashboard;
 pub mod admin_import;
+pub mod admin_prehrajto;
 mod admin_test_sledujteto;
 mod audiobooks;
 pub mod cover_proxy;

@@ -514,6 +514,12 @@ def main() -> int:
     print(f"Parsing {len(files)} sitemaps from {sitemap_dir}...")
     t0 = time.time()
     clusters: dict[tuple, list[dict]] = defaultdict(list)
+    # #657: registry of film-shape clusters that did NOT match any wanted
+    # key. Bucketed by their first cluster_key_candidate (the most
+    # specific normalized form). Each entry tracks the distinct set of
+    # upload_ids seen this run so `upload_count` is a true snapshot, not
+    # a cumulative counter inflated by re-seeing the same uploads.
+    unmatched_clusters: dict[tuple, dict] = {}
     total_entries = 0
     film_shape_count = 0
     for p in files:
@@ -527,13 +533,33 @@ def main() -> int:
             # full-title core first (preserves prior behaviour for
             # exact matches), then split segments, then first-word.
             # Using a single bucket per row keeps de-duplication trivial.
-            for k in cluster_key_candidates(r):
+            candidates = cluster_key_candidates(r)
+            matched = False
+            for k in candidates:
                 if k in wanted_keys:
                     clusters[k].append(r)
+                    matched = True
                     break
+            if not matched and candidates:
+                # Use the first candidate as the canonical "unmatched"
+                # key — same shape as wanted_keys so #652 can later
+                # consult this registry with identical key arithmetic.
+                uk = candidates[0]
+                bucket = unmatched_clusters.get(uk)
+                if bucket is None:
+                    bucket = {
+                        "sample_title": r["title"],
+                        "sample_url": r["url"],
+                        "upload_ids": set(),
+                    }
+                    unmatched_clusters[uk] = bucket
+                uid = extract_upload_id(r["url"])
+                if uid:
+                    bucket["upload_ids"].add(uid)
     print(f"  {total_entries:,} total entries scanned in {time.time()-t0:.1f}s")
     print(f"  {film_shape_count:,} film-shape entries")
     print(f"  {len(clusters):,} clusters matched wanted set")
+    print(f"  {len(unmatched_clusters):,} clusters did NOT match (#657 registry)")
 
     if conn_for_matches is not None:
         conn_for_matches.close()
@@ -547,6 +573,58 @@ def main() -> int:
         cur.execute("SELECT COUNT(*) FROM films")
         films_count_before = cur.fetchone()[0]
         print(f"films baseline count: {films_count_before:,}")
+
+        # ---- #657: persist unmatched-cluster registry ----
+        # UPSERT happens before the films loop so this observability data
+        # lands within the same transaction as the films work — keeping
+        # them coupled means a fatal error rolls both back together
+        # (including dry-run, which is the desired behavior). On
+        # subsequent sightings we refresh `last_seen_at` + the snapshot
+        # fields, but explicitly leave `last_attempt_at`,
+        # `attempt_count`, and `last_failure_reason` untouched: the
+        # current importer doesn't call TMDB / try to resolve, so a
+        # sitemap parse is NOT a resolution attempt and bumping those
+        # fields would defeat #652's planned 7-day skip-window arithmetic
+        # and overwrite TMDB-specific failure diagnostics it will set.
+        # `last_failure_reason` uses COALESCE so the initial generic
+        # reason persists only until #652 sets a more specific one.
+        if unmatched_clusters:
+            unmatched_upsert_sql = """
+                INSERT INTO prehrajto_unmatched_clusters
+                    (cluster_key, year, duration_bucket,
+                     sample_title, sample_url, upload_count,
+                     first_seen_at, last_seen_at, last_attempt_at,
+                     attempt_count, last_failure_reason)
+                VALUES
+                    (%(cluster_key)s, %(year)s, %(duration_bucket)s,
+                     %(sample_title)s, %(sample_url)s, %(upload_count)s,
+                     NOW(), NOW(), NOW(), 1,
+                     'no films match for cluster key (importer skip)')
+                ON CONFLICT (cluster_key, year, duration_bucket) DO UPDATE SET
+                    sample_title        = EXCLUDED.sample_title,
+                    sample_url          = EXCLUDED.sample_url,
+                    upload_count        = EXCLUDED.upload_count,
+                    last_seen_at        = EXCLUDED.last_seen_at,
+                    last_failure_reason = COALESCE(
+                        prehrajto_unmatched_clusters.last_failure_reason,
+                        EXCLUDED.last_failure_reason)
+                WHERE prehrajto_unmatched_clusters.resolved_at IS NULL
+            """
+            unmatched_rows = [
+                {
+                    "cluster_key": k[0],
+                    "year": k[1],
+                    "duration_bucket": k[2],
+                    "sample_title": v["sample_title"],
+                    "sample_url": v["sample_url"],
+                    "upload_count": len(v["upload_ids"]),
+                }
+                for k, v in unmatched_clusters.items()
+            ]
+            psycopg2.extras.execute_batch(
+                cur, unmatched_upsert_sql, unmatched_rows, page_size=500,
+            )
+            print(f"  unmatched registry upserted: {len(unmatched_rows):,} rows")
 
         # Pre-fetch imdb_id → film_id for all candidate imdb_ids (deduped —
         # many cluster keys can share the same IMDb ID).
@@ -856,6 +934,47 @@ def main() -> int:
             print(f"  legacy film_prehrajto_uploads → {mark_dead_legacy_total:,} rows flagged dead")
             print(f"  unified video_sources         → {mark_dead_vs_total:,} rows flagged dead")
             print(f"  ({time.time()-t_md:.1f}s)")
+
+        # ---- #657: mark resolved unmatched clusters ----
+        # Any cluster key that DID match wanted_keys this run AND now
+        # exists as a row in `films` should be flagged resolved in the
+        # registry. The match goes through the same (cluster_key, year,
+        # duration_bucket) triple #657 stored, so direct hits get
+        # cleared. Indirect hits (upload's first candidate differs from
+        # the films-side candidate that won the match — e.g. localized
+        # vs. original_title) are left for a later run to clear when the
+        # cluster shows up under that exact form, or for the operator
+        # to clean up manually. False negatives here are harmless.
+        resolved_pairs: list[dict] = []
+        for key in clusters:
+            match = matches_by_key.get(key)
+            if not match:
+                continue
+            film_id = imdb_to_film_id.get(match["imdb_id"])
+            if film_id is None:
+                continue
+            resolved_pairs.append({
+                "cluster_key": key[0],
+                "year": key[1],
+                "duration_bucket": key[2],
+                "film_id": film_id,
+            })
+        if resolved_pairs:
+            update_resolved_sql = """
+                UPDATE prehrajto_unmatched_clusters
+                   SET resolved_at      = NOW(),
+                       resolved_film_id = %(film_id)s
+                 WHERE resolved_at IS NULL
+                   AND cluster_key      = %(cluster_key)s
+                   AND year IS NOT DISTINCT FROM %(year)s
+                   AND duration_bucket  = %(duration_bucket)s
+            """
+            psycopg2.extras.execute_batch(
+                cur, update_resolved_sql, resolved_pairs, page_size=500,
+            )
+            print(f"  unmatched registry: marked-resolved attempts = "
+                  f"{len(resolved_pairs):,} (rowcount may be lower — "
+                  f"only previously-unresolved entries flip)")
 
         # ---- Invariant: films count unchanged ----
         # In live mode with batched commits, earlier batches are already committed;
