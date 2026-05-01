@@ -47,7 +47,6 @@ import re
 import sys
 import time
 import unicodedata
-from pathlib import Path
 from typing import Optional
 
 try:
@@ -58,15 +57,11 @@ except ImportError as e:
           file=sys.stderr)
     sys.exit(2)
 
-# Reuse genre map + cover downloader from the SK Torrent path. Slug
-# helpers are inlined below to avoid pulling Pillow / rclone deps that
-# `enricher.py` brings via `cover_downloader`.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-
-# Local genre map duplicated from enricher.TMDB_MOVIE_GENRE_MAP — keeping
-# this script importable without the full auto_import package on PATH
-# (so it can run with just psycopg2 + requests on the prod host).
+# Local genre map duplicated from enricher.TMDB_MOVIE_GENRE_MAP — keeps
+# this script importable on hosts that have only `psycopg2` + `requests`
+# installed (the full `scripts.auto_import` package would pull in
+# Pillow / rclone via `cover_downloader`). The cost of duplication is
+# 20 lines of integer mappings that change about once a year.
 TMDB_MOVIE_GENRE_MAP: dict[int, Optional[str]] = {
     28: "akcni", 12: "dobrodruzny", 16: "animovany", 35: "komedie",
     80: "krimi", 99: "dokumentarni", 18: "drama", 10751: "rodinny",
@@ -77,7 +72,12 @@ TMDB_MOVIE_GENRE_MAP: dict[int, Optional[str]] = {
 }
 
 TMDB_URL = "https://api.themoviedb.org/3"
-TMDB_RATE_DELAY_S = 0.05  # TMDB allows 40 req/10s, we stay well under
+# TMDB allows 40 requests / 10 s = 0.25 s minimum between calls. Each
+# cluster needs 2 TMDB calls (cs-CZ + en-US), so at 0.25 s we spend
+# ~0.5 s of TMDB latency per cluster — well within the daily import
+# budget. Earlier 0.05 s value was a stale comment vs. quota mismatch
+# called out in code review.
+TMDB_RATE_DELAY_S = 0.25
 
 log = logging.getLogger("prehrajto-tmdb-import")
 
@@ -93,23 +93,37 @@ def _slugify(text: str) -> str:
     return s.strip("-")
 
 
+def _slug_taken(cur, slug: str) -> bool:
+    """A slug is unavailable if it conflicts with an existing film OR
+    with a genre — `trg_films_slug_not_genre` rejects films.slug
+    values that match `genres.slug`, so probing only `films` lets a
+    title like "Drama" or "Horor" pass the SELECT and then crash at
+    INSERT. Mirror tv_show_enricher's UNION probe.
+    """
+    cur.execute(
+        "SELECT 1 FROM films WHERE slug = %s "
+        "UNION ALL "
+        "SELECT 1 FROM genres WHERE slug = %s LIMIT 1",
+        (slug, slug),
+    )
+    return cur.fetchone() is not None
+
+
 def _unique_slug(cur, base: str, year: Optional[int]) -> str:
-    """Find a free slug — base, base-{year}, then base-2, base-3..."""
+    """Find a free slug — base, base-{year}, then base-2, base-3...
+    Probes both `films.slug` AND `genres.slug` (see `_slug_taken`)."""
     if not base:
         base = "film"
-    cur.execute("SELECT 1 FROM films WHERE slug = %s", (base,))
-    if not cur.fetchone():
+    if not _slug_taken(cur, base):
         return base
     if year:
         candidate = f"{base}-{year}"
-        cur.execute("SELECT 1 FROM films WHERE slug = %s", (candidate,))
-        if not cur.fetchone():
+        if not _slug_taken(cur, candidate):
             return candidate
     counter = 2
     while True:
         candidate = f"{base}-{counter}"
-        cur.execute("SELECT 1 FROM films WHERE slug = %s", (candidate,))
-        if not cur.fetchone():
+        if not _slug_taken(cur, candidate):
             return candidate
         counter += 1
 
@@ -168,7 +182,14 @@ def _build_film_row(merged: dict) -> Optional[dict]:
     runtime = cs.get("runtime") or en.get("runtime")
     overview_cs = (cs.get("overview") or "").strip() or None
     overview_en = (en.get("overview") or "").strip() or None
-    description = overview_cs or overview_en
+    # `films.description` is reserved for the Gemma-rewritten unique CS
+    # text (see migration 20260522_051_consolidate_description.sql).
+    # Persist NULL here — templates already render fine when missing —
+    # and let a follow-up Gemma pass populate it with original text
+    # written from the TMDB overview as a source. Storing the raw
+    # TMDB overview directly would violate the "unique CS" invariant
+    # the consolidation migration enforces project-wide.
+    _ = (overview_cs, overview_en)  # documented intent; not persisted
 
     # vote_average=0 means "no votes yet" — store as NULL so the list
     # page doesn't render a bogus 0/10 rating.
@@ -189,7 +210,6 @@ def _build_film_row(merged: dict) -> Optional[dict]:
                            if original_title and original_title != (title_cs or title_en)
                            else None),
         "year": year,
-        "description": description,
         "runtime_min": int(runtime) if runtime else None,
         "imdb_rating": imdb_rating,
         "tmdb_poster_path": poster_path,
@@ -205,18 +225,20 @@ def _insert_film(cur, row: dict) -> int:
     """
     base_slug = _slugify(row["title"])
     slug = _unique_slug(cur, base_slug, row.get("year"))
+    # `description` left out → defaults to NULL. See `_build_film_row`
+    # for why we do not persist the raw TMDB overview.
     cur.execute(
         """INSERT INTO films
-               (title, original_title, slug, year, description,
+               (title, original_title, slug, year,
                 imdb_id, tmdb_id, runtime_min,
                 imdb_rating,
                 tmdb_poster_path,
                 added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
            RETURNING id""",
         (
             row["title"], row.get("original_title"), slug,
-            row.get("year"), row.get("description"),
+            row.get("year"),
             row.get("imdb_id"), row["tmdb_id"], row.get("runtime_min"),
             row.get("imdb_rating"),
             row.get("tmdb_poster_path"),
@@ -274,19 +296,32 @@ def main() -> int:
     conn.autocommit = False
     cur = conn.cursor()
 
+    # `resolved_at IS NULL` mirrors the UPDATE preconditions further
+    # below — a cluster with `resolved_at` set but `resolved_film_id`
+    # still NULL would otherwise be re-selected on every run while the
+    # UPDATEs silently no-op. Manual edits / partial earlier writes
+    # are the only way to land in that state, but better to fail
+    # closed than spin on it.
+    #
+    # `FOR UPDATE SKIP LOCKED` claims rows so two concurrent runs
+    # (manual + cron, or two manual triggers) can't import the same
+    # cluster twice. Combined with the per-row commit at the end, the
+    # claim is released as soon as one row is fully processed.
     cur.execute("""
         SELECT id, sample_title, resolved_tmdb_id, upload_count
           FROM prehrajto_unmatched_clusters
          WHERE resolved_tmdb_id IS NOT NULL
            AND resolved_film_id IS NULL
+           AND resolved_at IS NULL
          ORDER BY upload_count DESC, id ASC
          LIMIT %s
+         FOR UPDATE SKIP LOCKED
     """, (args.limit,))
     rows = cur.fetchall()
     print(f"Loaded {len(rows)} NEW_TMDB candidates "
-          f"(resolved_tmdb_id IS NOT NULL AND resolved_film_id IS NULL)",
+          f"(resolved_tmdb_id IS NOT NULL AND resolved_film_id IS NULL "
+          f"AND resolved_at IS NULL)",
           flush=True)
-    conn.commit()
 
     counters = {"added": 0, "skipped_existing": 0,
                 "skipped_no_tmdb": 0, "failed": 0}
@@ -295,7 +330,11 @@ def main() -> int:
         # Race protection: another instance of this script — or a fresh
         # SK Torrent import — may have inserted the film between our
         # SELECT and now. Re-check before fetching TMDB to skip the
-        # round-trip cost.
+        # round-trip cost. We probe `tmdb_id` first (fast indexed
+        # lookup that catches the prehraj.to-pipeline race) and re-
+        # check by `imdb_id` AFTER the TMDB fetch — `films.imdb_id`
+        # is what carries the UNIQUE constraint (`idx_films_imdb_id_unique`),
+        # so missing that branch is the actual UniqueViolation risk.
         cur.execute("SELECT id FROM films WHERE tmdb_id = %s", (tmdb_id,))
         existing = cur.fetchone()
         if existing:
@@ -346,6 +385,33 @@ def main() -> int:
                 """, (rid,))
                 conn.commit()
             continue
+
+        # Second-stage race check: `films.imdb_id` carries the actual
+        # UNIQUE constraint (`idx_films_imdb_id_unique`). A film row
+        # could exist with the same `imdb_id` but a different `tmdb_id`
+        # (e.g. SK Torrent imported it via IMDB-first resolution while
+        # this script's SELECT FOR UPDATE was still pending). INSERTing
+        # would crash; reuse the existing film instead.
+        if row.get("imdb_id"):
+            cur.execute("SELECT id FROM films WHERE imdb_id = %s",
+                        (row["imdb_id"],))
+            existing_by_imdb = cur.fetchone()
+            if existing_by_imdb:
+                existing_film_id = existing_by_imdb[0]
+                print(f"[{i:>3}] SKIP_EXISTING_IMDB imdb={row['imdb_id']} → "
+                      f"film_id={existing_film_id}  ← {sample_title[:60]}",
+                      flush=True)
+                counters["skipped_existing"] += 1
+                if not args.dry_run:
+                    cur.execute("""
+                        UPDATE prehrajto_unmatched_clusters
+                           SET resolved_film_id = %s,
+                               resolved_at = NOW(),
+                               last_failure_reason = NULL
+                         WHERE id = %s AND resolved_at IS NULL
+                    """, (existing_film_id, rid))
+                    conn.commit()
+                continue
 
         if args.dry_run:
             print(f"[{i:>3}] DRY-RUN  tmdb={tmdb_id} '{row['title']}' {row.get('year')}  "
