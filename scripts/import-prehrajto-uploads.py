@@ -98,6 +98,15 @@ def strip_title(title: str) -> str:
     t = re.sub(r"\(([^)]*)\)", r" \1 ", t)
     t = _YEAR_RE.sub(" ", t)
     t = re.sub(r"\.(?=[A-Za-z])", " ", t)
+    # Decompose diacritics here so the ASCII-only `\b...\b` keyword
+    # patterns below match Czech release-marker words too. Without this
+    # step, "Český Film" stays in the core as "ceskyfilm" because
+    # `re.IGNORECASE` doesn't lower diacritics — `\bcesky\b` never
+    # matches "Český". The final `normalize()` call would have stripped
+    # diacritics anyway, so this is a no-op for output shape, just lets
+    # the keyword filter actually fire on diacritic-bearing tokens.
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(c for c in t if not unicodedata.combining(c))
     for g in (
         r"c(?:z|s)\s*dabing", r"s(?:k|l)\s*dabing",
         r"c(?:z|s)\s*tit(?:ulky)?", r"s(?:k|l)\s*tit(?:ulky)?",
@@ -106,15 +115,21 @@ def strip_title(title: str) -> str:
     ):
         t = re.sub(g, " ", t, flags=re.IGNORECASE)
     t = re.sub(
-        r"\b(cz|sk|en|cesky|slovensky|titulky|tit|subs?|dub|eng|"
-        r"hd|fhd|full\s*hd|1080p|720p|4k|2160p|uhd|webrip|bluray|bdrip|dvdrip|"
-        r"hdtv|tvrip|hd\s*rip|dvd\s*rip|web\.?dl|x264|x265|h\.?264|h\.?265|hevc|"
-        r"aac|ac3|5\.1|avi|mkv|mp4|"
-        r"cely\s*film|cely|remastered|extended|uncut|directors?\s*cut|novinka|"
-        r"top\s*hit|hit|novinka|premiera|"
+        r"\b(cz|sk|en|cesky|slovensky|titulky|tit|subs?|dub|dab|eng|"
+        r"hd|fhd|full\s*hd|1080p?|720p?|480p|360p|4k|2160p|uhd|hdr10?\+?|"
+        r"webrip|web\.?dl|web|bluray|brrip|bdrip|dvdrip|hdtv|tvrip|hd\s*rip|"
+        r"dvd\s*rip|hdcam|telesync|telecine|trailer|"
+        r"x264|x265|h\.?264|h\.?265|hevc|xvid|divx|"
+        r"aac|ac3|dts(?:\.?hd)?|ddp?(?:5\.1|7\.1)?|truehd|atmos|5\.1(?:ch)?|7\.1(?:ch)?|"
+        r"avi|mkv|mp4|m4v|3gp|"
+        r"cely\s*film|cely|remastered|extended|uncut|unrated|directors?\s*cut|imax|"
+        r"novinka|top\s*hit|hit|novinka|premiera|"
+        r"3d|2d|"
+        r"v\s*obraze|vobraze|vobratu|vyborna|"
         r"romant\.?|drama|horor|thriller|akc\.?|komedie|sci[-.]?fi|fantasy|rodinny|"
         r"muzikal|p\.?p\.?|valec\.?|dobrodruzny|animovany|animovane|anim\.?|"
-        r"krimi|sportovni|koko|povidky|cd\.?\d*)\b",
+        r"krimi|sportovni|koko|povidky|cd\.?\d*|"
+        r"msdos|s1lv3r|chd(?:rip)?|baf|sparks|fgt|rarbg)\b",
         " ", t, flags=re.IGNORECASE,
     )
     t = re.sub(r"\s+", " ", t).strip(" -_.,/|")
@@ -210,6 +225,49 @@ def cluster_key(row: dict) -> tuple:
 _TITLE_SEPARATOR_RE = re.compile(r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*)")
 
 
+# Roman ↔ arabic numerals are interchangeable on uploader-typed titles
+# ("Rambo III" vs "Rambo 3", "Mizerové II" vs "Mizerové 2"). Films-side
+# titles tend to favour roman for older releases and arabic for newer
+# ones, but uploader titles use either. Both sides emit BOTH variants
+# at index time so a single normalize-and-compare suffices.
+_ROMAN_TO_ARABIC = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+                    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+_ARABIC_TO_ROMAN = {v: k for k, v in _ROMAN_TO_ARABIC.items()}
+
+
+def _digit_variants(core: str) -> list[str]:
+    """Return alternate forms of `core` differing only in numeric notation.
+
+    Specifically:
+      - trailing arabic digit `[1-9]` → equivalent roman (`shrek1` → `shreki`)
+      - trailing roman numeral → equivalent arabic (`ramboiii` → `rambo3`)
+      - trailing single-digit `1` stripped (`shrek1` → `shrek`) — uploaders
+        commonly add "1" to series-opener titles ("Spiderman 1", "Shrek 1",
+        "Insidious 1") to disambiguate from sequels; the films table stores
+        them under the bare base. We do NOT strip 2-9: dropping a digit
+        would conflate sequels with each other (e.g., "Bastardi 3" must not
+        match "Bastardi 2"). The year+duration anchor on the matching key
+        protects "1" specifically because the opener has its own year.
+    """
+    out = [core]
+    if not core:
+        return out
+    # Trailing arabic digit
+    m = re.search(r"([1-9])$", core)
+    if m:
+        d = int(m.group(1))
+        if d in _ARABIC_TO_ROMAN:
+            out.append(core[:m.start()] + _ARABIC_TO_ROMAN[d])
+        if d == 1 and len(core) > 1:
+            out.append(core[:m.start()])
+    # Trailing roman numeral (greedy — try longest first)
+    for r in sorted(_ROMAN_TO_ARABIC.keys(), key=len, reverse=True):
+        if core.endswith(r) and len(core) > len(r):
+            out.append(core[:-len(r)] + str(_ROMAN_TO_ARABIC[r]))
+            break
+    return out
+
+
 def cluster_key_candidates(row: dict) -> list[tuple]:
     """Return all plausible cluster keys for a sitemap row (#654).
 
@@ -241,9 +299,17 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
 
     def _add(s: str) -> None:
         c = normalize(s)
-        if c and c not in seen:
-            seen.add(c)
-            candidates.append(c)
+        if not c or c in seen:
+            return
+        # Emit the core PLUS its digit-form variants (`_digit_variants`).
+        # This lets "Spiderman 1" → ["spiderman1", "spiderman"] match a
+        # film stored as "Spider-Man" (core "spiderman"), and lets
+        # "Boyka IV" → ["boykaiv", "boyka4"] match a film stored under
+        # either notation.
+        for variant in _digit_variants(c):
+            if variant and variant not in seen:
+                seen.add(variant)
+                candidates.append(variant)
 
     _add(stripped)
     for seg in _TITLE_SEPARATOR_RE.split(stripped):
@@ -367,7 +433,7 @@ def load_matches(path: Path) -> dict[tuple, dict]:
     return matches_by_key
 
 
-def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
+def load_matches_from_films(cur, bucket_window: int = 3) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
     Replaces the original CSV path (#646) — the pilot CSV was a one-off
@@ -382,9 +448,14 @@ def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
     Cluster key strategy: prehraj.to clusters use a 3-min duration
     bucket. We anchor each film at `runtime_min // 3` and emit ±`bucket_window`
     buckets to absorb minor variance between TMDB runtime and the
-    sitemap's reported duration (intros/outros, slight re-encodes). Films
-    without `runtime_min` are skipped here — without a duration anchor we
-    risk false-positive matches across the entire 60-240 min band.
+    sitemap's reported duration. Default `±3` (≈±9 min) covers the
+    common cases: short opening/closing credits trims, TV vs theatrical
+    cuts, broadcast edits, and minor re-encode rounding. Wider windows
+    (≥±5) start over-matching across legitimately different cuts of
+    the same franchise; narrower (≤±2) loses easily-recoverable
+    legitimate matches. Films without `runtime_min` are skipped here —
+    without a duration anchor we risk false-positive matches across the
+    entire 60-240 min band.
 
     Determinism: rows are read `ORDER BY id` so collisions on the same
     `(title_core, year, bucket)` key always resolve to the lowest film
@@ -419,6 +490,11 @@ def load_matches_from_films(cur, bucket_window: int = 2) -> dict[tuple, dict]:
             c2 = normalize(strip_title(original_title))
             if c2:
                 cores.add(c2)
+        # Numeric-notation variants (Roman ↔ Arabic, trailing "1" drop).
+        # Symmetrical to the cluster-side emission in
+        # `cluster_key_candidates` so a single canonical comparison
+        # suffices regardless of which side carries which notation.
+        cores = {v for c in cores for v in _digit_variants(c)}
         if not cores:
             continue
         anchor = int(runtime_min) // 3
@@ -520,6 +596,15 @@ def main() -> int:
     # upload_ids seen this run so `upload_count` is a true snapshot, not
     # a cumulative counter inflated by re-seeing the same uploads.
     unmatched_clusters: dict[tuple, dict] = {}
+    # When a cluster DOES match — but via a non-first candidate (e.g.
+    # winner='spiderman' beats first='spiderman1') — the previous-run
+    # registry row was stored under the first candidate. The resolved-
+    # marking loop only sees the winning candidate, so it can't clear
+    # those rows. Track first→winning candidate pairings here so we
+    # can sweep the registry by the first-keys at resolved-time.
+    # Maps first_key (cluster_key, year, bucket) → winning_key (same
+    # shape) so we can join through `matches_by_key` later for film_id.
+    matched_first_to_winner: dict[tuple, tuple] = {}
     total_entries = 0
     film_shape_count = 0
     for p in files:
@@ -539,6 +624,8 @@ def main() -> int:
                 if k in wanted_keys:
                     clusters[k].append(r)
                     matched = True
+                    if candidates and candidates[0] != k:
+                        matched_first_to_winner[candidates[0]] = k
                     break
             if not matched and candidates:
                 # Use the first candidate as the canonical "unmatched"
@@ -957,6 +1044,26 @@ def main() -> int:
                 "cluster_key": key[0],
                 "year": key[1],
                 "duration_bucket": key[2],
+                "film_id": film_id,
+            })
+        # Also resolve registry rows keyed by the FIRST candidate of
+        # rows that matched via a later candidate. Without this, every
+        # cluster whose registry-key is its first candidate but whose
+        # winning candidate is something else (Spider-Man "spiderman1"→
+        # "spiderman", Insidious "insidious1"→"insidious") stays
+        # unresolved forever even though the importer happily writes
+        # uploads for the film.
+        for first_key, winning_key in matched_first_to_winner.items():
+            match = matches_by_key.get(winning_key)
+            if not match:
+                continue
+            film_id = imdb_to_film_id.get(match["imdb_id"])
+            if film_id is None:
+                continue
+            resolved_pairs.append({
+                "cluster_key": first_key[0],
+                "year": first_key[1],
+                "duration_bucket": first_key[2],
                 "film_id": film_id,
             })
         if resolved_pairs:
