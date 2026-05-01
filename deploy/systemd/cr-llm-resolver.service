@@ -1,5 +1,5 @@
 [Unit]
-Description=CR — LLM-based TMDB-ID resolver for prehraj.to unmatched clusters (#668)
+Description=CR — prehraj.to LLM resolver + NEW_TMDB → films auto-import (#652)
 Documentation=https://github.com/Olbrasoft/cr/issues/652
 # Wait for Docker / Postgres to be up. `After=cr-prehrajto-sync` only
 # orders start jobs in the same transaction — it does NOT prevent the
@@ -35,6 +35,15 @@ ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-prehrajto-sync.serv
 # --retry-after-days 7: don't reprocess clusters the resolver already
 #   touched within the last 7 days.
 ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/resolve-unmatched-via-llm.py --limit 200 --min-uploads 2 --retry-after-days 7'
+# Stage 2: import NEW_TMDB candidates (resolved_tmdb_id IS NOT NULL
+# AND resolved_film_id IS NULL) from the registry into the films
+# table. Cap at 50 / day — TMDB allows 4 rps and we burn 2 calls per
+# film (~25 s wall-clock for 50 films). Films with NULL description
+# get backfilled by a separate Gemma rewrite pass, not here. The
+# attachment of prehraj.to uploads (video_sources) happens on the
+# next cr-prehrajto-sync run via cluster_key match against the
+# newly-inserted films.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/import-prehrajto-tmdb-as-film.py --limit 50'
 StandardOutput=append:/var/log/cr-llm-resolver.log
 StandardError=append:/var/log/cr-llm-resolver.log
 # No auto-restart: a Gemma quota / TMDB outage shouldn't cause an
