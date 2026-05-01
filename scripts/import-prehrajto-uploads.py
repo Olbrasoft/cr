@@ -222,7 +222,15 @@ def cluster_key(row: dict) -> tuple:
 # spacing around ":" — but require at least one whitespace adjacency for
 # the dash/slash/pipe forms so we don't split inside hyphenated words
 # like "Spider-Man" or path-shaped tokens.
-_TITLE_SEPARATOR_RE = re.compile(r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*)")
+#
+# Bare-hyphen variant `(?<=\d)-(?=[A-Za-z])` catches digit-dash-letter
+# transitions ("Stmivani 2-Novy Mesic", "Avengers 4-Endgame") that the
+# whitespace-bordered patterns miss. Restricting to digit→letter avoids
+# accidentally splitting "Spider-Man", "X-Men", "PG-13", or hyphenated
+# Czech compound nouns like "high-tech".
+_TITLE_SEPARATOR_RE = re.compile(
+    r"(?:\s+[-/|]\s*|\s*[-/|]\s+|\s*:\s*|(?<=\d)-(?=[A-Za-z]))"
+)
 
 
 # Roman ↔ arabic numerals are interchangeable on uploader-typed titles
@@ -440,7 +448,11 @@ def load_matches(path: Path) -> dict[tuple, dict]:
     return matches_by_key
 
 
-def load_matches_from_films(cur, bucket_window: int = 3) -> dict[tuple, dict]:
+def load_matches_from_films(
+    cur,
+    bucket_window_full: int = 5,
+    bucket_window_segment: int = 3,
+) -> dict[tuple, dict]:
     """Build the cluster_key → imdb_id map directly from the `films` table.
 
     Replaces the original CSV path (#646) — the pilot CSV was a one-off
@@ -453,16 +465,26 @@ def load_matches_from_films(cur, bucket_window: int = 3) -> dict[tuple, dict]:
     (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
 
     Cluster key strategy: prehraj.to clusters use a 3-min duration
-    bucket. We anchor each film at `runtime_min // 3` and emit ±`bucket_window`
-    buckets to absorb minor variance between TMDB runtime and the
-    sitemap's reported duration. Default `±3` (≈±9 min) covers the
-    common cases: short opening/closing credits trims, TV vs theatrical
-    cuts, broadcast edits, and minor re-encode rounding. Wider windows
-    (≥±5) start over-matching across legitimately different cuts of
-    the same franchise; narrower (≤±2) loses easily-recoverable
-    legitimate matches. Films without `runtime_min` are skipped here —
-    without a duration anchor we risk false-positive matches across the
-    entire 60-240 min band.
+    bucket. We anchor each film at `runtime_min // 3` and emit two tiers
+    of variant cores around it:
+
+      - *Full-title* cores (e.g. "twilightsaganovymesic" from
+        "Twilight sága: Nový měsíc") are highly distinctive — once a
+        cluster's full normalized core matches a film's full core,
+        the title alone is enough to disambiguate. We allow
+        ±`bucket_window_full` (default ±5 buckets ≈ ±15 min) to
+        absorb TV cuts vs theatrical, broadcast trims, regional
+        re-edits, and minor re-encodes.
+
+      - *Segment* cores (e.g. "novymesic" from the same film, after
+        splitting on ":") are weaker — `novymesic` could in principle
+        belong to a different film with a similar localized subtitle.
+        Held to ±`bucket_window_segment` (default ±3 buckets ≈ ±9 min)
+        to keep cross-film bleed minimal.
+
+    Films without `runtime_min` are skipped here — without a duration
+    anchor we risk false-positive matches across the entire 60-240 min
+    band.
 
     Determinism: rows are read `ORDER BY id` so collisions on the same
     `(title_core, year, bucket)` key always resolve to the lowest film
@@ -489,36 +511,63 @@ def load_matches_from_films(cur, bucket_window: int = 3) -> dict[tuple, dict]:
         # "Spasitel - Project Hail Mary HD CZ DABING" expand on the
         # parser side into ['spasitel', 'projecthailmary'] candidates,
         # so both forms produce a match key here.
-        cores: set[str] = set()
-        c1 = normalize(strip_title(title))
-        if c1:
-            cores.add(c1)
+        full_cores: set[str] = set()
+        seg_cores: set[str] = set()
+
+        def _emit(s: str) -> None:
+            """Decompose `s` into one full-title core plus its
+            segment cores (split on `_TITLE_SEPARATOR_RE`, same
+            separator the cluster side uses). Cluster "After -
+            Přiznání" matches film "After: Přiznání" via the segment
+            `priznani`; cluster "Stmívání 2-Nový Měsíc" matches film
+            "Twilight sága: Nový měsíc" via the segment `novymesic`.
+            Segment cores ≤3 chars are dropped to avoid `the`/`a`/
+            `of` spuriously matching every film starting with that
+            token (year+duration anchor would catch most but not
+            all)."""
+            stripped = strip_title(s) if s else ""
+            full = normalize(stripped)
+            if full:
+                full_cores.add(full)
+            for seg in _TITLE_SEPARATOR_RE.split(stripped):
+                seg_core = normalize(seg)
+                if seg_core and len(seg_core) >= 4 and seg_core != full:
+                    seg_cores.add(seg_core)
+
+        _emit(title)
         if original_title and original_title.strip():
-            c2 = normalize(strip_title(original_title))
-            if c2:
-                cores.add(c2)
+            _emit(original_title)
         # Numeric-notation variants (Roman ↔ Arabic, trailing "1" drop).
         # Symmetrical to the cluster-side emission in
         # `cluster_key_candidates` so a single canonical comparison
         # suffices regardless of which side carries which notation.
-        cores = {v for c in cores for v in _digit_variants(c)}
-        if not cores:
+        full_cores = {v for c in full_cores for v in _digit_variants(c)}
+        seg_cores = {v for c in seg_cores for v in _digit_variants(c)}
+        # Segments that happen to equal the full core (one-segment
+        # title, no separator) are already in `full_cores` — drop the
+        # duplicate so the wider full-tier window is used.
+        seg_cores -= full_cores
+        if not (full_cores or seg_cores):
             continue
         anchor = int(runtime_min) // 3
-        for core in cores:
-            for dur_bucket in range(anchor - bucket_window, anchor + bucket_window + 1):
-                if dur_bucket < 0:
-                    continue
-                key = (core, year, dur_bucket)
-                existing = matches.get(key)
-                if existing is None:
-                    matches[key] = {
-                        "imdb_id": imdb_id,
-                        "_film_id": film_id,
-                        "_source": "films_table",
-                    }
-                elif existing["_film_id"] != film_id:
-                    collisions.append((key, existing["_film_id"], film_id))
+        for cores, window in (
+            (full_cores, bucket_window_full),
+            (seg_cores,  bucket_window_segment),
+        ):
+            for core in cores:
+                for dur_bucket in range(anchor - window, anchor + window + 1):
+                    if dur_bucket < 0:
+                        continue
+                    key = (core, year, dur_bucket)
+                    existing = matches.get(key)
+                    if existing is None:
+                        matches[key] = {
+                            "imdb_id": imdb_id,
+                            "_film_id": film_id,
+                            "_source": "films_table",
+                        }
+                    elif existing["_film_id"] != film_id:
+                        collisions.append((key, existing["_film_id"], film_id))
     if skipped_no_runtime:
         print(f"  load_matches_from_films: skipped {skipped_no_runtime} films "
               f"without runtime_min (would match too widely)", flush=True)
