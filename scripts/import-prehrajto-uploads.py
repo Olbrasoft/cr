@@ -299,6 +299,19 @@ def cluster_key_candidates(row: dict) -> list[tuple]:
          separators (and one-sided variants — see `_TITLE_SEPARATOR_RE`).
       3. The first whitespace-separated word — catches descriptive
          uploads like "Spasitel sci-fi-drama USA Ryan Gosling".
+      4. Each individual ≥`_TOKEN_MIN_LEN`-char word from the stripped
+         title — catches uploads where only one word actually names the
+         film and the rest is descriptive padding (e.g. "Keep Watching
+         [CZ dabing, 2017, horor] Home invasion" — token `watching`
+         matches film "Keep Watching"). The cluster side emits these
+         liberally; the films-side index applies a per-year-uniqueness
+         filter and a tighter ±2-bucket duration window so generic
+         tokens are discarded server-side and don't generate matches.
+
+    Order is also priority order — at lookup time the importer takes
+    the first candidate that hits a `wanted_keys` entry, so more
+    specific cores (full → segment → first-word → token) win when
+    multiple variants would match.
 
     Year + duration anchor unchanged across all candidates, so false
     positives stay bounded by those fields. The films-table side now
@@ -523,8 +536,8 @@ def load_matches_from_films(
     (which expects `matches_by_key[k]["imdb_id"]`) is unchanged.
 
     Cluster key strategy: prehraj.to clusters use a 3-min duration
-    bucket. We anchor each film at `runtime_min // 3` and emit two tiers
-    of variant cores around it:
+    bucket. We anchor each film at `runtime_min // 3` and emit three
+    tiers of variant cores around it:
 
       - *Full-title* cores (e.g. "twilightsaganovymesic" from
         "Twilight sága: Nový měsíc") are highly distinctive — once a
@@ -539,6 +552,27 @@ def load_matches_from_films(
         belong to a different film with a similar localized subtitle.
         Held to ±`bucket_window_segment` (default ±3 buckets ≈ ±9 min)
         to keep cross-film bleed minimal.
+
+      - *Token* cores (e.g. "watching" from "Keep Watching", or
+        "diamantem" from "Honba za diamantem") are individual
+        ≥`_TOKEN_MIN_LEN`-char words pulled out of the stripped title.
+        Catches sitemap titles that pad the film name with descriptive
+        text ("Keep Watching [CZ dabing, 2017, horor] Home invasion").
+        Two false-positive guards ride on this tier: a per-year
+        uniqueness filter — a token is indexed only if it appears in
+        ≤`_TOKEN_MAX_FILMS_PER_YEAR` distinct films for that release
+        year, so generic Czech adjectives like "posledni"/"velka"/
+        "modra" that show up in many titles per year never make it
+        into the index — and a tighter ±`bucket_window_token` (default
+        ±2 buckets ≈ ±6 min) so single-word matches require the
+        cluster's reported duration to be much closer to the film's
+        runtime. The uniqueness pass requires a first scan over the
+        films table to build the per-(token, year) census; the second
+        pass actually indexes.
+
+    Tier dedup ensures every core lands in exactly one tier (full
+    wins over segment wins over token) so the index uses that tier's
+    bucket window and not a wider one.
 
     Films without `runtime_min` are skipped here — without a duration
     anchor we risk false-positive matches across the entire 60-240 min
