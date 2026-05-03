@@ -800,12 +800,16 @@ pub async fn films_list(
     }
 }
 
-/// True when `?q=…` is a real search query — same trim+length gate
-/// the search predicate uses. Single source of truth so the
-/// search-cache branch and the predicate gate can't drift apart
-/// (Copilot review on #674).
+/// True when `?q=…` is a real search query — same trim+length
+/// gate the search predicate uses (`raw_q` filters `t.len() >= 2`,
+/// byte length). Single source of truth so the search-cache branch
+/// and the predicate gate can't drift apart (Copilot review on
+/// #674 and #675 — the latter caught this helper using
+/// `chars().count()` instead of byte `len()`, which would split
+/// on a single multibyte char like `á` and leave that real search
+/// page uncached).
 fn is_active_search(q: Option<&str>) -> bool {
-    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
+    q.map(str::trim).is_some_and(|t| t.len() >= 2)
 }
 
 /// Serialize the current filter params into a BTreeMap keyed by query
@@ -2024,11 +2028,11 @@ mod tests {
 
     #[test]
     fn is_active_search_gate_matches_predicate_threshold() {
-        // Must mirror `raw_q`'s `len() >= 2` filter so the
-        // search-cache branch in `films_list` and the search
-        // predicate gate stay in sync — Copilot review on #674
-        // caught the original looser check letting `?q=a` mark
-        // non-search pages with the search cache header.
+        // Must mirror the search predicate's `t.len() >= 2`
+        // (byte length, not char count) so a single multibyte
+        // char like `á` (2 bytes, 1 char) hits both branches.
+        // Drift here would leave real search pages uncached
+        // (#675 review).
         assert!(!is_active_search(None));
         assert!(!is_active_search(Some("")));
         assert!(!is_active_search(Some("   ")));
@@ -2036,21 +2040,20 @@ mod tests {
         assert!(!is_active_search(Some("  a  ")));
         assert!(is_active_search(Some("ab")));
         assert!(is_active_search(Some("  ab  ")));
-        // Diacritic-only counts as a real character — `chars().count()`
-        // on "á" is 1 (single grapheme), but "áb" is 2.
-        assert!(!is_active_search(Some("á")));
+        // Single multibyte char: 2 bytes ≥ 2 → active. The byte-
+        // length gate is what the search predicate uses, so this
+        // must stay true.
+        assert!(is_active_search(Some("á")));
         assert!(is_active_search(Some("áb")));
     }
 
     #[test]
-    fn search_cached_json_helper_uses_private_short_max_age() {
-        // Lock the contract: every body wrapped by
-        // `search_cached_json` must come back with the standard
-        // `private, max-age=60` policy. Two failure modes to guard:
-        //   - regression to bare `no-store` (wasteful, what we
-        //     replaced),
-        //   - missing `private` (would let CF / ISP caches store
-        //     query-derived responses).
+    fn search_cached_json_helper_locks_exact_cache_policy() {
+        // Lock the exact policy: substring matching on `max-age=60`
+        // would let `max-age=600` pass silently; substring on
+        // `private` would let `public, private` pass. The whole
+        // point of this header is the precise policy, so assert
+        // bytes-equal.
         let resp = super::super::search_cached_json(Vec::<u8>::new());
         let cc = resp
             .headers()
@@ -2058,17 +2061,16 @@ mod tests {
             .expect("Cache-Control header must be set")
             .to_str()
             .unwrap();
-        assert!(cc.contains("private"), "missing `private`: {cc}");
-        assert!(cc.contains("max-age=60"), "missing `max-age=60`: {cc}");
-        assert!(!cc.contains("public"), "must not be `public`: {cc}");
-        assert!(!cc.contains("no-store"), "must not be `no-store`: {cc}");
+        assert_eq!(cc, "private, max-age=60", "exact policy required");
     }
 
     #[test]
-    fn search_cached_html_helper_uses_private_short_max_age() {
-        // Same contract for the HTML helper used by
+    fn search_cached_html_helper_locks_exact_cache_policy() {
+        // Same exact-match contract for the HTML helper used by
         // `films_list` / `series_list` / `tv_porady_list` on the
-        // search-active branch.
+        // search-active branch. A future regression to something
+        // like `private, max-age=60, no-store` (which would stop
+        // browsers from reusing the page entirely) must fail here.
         let resp = super::super::search_cached_html(String::from("<p>hi</p>"));
         let cc = resp
             .headers()
@@ -2076,9 +2078,7 @@ mod tests {
             .expect("Cache-Control header must be set")
             .to_str()
             .unwrap();
-        assert!(cc.contains("private"), "missing `private`: {cc}");
-        assert!(cc.contains("max-age=60"), "missing `max-age=60`: {cc}");
-        assert!(!cc.contains("public"), "must not be `public`: {cc}");
+        assert_eq!(cc, "private, max-age=60", "exact policy required");
     }
 
     #[test]

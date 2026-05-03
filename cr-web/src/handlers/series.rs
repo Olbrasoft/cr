@@ -505,11 +505,11 @@ pub async fn series_list(
 }
 
 /// True when `?q=…` is a real search query — same trim+length gate
-/// the search predicate uses. Single source of truth so the
-/// search-cache branch and the predicate gate can't drift apart
-/// (Copilot review on #674).
+/// the search predicate uses (`search_q` filters `t.len() >= 2`,
+/// byte length). Single source of truth so the search-cache branch
+/// and the predicate gate can't drift apart on multibyte chars.
 fn is_active_search(q: Option<&str>) -> bool {
-    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
+    q.map(str::trim).is_some_and(|t| t.len() >= 2)
 }
 
 /// Latest-episode-per-series query. Supports include/exclude genre slug lists
