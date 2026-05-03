@@ -1184,10 +1184,16 @@ pub async fn films_search(
 async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchRow>, sqlx::Error> {
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
+    // WHERE matches via `unaccent()` so "laska nebeska" finds "Láska
+    // nebeská" (#673). ORDER BY keeps the raw ILIKE in the CASE
+    // arms — rows whose title literally contains the query (with the
+    // user's diacritics) win bucket 0/1/2; rows that only match after
+    // unaccent fall to bucket 3, behind the diacritic-exact hits.
     sqlx::query_as::<_, SearchRow>(
         "SELECT slug, title, year, imdb_rating \
          FROM films \
-         WHERE title ILIKE $1 OR original_title ILIKE $1 \
+         WHERE unaccent(title) ILIKE unaccent($1) \
+            OR unaccent(original_title) ILIKE unaccent($1) \
          ORDER BY \
            CASE WHEN title ILIKE $2 THEN 0 \
                 WHEN title ILIKE $1 THEN 1 \
@@ -1211,8 +1217,8 @@ async fn search_films_by_title_year(
     sqlx::query_as::<_, SearchRow>(
         "SELECT slug, title, year, imdb_rating \
          FROM films \
-         WHERE CONCAT_WS(' ', title, year::text) ILIKE $1 \
-            OR CONCAT_WS(' ', original_title, year::text) ILIKE $1 \
+         WHERE unaccent(CONCAT_WS(' ', title, year::text)) ILIKE unaccent($1) \
+            OR unaccent(CONCAT_WS(' ', original_title, year::text)) ILIKE unaccent($1) \
          ORDER BY \
            CASE WHEN CONCAT_WS(' ', title, year::text) ILIKE $2 THEN 0 \
                 WHEN CONCAT_WS(' ', title, year::text) ILIKE $1 THEN 1 \
@@ -1252,6 +1258,25 @@ enum FilmsSearchMode {
 
 impl FilmsSearchMode {
     fn predicate(self, bind_idx: usize) -> String {
+        match self {
+            Self::Primary => {
+                format!(
+                    "(unaccent(f.title) ILIKE unaccent(${bind_idx}) \
+                     OR unaccent(f.original_title) ILIKE unaccent(${bind_idx}))"
+                )
+            }
+            Self::TitleYear => format!(
+                "(unaccent(CONCAT_WS(' ', f.title, f.year::text)) ILIKE unaccent(${bind_idx}) \
+                 OR unaccent(CONCAT_WS(' ', f.original_title, f.year::text)) ILIKE unaccent(${bind_idx}))"
+            ),
+        }
+    }
+
+    /// Same shape as `predicate` but without the `unaccent()` wrapper —
+    /// matches only when the column literally contains the user's
+    /// diacritics. Used in ORDER BY to push diacritic-exact hits in
+    /// front of unaccent-only hits.
+    fn raw_predicate(self, bind_idx: usize) -> String {
         match self {
             Self::Primary => {
                 format!("(f.title ILIKE ${bind_idx} OR f.original_title ILIKE ${bind_idx})")
@@ -1388,10 +1413,22 @@ async fn run_films_query(
     }
     let count_row = cq.fetch_one(db).await?;
 
+    // When a search is active, push rows whose title literally contains
+    // the user's query (with diacritics) ahead of rows that match only
+    // after `unaccent()` — see #673. The search pattern is bound at $1.
+    let order_clause = if search_pattern.is_some() {
+        format!(
+            "(CASE WHEN {raw} THEN 0 ELSE 1 END), {order}",
+            raw = mode.raw_predicate(1)
+        )
+    } else {
+        order.to_string()
+    };
+
     let films_query = format!(
         "SELECT {FILM_COLUMNS} \
          FROM films f {where_clause} \
-         ORDER BY {order} \
+         ORDER BY {order_clause} \
          LIMIT ${limit_idx} OFFSET ${offset_idx}",
         limit_idx = bind_idx,
         offset_idx = bind_idx + 1
