@@ -789,13 +789,22 @@ pub async fn films_list(
     };
     let html = tmpl.render()?;
     // Search-result HTML is `?q=`-derived: don't let the browser pin
-    // it via heuristic / bfcache (#673 follow-up). Filter-only listing
-    // pages are fine to cache normally — they're shared across users.
-    if params.q.as_deref().is_some_and(|t| !t.trim().is_empty()) {
-        Ok(([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response())
+    // it via heuristic / bfcache (#673 follow-up). Gate matches the
+    // actual search predicate (`raw_q` filters `len() >= 2`), so
+    // `?q=a` still gets the cacheable default listing.
+    if is_active_search(params.q.as_deref()) {
+        Ok(super::no_store_html(html))
     } else {
         Ok(Html(html).into_response())
     }
+}
+
+/// True when `?q=…` is a real search query — same trim+length gate
+/// the search predicate uses. Single source of truth so the no-store
+/// branch and the predicate gate can't drift apart (Copilot review
+/// on #674).
+fn is_active_search(q: Option<&str>) -> bool {
+    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
 }
 
 /// Serialize the current filter params into a BTreeMap keyed by query
@@ -1162,7 +1171,7 @@ pub async fn films_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(no_store_json(Vec::<SearchResult>::new()));
+        return Ok(super::no_store_json(Vec::<SearchResult>::new()));
     }
 
     let mut rows = search_films_by_title(&state.db, q).await?;
@@ -1186,16 +1195,7 @@ pub async fn films_search(
         })
         .collect();
 
-    Ok(no_store_json(results))
-}
-
-/// Wrap any JSON-serializable body with `Cache-Control: no-store` so
-/// that mobile browsers don't apply heuristic caching to autocomplete
-/// fetches — without an explicit header the heuristic can pin a stale
-/// response for minutes (#673 follow-up: phone reports of search
-/// "still not working" after the diacritics fix shipped).
-fn no_store_json<T: serde::Serialize>(body: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+    Ok(super::no_store_json(results))
 }
 
 async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchRow>, sqlx::Error> {
@@ -2019,7 +2019,54 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilmsQuery, FilmsSearchMode, normalize_query};
+    use super::{FilmsQuery, FilmsSearchMode, is_active_search, normalize_query};
+
+    #[test]
+    fn is_active_search_gate_matches_predicate_threshold() {
+        // Must mirror `raw_q`'s `len() >= 2` filter so the no-store
+        // branch in `films_list` and the search predicate gate stay
+        // in sync — Copilot review on #674 caught the original
+        // looser check letting `?q=a` mark non-search pages no-store.
+        assert!(!is_active_search(None));
+        assert!(!is_active_search(Some("")));
+        assert!(!is_active_search(Some("   ")));
+        assert!(!is_active_search(Some("a")));
+        assert!(!is_active_search(Some("  a  ")));
+        assert!(is_active_search(Some("ab")));
+        assert!(is_active_search(Some("  ab  ")));
+        // Diacritic-only counts as a real character — `chars().count()`
+        // on "á" is 1 (single grapheme), but "áb" is 2.
+        assert!(!is_active_search(Some("á")));
+        assert!(is_active_search(Some("áb")));
+    }
+
+    #[test]
+    fn no_store_json_helper_attaches_cache_control() {
+        // Lock the contract: every body wrapped by `no_store_json`
+        // must come back with `Cache-Control: no-store`. Without this
+        // header mobile browsers can heuristically cache autocomplete
+        // fetches and serve a stale payload across deploys (#673
+        // follow-up incident).
+        let resp = super::super::no_store_json(Vec::<u8>::new());
+        let cc = resp
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .expect("Cache-Control header must be set");
+        assert_eq!(cc.to_str().unwrap(), "no-store");
+    }
+
+    #[test]
+    fn no_store_html_helper_attaches_cache_control() {
+        // Same contract for the HTML helper used by
+        // `films_list` / `series_list` / `tv_porady_list` when a
+        // search query is active.
+        let resp = super::super::no_store_html(String::from("<p>hi</p>"));
+        let cc = resp
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .expect("Cache-Control header must be set");
+        assert_eq!(cc.to_str().unwrap(), "no-store");
+    }
 
     #[test]
     fn predicate_wraps_columns_in_unaccent() {

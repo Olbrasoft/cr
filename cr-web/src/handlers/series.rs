@@ -493,12 +493,22 @@ pub async fn series_list(
     let html = tmpl.render()?;
     // Search-result HTML is `?q=`-derived: no-store keeps mobile
     // bfcache / heuristic caching from pinning a stale page (#673
-    // follow-up). Filter-only listing pages stay cacheable.
-    if params.q.as_deref().is_some_and(|t| !t.trim().is_empty()) {
-        Ok(([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response())
+    // follow-up). Gate matches the actual search predicate above
+    // (`search_q` filters `len() >= 2`) — `?q=a` still gets the
+    // cacheable default listing.
+    if is_active_search(params.q.as_deref()) {
+        Ok(super::no_store_html(html))
     } else {
         Ok(Html(html).into_response())
     }
+}
+
+/// True when `?q=…` is a real search query — same trim+length gate
+/// the search predicate uses. Single source of truth so the no-store
+/// branch and the predicate gate can't drift apart (Copilot review
+/// on #674).
+fn is_active_search(q: Option<&str>) -> bool {
+    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
 }
 
 /// Latest-episode-per-series query. Supports include/exclude genre slug lists
@@ -1145,7 +1155,7 @@ pub async fn series_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(no_store_json(Vec::<SeriesSearchResult>::new()));
+        return Ok(super::no_store_json(Vec::<SeriesSearchResult>::new()));
     }
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
@@ -1182,14 +1192,7 @@ pub async fn series_search(
         })
         .collect();
 
-    Ok(no_store_json(results))
-}
-
-/// Wrap any JSON-serializable body with `Cache-Control: no-store` so
-/// mobile browsers don't apply heuristic caching to autocomplete
-/// responses (#673 follow-up).
-fn no_store_json<T: serde::Serialize>(body: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+    Ok(super::no_store_json(results))
 }
 
 pub async fn series_cover(
