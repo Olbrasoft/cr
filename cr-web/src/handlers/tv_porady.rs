@@ -236,10 +236,14 @@ pub async fn tv_porady_list(
         }
     });
 
+    // Search uses `unaccent()` so "cernobyl" finds "Černobyl" (#673
+    // parity with films/series). Diacritic-exact hits rank first via
+    // the leading CASE in ORDER BY.
     let (total_count, shows, episodes) = if let Some(ref pattern) = search_q {
         let count_row = sqlx::query_as::<_, CountRow>(
             "SELECT count(*) as count FROM tv_shows \
-             WHERE title ILIKE $1 OR original_title ILIKE $1",
+             WHERE unaccent(title) ILIKE unaccent($1) \
+                OR unaccent(original_title) ILIKE unaccent($1)",
         )
         .bind(pattern)
         .fetch_one(&state.db)
@@ -251,8 +255,11 @@ pub async fn tv_porady_list(
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s \
-             WHERE s.title ILIKE $1 OR s.original_title ILIKE $1 \
-             ORDER BY {order} LIMIT $2 OFFSET $3"
+             WHERE unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1) \
+             ORDER BY \
+               (CASE WHEN s.title ILIKE $1 OR s.original_title ILIKE $1 THEN 0 ELSE 1 END), \
+               {order} LIMIT $2 OFFSET $3"
         );
         let rows = sqlx::query_as::<_, TvShowRow>(&query)
             .bind(pattern)
@@ -296,7 +303,23 @@ pub async fn tv_porady_list(
         query_string,
         search_query,
     };
-    Ok(Html(tmpl.render()?).into_response())
+    let html = tmpl.render()?;
+    // Search-result HTML is `?q=`-derived: no-store keeps mobile
+    // bfcache / heuristic caching from pinning a stale page (#673
+    // / #674 parity with films and series). Gate matches the search
+    // predicate (`search_q` filters `len() >= 2`).
+    if is_active_search(params.q.as_deref()) {
+        Ok(super::no_store_html(html))
+    } else {
+        Ok(Html(html).into_response())
+    }
+}
+
+/// True when `?q=…` is a real search query — same trim+length gate
+/// the search predicate uses. Single source of truth so the no-store
+/// branch and the predicate gate can't drift apart.
+fn is_active_search(q: Option<&str>) -> bool {
+    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
 }
 
 async fn fetch_latest_episode_cards(
@@ -358,14 +381,19 @@ pub async fn tv_porady_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(axum::Json(Vec::<TvPoradSearchResult>::new()).into_response());
+        return Ok(super::no_store_json(Vec::<TvPoradSearchResult>::new()));
     }
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
+    // WHERE matches via `unaccent()` for the same reason as films and
+    // series (#673): "cernobyl" finds "Černobyl". Raw ILIKE in the
+    // CASE keeps diacritic-exact hits ranked ahead of unaccent-only
+    // hits.
     let rows = sqlx::query_as::<_, TvPoradSearchRow>(
         "SELECT slug, title, first_air_year, imdb_rating \
          FROM tv_shows \
-         WHERE title ILIKE $1 OR original_title ILIKE $1 \
+         WHERE unaccent(title) ILIKE unaccent($1) \
+            OR unaccent(original_title) ILIKE unaccent($1) \
          ORDER BY \
            CASE WHEN title ILIKE $2 THEN 0 \
                 WHEN title ILIKE $1 THEN 1 \
@@ -390,7 +418,7 @@ pub async fn tv_porady_search(
         })
         .collect();
 
-    Ok(axum::Json(results).into_response())
+    Ok(super::no_store_json(results))
 }
 
 /// GET /tv-porady/{slug}/ — TV pořad detail with episode list.

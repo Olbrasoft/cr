@@ -54,6 +54,27 @@ pub use video_api::{
 };
 pub use voices::voices;
 
+// --- Shared response helpers ---
+
+/// Wrap a JSON-serializable body with `Cache-Control: no-store`.
+///
+/// Used by the diacritics-aware search APIs (`/api/films/search`,
+/// `/api/series/search`, `/api/tv-porady/search`) so mobile browsers
+/// don't apply heuristic caching to autocomplete fetches and pin a
+/// stale payload across deploys (#673 → #674 follow-up).
+pub(crate) fn no_store_json<T: serde::Serialize>(body: T) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+}
+
+/// Wrap a rendered HTML body with `Cache-Control: no-store`. Same
+/// motivation as `no_store_json` — used by search-result listing
+/// pages (`/filmy-online/?q=…` etc.) where the response depends
+/// entirely on the user's query and bfcache / heuristic browser
+/// caching can serve a stale page after a deploy.
+pub(crate) fn no_store_html(html: String) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response()
+}
+
 // --- DB row types ---
 
 #[derive(sqlx::FromRow)]

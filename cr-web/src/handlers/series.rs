@@ -490,7 +490,25 @@ pub async fn series_list(
         selected_genre_slugs,
         series_genres_map,
     };
-    Ok(Html(tmpl.render()?).into_response())
+    let html = tmpl.render()?;
+    // Search-result HTML is `?q=`-derived: no-store keeps mobile
+    // bfcache / heuristic caching from pinning a stale page (#673
+    // follow-up). Gate matches the actual search predicate above
+    // (`search_q` filters `len() >= 2`) — `?q=a` still gets the
+    // cacheable default listing.
+    if is_active_search(params.q.as_deref()) {
+        Ok(super::no_store_html(html))
+    } else {
+        Ok(Html(html).into_response())
+    }
+}
+
+/// True when `?q=…` is a real search query — same trim+length gate
+/// the search predicate uses. Single source of truth so the no-store
+/// branch and the predicate gate can't drift apart (Copilot review
+/// on #674).
+fn is_active_search(q: Option<&str>) -> bool {
+    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
 }
 
 /// Latest-episode-per-series query. Supports include/exclude genre slug lists
@@ -1137,7 +1155,7 @@ pub async fn series_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(axum::Json(Vec::<SeriesSearchResult>::new()).into_response());
+        return Ok(super::no_store_json(Vec::<SeriesSearchResult>::new()));
     }
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
@@ -1174,7 +1192,7 @@ pub async fn series_search(
         })
         .collect();
 
-    Ok(axum::Json(results).into_response())
+    Ok(super::no_store_json(results))
 }
 
 pub async fn series_cover(
