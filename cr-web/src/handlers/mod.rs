@@ -56,23 +56,42 @@ pub use voices::voices;
 
 // --- Shared response helpers ---
 
-/// Wrap a JSON-serializable body with `Cache-Control: no-store`.
+/// Cache directive used by the diacritics-aware search responses
+/// (`/api/films/search`, `/api/series/search`, `/api/tv-porady/search`,
+/// and the `?q=…`-derived HTML on `/filmy-online/`, `/serialy-online/`,
+/// `/tv-porady/`).
 ///
-/// Used by the diacritics-aware search APIs (`/api/films/search`,
-/// `/api/series/search`, `/api/tv-porady/search`) so mobile browsers
-/// don't apply heuristic caching to autocomplete fetches and pin a
-/// stale payload across deploys (#673 → #674 follow-up).
-pub(crate) fn no_store_json<T: serde::Serialize>(body: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+/// `private` keeps shared caches (Cloudflare, ISPs, corporate proxies)
+/// out — these responses are query-derived and may differ per user
+/// once auth lands. `max-age=60` lets the browser reuse the response
+/// for up to a minute, which saves a round trip on:
+///   - rapid back/forward navigation (bfcache and HTTP cache),
+///   - re-typing the same autocomplete query,
+///   - returning to a search-result page from a film detail.
+///
+/// One minute is short enough that newly-imported films / episodes
+/// (cr-llm-resolver runs daily) show up promptly while still cutting
+/// the duplicate-fetch traffic that motivated the #674 incident — the
+/// earlier `no-store` policy was the strict but wasteful first fix;
+/// this is the standard recommendation for query-dependent dynamic
+/// content.
+const SEARCH_CACHE_CONTROL: &str = "private, max-age=60";
+
+/// Wrap a JSON-serializable body with the standard search cache
+/// header. See `SEARCH_CACHE_CONTROL` for the rationale.
+pub(crate) fn search_cached_json<T: serde::Serialize>(body: T) -> Response {
+    (
+        [(header::CACHE_CONTROL, SEARCH_CACHE_CONTROL)],
+        axum::Json(body),
+    )
+        .into_response()
 }
 
-/// Wrap a rendered HTML body with `Cache-Control: no-store`. Same
-/// motivation as `no_store_json` — used by search-result listing
-/// pages (`/filmy-online/?q=…` etc.) where the response depends
-/// entirely on the user's query and bfcache / heuristic browser
-/// caching can serve a stale page after a deploy.
-pub(crate) fn no_store_html(html: String) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response()
+/// Wrap a rendered HTML body with the standard search cache header.
+/// Used by the `?q=…`-active branches of the listing handlers; the
+/// default (no-query) branch keeps its existing caching behavior.
+pub(crate) fn search_cached_html(html: String) -> Response {
+    ([(header::CACHE_CONTROL, SEARCH_CACHE_CONTROL)], Html(html)).into_response()
 }
 
 // --- DB row types ---

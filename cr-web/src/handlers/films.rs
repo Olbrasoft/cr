@@ -788,21 +788,22 @@ pub async fn films_list(
         full_query,
     };
     let html = tmpl.render()?;
-    // Search-result HTML is `?q=`-derived: don't let the browser pin
-    // it via heuristic / bfcache (#673 follow-up). Gate matches the
-    // actual search predicate (`raw_q` filters `len() >= 2`), so
-    // `?q=a` still gets the cacheable default listing.
+    // Search-result HTML is `?q=`-derived: tag it `private,
+    // max-age=60` so the browser can reuse it for back-button /
+    // repeat-search but no shared cache hangs on to it. Gate
+    // matches the actual search predicate (`raw_q` filters
+    // `len() >= 2`), so `?q=a` still gets the default listing.
     if is_active_search(params.q.as_deref()) {
-        Ok(super::no_store_html(html))
+        Ok(super::search_cached_html(html))
     } else {
         Ok(Html(html).into_response())
     }
 }
 
 /// True when `?q=…` is a real search query — same trim+length gate
-/// the search predicate uses. Single source of truth so the no-store
-/// branch and the predicate gate can't drift apart (Copilot review
-/// on #674).
+/// the search predicate uses. Single source of truth so the
+/// search-cache branch and the predicate gate can't drift apart
+/// (Copilot review on #674).
 fn is_active_search(q: Option<&str>) -> bool {
     q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
 }
@@ -1171,7 +1172,7 @@ pub async fn films_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(super::no_store_json(Vec::<SearchResult>::new()));
+        return Ok(super::search_cached_json(Vec::<SearchResult>::new()));
     }
 
     let mut rows = search_films_by_title(&state.db, q).await?;
@@ -1195,7 +1196,7 @@ pub async fn films_search(
         })
         .collect();
 
-    Ok(super::no_store_json(results))
+    Ok(super::search_cached_json(results))
 }
 
 async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchRow>, sqlx::Error> {
@@ -2023,10 +2024,11 @@ mod tests {
 
     #[test]
     fn is_active_search_gate_matches_predicate_threshold() {
-        // Must mirror `raw_q`'s `len() >= 2` filter so the no-store
-        // branch in `films_list` and the search predicate gate stay
-        // in sync — Copilot review on #674 caught the original
-        // looser check letting `?q=a` mark non-search pages no-store.
+        // Must mirror `raw_q`'s `len() >= 2` filter so the
+        // search-cache branch in `films_list` and the search
+        // predicate gate stay in sync — Copilot review on #674
+        // caught the original looser check letting `?q=a` mark
+        // non-search pages with the search cache header.
         assert!(!is_active_search(None));
         assert!(!is_active_search(Some("")));
         assert!(!is_active_search(Some("   ")));
@@ -2041,31 +2043,42 @@ mod tests {
     }
 
     #[test]
-    fn no_store_json_helper_attaches_cache_control() {
-        // Lock the contract: every body wrapped by `no_store_json`
-        // must come back with `Cache-Control: no-store`. Without this
-        // header mobile browsers can heuristically cache autocomplete
-        // fetches and serve a stale payload across deploys (#673
-        // follow-up incident).
-        let resp = super::super::no_store_json(Vec::<u8>::new());
+    fn search_cached_json_helper_uses_private_short_max_age() {
+        // Lock the contract: every body wrapped by
+        // `search_cached_json` must come back with the standard
+        // `private, max-age=60` policy. Two failure modes to guard:
+        //   - regression to bare `no-store` (wasteful, what we
+        //     replaced),
+        //   - missing `private` (would let CF / ISP caches store
+        //     query-derived responses).
+        let resp = super::super::search_cached_json(Vec::<u8>::new());
         let cc = resp
             .headers()
             .get(axum::http::header::CACHE_CONTROL)
-            .expect("Cache-Control header must be set");
-        assert_eq!(cc.to_str().unwrap(), "no-store");
+            .expect("Cache-Control header must be set")
+            .to_str()
+            .unwrap();
+        assert!(cc.contains("private"), "missing `private`: {cc}");
+        assert!(cc.contains("max-age=60"), "missing `max-age=60`: {cc}");
+        assert!(!cc.contains("public"), "must not be `public`: {cc}");
+        assert!(!cc.contains("no-store"), "must not be `no-store`: {cc}");
     }
 
     #[test]
-    fn no_store_html_helper_attaches_cache_control() {
+    fn search_cached_html_helper_uses_private_short_max_age() {
         // Same contract for the HTML helper used by
-        // `films_list` / `series_list` / `tv_porady_list` when a
-        // search query is active.
-        let resp = super::super::no_store_html(String::from("<p>hi</p>"));
+        // `films_list` / `series_list` / `tv_porady_list` on the
+        // search-active branch.
+        let resp = super::super::search_cached_html(String::from("<p>hi</p>"));
         let cc = resp
             .headers()
             .get(axum::http::header::CACHE_CONTROL)
-            .expect("Cache-Control header must be set");
-        assert_eq!(cc.to_str().unwrap(), "no-store");
+            .expect("Cache-Control header must be set")
+            .to_str()
+            .unwrap();
+        assert!(cc.contains("private"), "missing `private`: {cc}");
+        assert!(cc.contains("max-age=60"), "missing `max-age=60`: {cc}");
+        assert!(!cc.contains("public"), "must not be `public`: {cc}");
     }
 
     #[test]
