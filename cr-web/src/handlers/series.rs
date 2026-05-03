@@ -385,9 +385,16 @@ pub async fn series_list(
 
     // Search mode: show series results (by title). No search: show latest-
     // episode-per-series grid (bombuj.si style).
+    //
+    // Search uses `unaccent()` so "laska nebeska" matches "Láska nebeská"
+    // (#673). Diacritic-exact ILIKE hits are pushed in front of unaccent-
+    // only hits via the leading CASE in ORDER BY — when the user typed
+    // diacritics, rows whose title literally contains them rank first.
     let (total_count, series, episodes) = if let Some(ref pattern) = search_q {
         let count_row = sqlx::query_as::<_, CountRow>(
-            "SELECT count(*) as count FROM series WHERE title ILIKE $1 OR original_title ILIKE $1",
+            "SELECT count(*) as count FROM series \
+             WHERE unaccent(title) ILIKE unaccent($1) \
+                OR unaccent(original_title) ILIKE unaccent($1)",
         )
         .bind(pattern)
         .fetch_one(&state.db)
@@ -399,8 +406,11 @@ pub async fn series_list(
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM series s \
-             WHERE s.title ILIKE $1 OR s.original_title ILIKE $1 \
-             ORDER BY {order} LIMIT $2 OFFSET $3"
+             WHERE unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1) \
+             ORDER BY \
+               (CASE WHEN s.title ILIKE $1 OR s.original_title ILIKE $1 THEN 0 ELSE 1 END), \
+               {order} LIMIT $2 OFFSET $3"
         );
         let rows = sqlx::query_as::<_, SeriesRow>(&query)
             .bind(pattern)
@@ -1131,10 +1141,15 @@ pub async fn series_search(
     }
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
+    // WHERE matches via `unaccent()` so "laska nebeska" finds "Láska
+    // nebeská" (#673). The CASE in ORDER BY uses raw ILIKE: rows whose
+    // title literally contains the user's diacritics rank in buckets
+    // 0–2, unaccent-only matches drop to bucket 3.
     let rows = sqlx::query_as::<_, SeriesSearchRow>(
         "SELECT slug, title, first_air_year, imdb_rating \
          FROM series \
-         WHERE title ILIKE $1 OR original_title ILIKE $1 \
+         WHERE unaccent(title) ILIKE unaccent($1) \
+            OR unaccent(original_title) ILIKE unaccent($1) \
          ORDER BY \
            CASE WHEN title ILIKE $2 THEN 0 \
                 WHEN title ILIKE $1 THEN 1 \

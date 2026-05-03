@@ -1,0 +1,12 @@
+-- Enable the `unaccent` extension so search queries on /filmy-online/
+-- and /serialy-online/ can match titles regardless of diacritics
+-- ("laska nebeska" finds "Láska nebeská"). Used by the films/series
+-- list and autocomplete handlers, where ILIKE is wrapped in
+-- `unaccent(...)` on both the column and the bound pattern.
+--
+-- Both diacritic-exact and unaccent-only matches come back from the
+-- same query; ORDER BY then ranks raw-ILIKE (diacritic-exact) hits
+-- ahead of unaccent-only hits via a leading CASE bucket — it's a
+-- prioritization, not a conditional fallback.
+-- See cr-web/src/handlers/films.rs and cr-web/src/handlers/series.rs.
+CREATE EXTENSION IF NOT EXISTS unaccent;
