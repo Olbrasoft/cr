@@ -2002,7 +2002,55 @@ fn not_found_response() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilmsQuery, normalize_query};
+    use super::{FilmsQuery, FilmsSearchMode, normalize_query};
+
+    #[test]
+    fn predicate_wraps_columns_in_unaccent() {
+        // Both modes must run unaccent() on the column AND on the bound
+        // pattern — that's how diacritics-insensitive matching works
+        // (#673). Lock the shape so we don't accidentally drop the
+        // wrapper from one side of an ILIKE in a future refactor.
+        let primary = FilmsSearchMode::Primary.predicate(1);
+        assert!(
+            primary.contains("unaccent(f.title) ILIKE unaccent($1)"),
+            "{primary}"
+        );
+        assert!(
+            primary.contains("unaccent(f.original_title) ILIKE unaccent($1)"),
+            "{primary}"
+        );
+
+        let title_year = FilmsSearchMode::TitleYear.predicate(1);
+        assert!(
+            title_year
+                .contains("unaccent(CONCAT_WS(' ', f.title, f.year::text)) ILIKE unaccent($1)"),
+            "{title_year}"
+        );
+        assert!(
+            title_year.contains(
+                "unaccent(CONCAT_WS(' ', f.original_title, f.year::text)) ILIKE unaccent($1)"
+            ),
+            "{title_year}"
+        );
+    }
+
+    #[test]
+    fn raw_predicate_does_not_use_unaccent() {
+        // raw_predicate is the ORDER BY tiebreaker that keeps
+        // diacritic-exact hits in front. If unaccent() leaks in here,
+        // every row becomes "exact" and the priority bucket collapses.
+        let primary = FilmsSearchMode::Primary.raw_predicate(1);
+        assert!(!primary.contains("unaccent"), "{primary}");
+        assert!(primary.contains("f.title ILIKE $1"), "{primary}");
+        assert!(primary.contains("f.original_title ILIKE $1"), "{primary}");
+
+        let title_year = FilmsSearchMode::TitleYear.raw_predicate(1);
+        assert!(!title_year.contains("unaccent"), "{title_year}");
+        assert!(
+            title_year.contains("CONCAT_WS(' ', f.title, f.year::text) ILIKE $1"),
+            "{title_year}"
+        );
+    }
 
     fn query_with_jazyk(jazyk: Option<&str>) -> FilmsQuery {
         FilmsQuery {
