@@ -787,7 +787,15 @@ pub async fn films_list(
         selected_subs,
         full_query,
     };
-    Ok(Html(tmpl.render()?).into_response())
+    let html = tmpl.render()?;
+    // Search-result HTML is `?q=`-derived: don't let the browser pin
+    // it via heuristic / bfcache (#673 follow-up). Filter-only listing
+    // pages are fine to cache normally — they're shared across users.
+    if params.q.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+        Ok(([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response())
+    } else {
+        Ok(Html(html).into_response())
+    }
 }
 
 /// Serialize the current filter params into a BTreeMap keyed by query
@@ -1154,7 +1162,7 @@ pub async fn films_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(axum::Json(Vec::<SearchResult>::new()).into_response());
+        return Ok(no_store_json(Vec::<SearchResult>::new()));
     }
 
     let mut rows = search_films_by_title(&state.db, q).await?;
@@ -1178,7 +1186,16 @@ pub async fn films_search(
         })
         .collect();
 
-    Ok(axum::Json(results).into_response())
+    Ok(no_store_json(results))
+}
+
+/// Wrap any JSON-serializable body with `Cache-Control: no-store` so
+/// that mobile browsers don't apply heuristic caching to autocomplete
+/// fetches — without an explicit header the heuristic can pin a stale
+/// response for minutes (#673 follow-up: phone reports of search
+/// "still not working" after the diacritics fix shipped).
+fn no_store_json<T: serde::Serialize>(body: T) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
 }
 
 async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchRow>, sqlx::Error> {
