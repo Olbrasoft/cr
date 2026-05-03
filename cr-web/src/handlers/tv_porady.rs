@@ -304,22 +304,24 @@ pub async fn tv_porady_list(
         search_query,
     };
     let html = tmpl.render()?;
-    // Search-result HTML is `?q=`-derived: no-store keeps mobile
-    // bfcache / heuristic caching from pinning a stale page (#673
-    // / #674 parity with films and series). Gate matches the search
-    // predicate (`search_q` filters `len() >= 2`).
+    // Search-result HTML is `?q=`-derived: tag it `private,
+    // max-age=60` so the browser may reuse it for a minute on
+    // back-button / repeat-search but no shared cache stores it.
+    // Parity with films and series (#673 / #674). Gate matches
+    // the search predicate (`search_q` filters `len() >= 2`).
     if is_active_search(params.q.as_deref()) {
-        Ok(super::no_store_html(html))
+        Ok(super::search_cached_html(html))
     } else {
         Ok(Html(html).into_response())
     }
 }
 
 /// True when `?q=…` is a real search query — same trim+length gate
-/// the search predicate uses. Single source of truth so the no-store
-/// branch and the predicate gate can't drift apart.
+/// the search predicate uses (`search_q` filters `t.len() >= 2`,
+/// byte length). Single source of truth so the search-cache branch
+/// and the predicate gate can't drift apart on multibyte chars.
 fn is_active_search(q: Option<&str>) -> bool {
-    q.map(str::trim).is_some_and(|t| t.chars().count() >= 2)
+    q.map(str::trim).is_some_and(|t| t.len() >= 2)
 }
 
 async fn fetch_latest_episode_cards(
@@ -381,7 +383,7 @@ pub async fn tv_porady_search(
 ) -> WebResult<Response> {
     let q = params.get("q").map(|s| s.trim()).unwrap_or("");
     if q.len() < 2 {
-        return Ok(super::no_store_json(Vec::<TvPoradSearchResult>::new()));
+        return Ok(super::search_cached_json(Vec::<TvPoradSearchResult>::new()));
     }
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
@@ -418,7 +420,7 @@ pub async fn tv_porady_search(
         })
         .collect();
 
-    Ok(super::no_store_json(results))
+    Ok(super::search_cached_json(results))
 }
 
 /// GET /tv-porady/{slug}/ — TV pořad detail with episode list.
