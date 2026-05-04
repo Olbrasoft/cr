@@ -50,6 +50,20 @@ impl UnmatchedRow {
     fn year_str(&self) -> String {
         self.year.map(|y| y.to_string()).unwrap_or_default()
     }
+    /// Pre-built Google query the operator can click to find ČSFD / TMDB
+    /// for a row. The sample_title is the original prehraj.to filename
+    /// (e.g. "Pracujici muz (2025) CZ Dabing 1080p"); appending the bare
+    /// word `csfd` reliably boosts the ČSFD result to the first position
+    /// for Czech-titled releases (verified manually). The operator uses
+    /// the ČSFD link to grab the original English title and then jumps
+    /// to TMDB.
+    fn google_search_url(&self) -> String {
+        let q = format!("{} csfd", self.sample_title);
+        format!(
+            "https://www.google.com/search?q={}",
+            urlencoding::encode(&q)
+        )
+    }
 }
 
 #[derive(Template)]
@@ -59,16 +73,24 @@ struct AdminPrehrajtoUnmatchedTemplate {
     rows: Vec<UnmatchedRow>,
     total_rows: i64,
     total_uploads: i64,
+    /// True when the operator opted into ?all=1 — the table renders the
+    /// full unresolved set instead of the top 500. Used by the template
+    /// to show the right counter and toggle link.
+    showing_all: bool,
 }
 
-/// HTML table is capped — operator only ever needs the loudest entries.
+/// Default HTML table cap so the page stays snappy. The operator can
+/// opt into the full set via `?all=1` (still capped here for safety).
+const DEFAULT_LIMIT: i64 = 500;
+const ALL_LIMIT: i64 = 10_000;
+
 const QUERY_LIST_UNRESOLVED: &str = "SELECT id, cluster_key, year, duration_bucket, \
      sample_title, sample_url, upload_count, first_seen_at, last_seen_at, \
      attempt_count \
      FROM prehrajto_unmatched_clusters \
      WHERE resolved_at IS NULL \
      ORDER BY upload_count DESC, last_seen_at DESC \
-     LIMIT 500";
+     LIMIT $1";
 
 /// CSV export streams every unresolved row — no LIMIT — because the
 /// whole point of CSV is offline analysis where the top-500 slice would
@@ -89,16 +111,36 @@ fn noindex(html: String) -> Response {
     resp
 }
 
-/// GET /admin/prehrajto/unmatched — table of unresolved clusters, capped at
-/// the top 500 rows by `upload_count` / `last_seen_at`. No pagination
-/// controls — the long tail belongs in the CSV export, not in the UI.
-pub async fn admin_prehrajto_unmatched(State(state): State<AppState>) -> WebResult<Response> {
+#[derive(serde::Deserialize, Default)]
+pub struct UnmatchedQuery {
+    /// `?all=1` widens the row cap from 500 to ALL_LIMIT so the operator
+    /// can scroll through the long tail without exporting CSV. Anything
+    /// else (or missing) keeps the default 500 cap.
+    #[serde(default)]
+    all: Option<String>,
+}
+
+/// GET /admin/prehrajto/unmatched — table of unresolved clusters.
+/// By default capped at the top 500 rows so the HTML stays small;
+/// `?all=1` renders the whole set (capped at 10 000 as a safety belt).
+pub async fn admin_prehrajto_unmatched(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<UnmatchedQuery>,
+) -> WebResult<Response> {
+    let showing_all = matches!(q.all.as_deref(), Some("1") | Some("true"));
+    let limit = if showing_all {
+        ALL_LIMIT
+    } else {
+        DEFAULT_LIMIT
+    };
+
     let rows = sqlx::query_as::<_, UnmatchedRow>(QUERY_LIST_UNRESOLVED)
+        .bind(limit)
         .fetch_all(&state.db)
         .await?;
 
     // Aggregate stats over the full unresolved set (not just the displayed
-    // 500), so the operator sees the true scope even when the table is
+    // rows), so the operator sees the true scope even when the table is
     // truncated. Two cheap COUNTs in one round-trip via UNION ALL would also
     // work; the two queries here are clearer and still sub-millisecond on
     // an indexed table this small.
@@ -114,6 +156,7 @@ pub async fn admin_prehrajto_unmatched(State(state): State<AppState>) -> WebResu
         rows,
         total_rows,
         total_uploads,
+        showing_all,
     };
     Ok(noindex(tmpl.render()?))
 }
