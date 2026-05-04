@@ -39,29 +39,30 @@ from pathlib import Path
 
 # Allow `python3 scripts/auto-import.py` from any cwd. Modules in scripts/
 # auto_import/*.py import via `scripts.auto_import.foo`, so we add the project
-# root (parent of scripts/) to sys.path.
+# root (parent of scripts/) to sys.path. We also add scripts/ itself so the
+# bare-name import of `video_sources_helper` (used both here AND from inside
+# `prehrajto_search.py`) resolves — it MUST happen before any auto_import
+# package import or transitive `from video_sources_helper import …` will fail.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-import psycopg2
-import requests
+import psycopg2  # noqa: E402
+import requests  # noqa: E402
 
-from scripts.auto_import.sktorrent_scanner import (
+from scripts.auto_import.sktorrent_scanner import (  # noqa: E402
     scan_new_videos, ScannedVideo, ScannerError,
 )
-from scripts.auto_import.sktorrent_detail import fetch_detail, DetailFetchError
-from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle
-from scripts.auto_import.tmdb_resolver import resolve_movie, resolve_tv
-from scripts.auto_import.enricher import upsert_film
-from scripts.auto_import.series_enricher import process_series_batch
-from scripts.auto_import.tv_show_enricher import process_tv_show_episode
-from scripts.auto_import.prehrajto_search import (
+from scripts.auto_import.sktorrent_detail import fetch_detail, DetailFetchError  # noqa: E402
+from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle  # noqa: E402
+from scripts.auto_import.tmdb_resolver import resolve_movie, resolve_tv  # noqa: E402
+from scripts.auto_import.enricher import upsert_film  # noqa: E402
+from scripts.auto_import.series_enricher import process_series_batch  # noqa: E402
+from scripts.auto_import.tv_show_enricher import process_tv_show_episode  # noqa: E402
+from scripts.auto_import.prehrajto_search import (  # noqa: E402
     BlockedError as PrehrajtoBlockedError,
     try_prehrajto_match,
 )
-# scripts/ also on path so we can import the dual-write helpers module by
-# its bare name (it doesn't live under the auto_import package).
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 from video_sources_helper import get_provider_ids  # noqa: E402
 
 log = logging.getLogger("auto-import")
@@ -310,20 +311,25 @@ def _try_prehrajto_for_film(conn, *, film_id: int, providers: dict,
         counters["prehrajto_attempted"] += 1
         return "error", 0
     counters["prehrajto_attempted"] += 1
-    if result["written"] or result["repointed"]:
+    attached = result["written"] + result["repointed"] + result.get("refreshed", 0)
+    if attached:
         counters["prehrajto_matched"] += 1
-        counters["prehrajto_rows_written"] += result["written"]
+        # Run-level row counter only counts genuinely new state (insert
+        # or re-point), not pure refreshes — otherwise re-runs of the
+        # daily importer would inflate it indefinitely.
+        counters["prehrajto_rows_written"] += result["written"] + result["repointed"]
         log.info("  prehrajto match film_id=%d: written=%d repointed=%d "
-                 "(query=%r)", film_id, result["written"], result["repointed"],
+                 "refreshed=%d (query=%r)", film_id, result["written"],
+                 result["repointed"], result.get("refreshed", 0),
                  result["query"])
-        return "matched", result["written"]
+        return "matched", result["written"] + result["repointed"]
     if result["hits"] == 0:
         return "no_results", 0
     if result["accepted"] == 0:
         return "no_acceptable", 0
-    # Hits accepted but neither written nor repointed → all collisions
-    # with another film's existing rows. Tag as no_acceptable so the
-    # admin UI surfaces it as "search ran but didn't attach anything".
+    # Hits accepted but nothing attached to our film → all collisions
+    # with other films' existing rows where the title-evidence wasn't
+    # strong enough to re-point. Surface as no_acceptable in the admin UI.
     return "no_acceptable", 0
 
 

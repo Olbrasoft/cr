@@ -386,14 +386,27 @@ def write_hits(
     cur, providers: dict, film_id: int,
     hits_with_meta: list[tuple],
     our_titles: list[str] | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Insert / re-point accepted hits.
 
     `hits_with_meta` items: (hit, tier).
-    Returns (written, repointed, collision_skipped).
+    Returns (written, repointed, refreshed, collision_skipped).
+
+    Three "attached to our film" outcomes — distinguished so the caller
+    can keep run-level counters honest:
+
+    * `written`   — fresh `video_sources` row inserted (the upload had no
+                    previous record).
+    * `repointed` — cross-film re-point: row existed under another film
+                    but the title-evidence heuristic moved it to ours.
+    * `refreshed` — row already attached to our film; we just bumped
+                    `last_seen` / `title`. Counted separately so a re-run
+                    doesn't inflate `rows_written`, but still treated as
+                    a successful match by the caller.
     """
     written = 0
     repointed = 0
+    refreshed = 0
     skipped_collision = 0
     for hit, tier in hits_with_meta:
         lang = detect_lang(hit.title)
@@ -434,6 +447,9 @@ def write_hits(
 
         existing_id, existing_film_id = existing
         if existing_film_id == film_id:
+            # Already attached to us — just refresh mutable fields. Counted
+            # via `refreshed` so a re-run still reports the film as
+            # "matched" without inflating `written`.
             cur.execute("SAVEPOINT dw")
             try:
                 dual_write_prehrajto_upload(
@@ -442,7 +458,7 @@ def write_hits(
                     primary_upload_id=None,
                 )
                 cur.execute("RELEASE SAVEPOINT dw")
-                written += 1
+                refreshed += 1
             except psycopg2.errors.UniqueViolation:
                 cur.execute("ROLLBACK TO SAVEPOINT dw")
                 cur.execute("RELEASE SAVEPOINT dw")
@@ -463,6 +479,12 @@ def write_hits(
                      reason, hit.external_id, existing_film_id, film_id)
             continue
 
+        # Re-point both tables in lockstep. The legacy
+        # `film_prehrajto_uploads.upload_id` carries a UNIQUE constraint so
+        # a single upload exists exactly once across all films; if we only
+        # moved `video_sources` here, the legacy table would still claim
+        # the upload belongs to the old film and any reconciliation /
+        # backfill code that joins via `upload_id` would split-brain.
         cur.execute(
             "UPDATE video_sources "
             "   SET film_id = %s, "
@@ -474,12 +496,17 @@ def write_hits(
             (film_id, "cs" if lang in ("CZ_DUB", "CZ_NATIVE") else None,
              lang, existing_id),
         )
+        cur.execute(
+            "UPDATE film_prehrajto_uploads "
+            "   SET film_id = %s, last_seen_at = NOW() "
+            " WHERE upload_id = %s",
+            (film_id, hit.external_id),
+        )
         repointed += 1
         log.info("  RE-POINTED upload_id=%s row=%d: film=%d → film=%d (%s)",
                  hit.external_id, existing_id, existing_film_id,
                  film_id, reason)
-        written += 1
-    return written, repointed, skipped_collision
+    return written, repointed, refreshed, skipped_collision
 
 
 def try_prehrajto_match(
@@ -491,8 +518,13 @@ def try_prehrajto_match(
     """Search prehraj.to for a film and write matched hits.
 
     Single-film entry point used by the daily auto-import. Returns a
-    dict with counters: hits, accepted, written, repointed, collisions,
-    tier_counts. Caller is responsible for transaction control.
+    dict with counters: hits, accepted, written, repointed, refreshed,
+    collisions, tier_counts. Caller is responsible for transaction
+    control.
+
+    `attached = written + repointed + refreshed` is the right "did this
+    film end up with a prehrajto source?" signal. `written` alone tells
+    you only whether a NEW row was added during this run.
 
     Raises `BlockedError` if the proxy / prehraj.to misbehaves.
     """
@@ -517,13 +549,14 @@ def try_prehrajto_match(
     accepted = [(h, t) for h, t, _, _ in classified
                 if t in ("strong", "solid", "weak")]
 
-    written = repointed = collisions = 0
+    written = repointed = refreshed = collisions = 0
     if accepted:
-        written, repointed, collisions = write_hits(
+        written, repointed, refreshed, collisions = write_hits(
             cur, providers, film_id, accepted, our_titles=db_titles_full,
         )
     return {
         "query": query, "hits": len(hits), "accepted": len(accepted),
         "written": written, "repointed": repointed,
-        "collisions": collisions, "tier_counts": tier_counts,
+        "refreshed": refreshed, "collisions": collisions,
+        "tier_counts": tier_counts,
     }

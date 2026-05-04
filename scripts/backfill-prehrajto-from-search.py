@@ -47,7 +47,8 @@ log = logging.getLogger("backfill_prh")
 
 
 def _select_target_films(
-    cur, limit: int | None, daily: bool, only_film_id: int | None
+    cur, providers: dict, limit: int | None, daily: bool,
+    only_film_id: int | None,
 ) -> list[tuple[int, str, str | None, int | None, int | None]]:
     if only_film_id:
         cur.execute(
@@ -65,23 +66,25 @@ def _select_target_films(
                AND fpu.last_seen_at > NOW() - INTERVAL '7 days'
           )
         """
+    # Provider IDs are seeded per-DB and not guaranteed stable across
+    # environments, so resolve them by slug rather than hard-coding 1/2.
     sql = f"""
         SELECT f.id, f.title, f.original_title, f.year, f.runtime_min
           FROM films f
           JOIN video_sources vs1
-            ON vs1.film_id = f.id AND vs1.provider_id = 1
+            ON vs1.film_id = f.id AND vs1.provider_id = %(skt)s
          WHERE NOT EXISTS (
               SELECT 1 FROM video_sources vs2
-               WHERE vs2.film_id = f.id AND vs2.provider_id = 2
+               WHERE vs2.film_id = f.id AND vs2.provider_id = %(prh)s
          )
          {where_extra}
          ORDER BY f.id DESC
     """
+    params = {"skt": providers["sktorrent"], "prh": providers["prehrajto"]}
     if limit:
-        sql += " LIMIT %s"
-        cur.execute(sql, (limit,))
-    else:
-        cur.execute(sql)
+        sql += " LIMIT %(limit)s"
+        params["limit"] = limit
+    cur.execute(sql, params)
     return list(cur.fetchall())
 
 
@@ -112,13 +115,13 @@ def main() -> int:
     conn.autocommit = False
     cur = conn.cursor()
 
-    films = _select_target_films(cur, args.limit, args.daily, args.film_id)
+    providers = get_provider_ids(cur)
+    films = _select_target_films(cur, providers, args.limit, args.daily, args.film_id)
     log.info("selected %d films (limit=%s daily=%s film_id=%s)",
              len(films), args.limit, args.daily, args.film_id)
     if not films:
         return 0
 
-    providers = get_provider_ids(cur)
     sess = requests.Session()
 
     counters = {
@@ -172,11 +175,11 @@ def main() -> int:
                 counters["rows_written"] += result["written"]
                 counters["rows_repointed"] += result["repointed"]
                 log.info("[%d/%d] film_id=%d %r — %d hits → %s "
-                         "(written=%d repointed=%d collisions=%d)",
+                         "(written=%d repointed=%d refreshed=%d collisions=%d)",
                          i, len(films), film_id, result["query"],
                          result["hits"], tier_summary,
                          result["written"], result["repointed"],
-                         result["collisions"])
+                         result.get("refreshed", 0), result["collisions"])
 
             if not args.dry_run and i % args.commit_every == 0:
                 conn.commit()
