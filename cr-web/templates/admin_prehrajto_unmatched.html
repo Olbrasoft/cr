@@ -32,7 +32,11 @@
     <div class="stats">
         <div class="stat">
             <span class="stat-num">{{ total_rows }}</span>
-            <span class="stat-label">nesparovaných clusterů</span>
+            <span class="stat-label">nesparovaných clusterů (celkem)</span>
+        </div>
+        <div class="stat">
+            <span class="stat-num">{{ rows.len() }}</span>
+            <span class="stat-label">zobrazeno v této tabulce</span>
         </div>
         <div class="stat">
             <span class="stat-num">{{ total_uploads }}</span>
@@ -47,39 +51,54 @@
     <p class="empty-state">Žádné nesparované clustery. 🎉</p>
     {% else %}
     <p class="hint">
-        Zobrazeno top {{ rows.len() }} podle <strong>upload_count DESC</strong>
-        (kolik různých uploadů na prehraj.to do clusteru spadlo). Klikni na
-        sample URL, ověř, že jde o film, a buď přidej do <code>films</code>
-        ručně, nebo otevři issue na úpravu matching heuristiky.
+        {% if showing_all %}
+            Zobrazeno všech {{ rows.len() }} z {{ total_rows }} clusterů (řazeno
+            podle <strong>upload_count DESC</strong>).
+            <a href="/admin/prehrajto/unmatched">↑ Přepnout zpět na top 500</a>
+        {% else %}
+            Zobrazeno top <strong>{{ rows.len() }}</strong> z {{ total_rows }} clusterů
+            podle <strong>upload_count DESC</strong>. Pokud chceš proscrollovat
+            celý dlouhý ocas:
+            <a href="/admin/prehrajto/unmatched?all=1">↓ Zobrazit všechny ({{ total_rows }})</a>
+            nebo si stáhni CSV export.
+        {% endif %}
+        Klikni na sample URL, ověř, že jde o film, a buď přidej do
+        <code>films</code> ručně, nebo otevři issue na úpravu matching heuristiky.
     </p>
+    <div class="table-scroll">
     <table class="unmatched-table">
         <thead>
             <tr>
                 <th class="num">#</th>
-                <th>Cluster key</th>
+                <th>Sample title</th>
                 <th class="num">Rok</th>
                 <th class="num">Délka (min)</th>
                 <th class="num" title="Počet různých uploadů na prehraj.to s tímto klíčem">Uploady</th>
                 <th class="num" title="Kolikrát tento cluster prošel importerem">Pokusy</th>
-                <th>Sample title</th>
                 <th>Naposledy</th>
+                <th>Cluster key</th>
             </tr>
         </thead>
         <tbody>
             {% for r in rows %}
             <tr>
                 <td class="num"><code>{{ r.id }}</code></td>
-                <td><code>{{ r.cluster_key }}</code></td>
+                <td class="sample-title">
+                    <a href="{{ r.sample_url }}" target="_blank" rel="noopener noreferrer">{{ r.sample_title }}</a>
+                    <a class="search-link" href="{{ r.google_search_url() }}" target="_blank" rel="noopener noreferrer"
+                       title="Google: {{ r.sample_title }} csfd (ČSFD obvykle na 1. pozici)">🔍 csfd</a>
+                </td>
                 <td class="num">{{ r.year_str() }}</td>
                 <td class="num">{% match r.duration_min() %}{% when Some with (m) %}≥ {{ m }}{% when None %}—{% endmatch %}</td>
                 <td class="num"><strong>{{ r.upload_count }}</strong></td>
                 <td class="num">{{ r.attempt_count }}</td>
-                <td><a href="{{ r.sample_url }}" target="_blank" rel="noopener noreferrer">{{ r.sample_title }}</a></td>
                 <td title="První viděno: {{ r.first_seen_at_str() }}">{{ r.last_seen_at_str() }}</td>
+                <td class="cluster-key"><code>{{ r.cluster_key }}</code></td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% endif %}
 </main>
 
@@ -96,8 +115,21 @@
 .csv-link { color: #11457E; text-decoration: none; font-weight: 600; padding: 0.6rem 1rem; background: #f8fafc; border-radius: 6px; }
 .csv-link:hover { background: #e2e8f0; }
 .hint { color: #666; font-size: 0.85rem; margin: 0.8rem 0; }
-.unmatched-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.unmatched-table th, .unmatched-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+/* Wrap the wide table in its own horizontal-scroll container so the
+   page never grows wider than the viewport. Without this the page-level
+   scrollbar lives at the bottom of a 3 000-row page, making the
+   right-most columns unreachable while reading any row in the middle. */
+.table-scroll { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+.unmatched-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.unmatched-table th, .unmatched-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; white-space: nowrap; }
+.unmatched-table td.sample-title { white-space: normal; max-width: 420px; }
+.unmatched-table td.cluster-key { white-space: normal; max-width: 360px; word-break: break-all; }
+.unmatched-table .search-link {
+    display: inline-block; margin-left: 0.5rem; padding: 0.05rem 0.4rem;
+    font-size: 0.72rem; background: #fef3c7; color: #92400e;
+    border-radius: 4px; text-decoration: none; white-space: nowrap;
+}
+.unmatched-table .search-link:hover { background: #fde68a; text-decoration: underline; }
 .unmatched-table th.num, .unmatched-table td.num { text-align: right; }
 .unmatched-table th { background: #f8fafc; font-weight: 600; color: #555; position: sticky; top: 0; }
 .unmatched-table a { color: #11457E; text-decoration: none; }
