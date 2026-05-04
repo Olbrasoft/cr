@@ -53,6 +53,20 @@
             <span class="count count-failed">{{ run.failed_count }} selhalo</span>
             <span class="count count-skipped">⊘{{ run.skipped_count }} přeskočeno</span>
         </div>
+        <div class="counts">
+            <span class="count count-prh"
+                  title="Filmy, u kterých skript po importu hledal prehraj.to (jen filmy, ne seriály)">
+                prehraj.to: hledáno {{ run.prehrajto_attempted }} ×
+            </span>
+            <span class="count count-prh-ok"
+                  title="Z toho filmů, kde skript našel a navázal aspoň jeden prehraj.to upload">
+                ✓ navázáno {{ run.prehrajto_matched }} ×
+            </span>
+            <span class="count count-prh-rows"
+                  title="Celkem přidaných nebo přesměrovaných video_sources řádků">
+                +{{ run.prehrajto_rows_written }} prehraj.to zdrojů
+            </span>
+        </div>
         <div>
             <a href="/admin/import/{{ run.id }}.json" title="Strojitelný JSON export">📋 JSON export</a>
         </div>
@@ -71,7 +85,7 @@
         {% else %}
         <table class="items-table">
             <thead>
-                <tr><th>Akce</th><th>SK Torrent</th><th>Detekce</th><th>IMDB</th><th>Náš detail</th></tr>
+                <tr><th>Akce</th><th>SK Torrent</th><th>Detekce</th><th>IMDB</th><th>Náš detail</th><th>prehraj.to</th></tr>
             </thead>
             <tbody>
                 {% for it in added %}
@@ -81,6 +95,15 @@
                     <td>{{ it.detected_type.as_deref().unwrap_or("?") }}{% match it.season_episode() %}{% when Some with (se) %} {{ se }}{% when None %}{% endmatch %}</td>
                     <td>{% match it.imdb_url() %}{% when Some with (u) %}<a href="{{ u }}" target="_blank" rel="noopener" title="IMDB">{{ it.imdb_id.as_deref().unwrap_or("") }}</a>{% when None %}—{% endmatch %}</td>
                     <td>{% match it.target_url() %}{% when Some with (u) %}<a href="{{ u }}" title="Detail">→</a>{% when None %}—{% endmatch %}</td>
+                    <td class="{{ it.prehrajto_class() }}">
+                        {% match it.prehrajto_label() %}{% when Some with (lab) %}
+                            <span class="prh-label">{{ lab }}</span>
+                            {% if it.prehrajto_rows_written_str() != "" %}<span class="prh-rows">{{ it.prehrajto_rows_written_str() }}</span>{% endif %}
+                        {% when None %}—{% endmatch %}
+                        {% match it.prehrajto_search_url() %}{% when Some with (u) %}
+                            <a class="prh-search" href="{{ u }}" target="_blank" rel="noopener" title="Hledat na prehraj.to">🔍</a>
+                        {% when None %}{% endmatch %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -93,7 +116,7 @@
         <p class="empty-state">Žádné doplněné zdroje.</p>
         {% else %}
         <table class="items-table">
-            <thead><tr><th>Akce</th><th>SK Torrent</th><th>IMDB</th><th>Náš detail</th></tr></thead>
+            <thead><tr><th>Akce</th><th>SK Torrent</th><th>IMDB</th><th>Náš detail</th><th>prehraj.to</th></tr></thead>
             <tbody>
                 {% for it in updated %}
                 <tr>
@@ -101,6 +124,15 @@
                     <td><a href="{{ it.sktorrent_url }}" target="_blank" rel="noopener" title="{{ it.sktorrent_title }}">{{ it.sktorrent_title }}</a></td>
                     <td>{% match it.imdb_url() %}{% when Some with (u) %}<a href="{{ u }}" target="_blank" rel="noopener" title="IMDB">{{ it.imdb_id.as_deref().unwrap_or("") }}</a>{% when None %}—{% endmatch %}</td>
                     <td>{% match it.target_url() %}{% when Some with (u) %}<a href="{{ u }}" title="Detail">→</a>{% when None %}—{% endmatch %}</td>
+                    <td class="{{ it.prehrajto_class() }}">
+                        {% match it.prehrajto_label() %}{% when Some with (lab) %}
+                            <span class="prh-label">{{ lab }}</span>
+                            {% if it.prehrajto_rows_written_str() != "" %}<span class="prh-rows">{{ it.prehrajto_rows_written_str() }}</span>{% endif %}
+                        {% when None %}—{% endmatch %}
+                        {% match it.prehrajto_search_url() %}{% when Some with (u) %}
+                            <a class="prh-search" href="{{ u }}" target="_blank" rel="noopener" title="Hledat na prehraj.to">🔍</a>
+                        {% when None %}{% endmatch %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -158,6 +190,17 @@
 .count-updated { background: #dbeafe; color: #1e40af; }
 .count-failed { background: #fee2e2; color: #991b1b; }
 .count-skipped { background: #f3f4f6; color: #6b7280; }
+.count-prh { background: #ede9fe; color: #5b21b6; }
+.count-prh-ok { background: #c7d2fe; color: #3730a3; }
+.count-prh-rows { background: #ddd6fe; color: #5b21b6; }
+.prh-matched { background: rgba(16,185,129,0.08); }
+.prh-empty { color: #6b7280; }
+.prh-error { background: rgba(239,68,68,0.08); color: #991b1b; }
+.prh-none { color: #9ca3af; }
+.prh-label { font-size: 0.78rem; font-weight: 600; }
+.prh-rows { margin-left: 0.3rem; font-size: 0.72rem; color: #6b21a8; font-weight: 600; }
+.prh-search { margin-left: 0.4rem; text-decoration: none; opacity: 0.55; }
+.prh-search:hover { opacity: 1; }
 .error-msg { color: #991b1b; font-size: 0.85rem; }
 .tabs { display: flex; gap: 0.3rem; border-bottom: 2px solid #e5e7eb; margin-bottom: 1rem; }
 .tab { background: none; border: none; padding: 0.6rem 1rem; cursor: pointer; font-size: 0.92rem; color: #555; border-bottom: 2px solid transparent; margin-bottom: -2px; }

@@ -57,6 +57,7 @@
                 <th>Doplněno</th>
                 <th>Selhalo</th>
                 <th>Přeskočeno</th>
+                <th title="prehraj.to: navázáno / hledáno (rows)">prehraj.to</th>
             </tr>
         </thead>
         <tbody>
@@ -76,6 +77,12 @@
                 <td>{{ r.updated_films + r.updated_episodes }}</td>
                 <td class="{% if r.failed_count > 0 %}error-cell{% endif %}">{{ r.failed_count }}</td>
                 <td>{{ r.skipped_count }}</td>
+                <td title="filmů s nalezeným prehraj.to / pokusů (+rows přidaných řádků)">
+                    {% if r.prehrajto_attempted > 0 %}
+                        <strong>{{ r.prehrajto_matched }}</strong>/{{ r.prehrajto_attempted }}
+                        <span class="prh-rows">+{{ r.prehrajto_rows_written }}</span>
+                    {% else %}—{% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -110,5 +117,6 @@
 .run-now-form .btn-run { background: #11457E; color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
 .run-now-form .btn-run:hover { background: #0d3a6e; }
 .run-now-form .hint { color: #64748b; font-size: 0.82rem; }
+.runs-table .prh-rows { font-size: 0.72rem; color: #6b21a8; font-weight: 600; }
 </style>
 {% endblock %}

@@ -39,22 +39,31 @@ from pathlib import Path
 
 # Allow `python3 scripts/auto-import.py` from any cwd. Modules in scripts/
 # auto_import/*.py import via `scripts.auto_import.foo`, so we add the project
-# root (parent of scripts/) to sys.path.
+# root (parent of scripts/) to sys.path. We also add scripts/ itself so the
+# bare-name import of `video_sources_helper` (used both here AND from inside
+# `prehrajto_search.py`) resolves — it MUST happen before any auto_import
+# package import or transitive `from video_sources_helper import …` will fail.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-import psycopg2
-import requests
+import psycopg2  # noqa: E402
+import requests  # noqa: E402
 
-from scripts.auto_import.sktorrent_scanner import (
+from scripts.auto_import.sktorrent_scanner import (  # noqa: E402
     scan_new_videos, ScannedVideo, ScannerError,
 )
-from scripts.auto_import.sktorrent_detail import fetch_detail, DetailFetchError
-from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle
-from scripts.auto_import.tmdb_resolver import resolve_movie, resolve_tv
-from scripts.auto_import.enricher import upsert_film
-from scripts.auto_import.series_enricher import process_series_batch
-from scripts.auto_import.tv_show_enricher import process_tv_show_episode
+from scripts.auto_import.sktorrent_detail import fetch_detail, DetailFetchError  # noqa: E402
+from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle  # noqa: E402
+from scripts.auto_import.tmdb_resolver import resolve_movie, resolve_tv  # noqa: E402
+from scripts.auto_import.enricher import upsert_film  # noqa: E402
+from scripts.auto_import.series_enricher import process_series_batch  # noqa: E402
+from scripts.auto_import.tv_show_enricher import process_tv_show_episode  # noqa: E402
+from scripts.auto_import.prehrajto_search import (  # noqa: E402
+    BlockedError as PrehrajtoBlockedError,
+    try_prehrajto_match,
+)
+from video_sources_helper import get_provider_ids  # noqa: E402
 
 log = logging.getLogger("auto-import")
 
@@ -152,6 +161,9 @@ def _close_run(conn, run_id: int, status: str,
                updated_episodes = %s,
                failed_count = %s,
                skipped_count = %s,
+               prehrajto_attempted = %s,
+               prehrajto_matched = %s,
+               prehrajto_rows_written = %s,
                error_message = %s
            WHERE id = %s""",
         (
@@ -168,6 +180,9 @@ def _close_run(conn, run_id: int, status: str,
             counters["updated_episodes"],
             counters["failed_count"],
             counters["skipped_count"],
+            counters.get("prehrajto_attempted", 0),
+            counters.get("prehrajto_matched", 0),
+            counters.get("prehrajto_rows_written", 0),
             error_message,
             run_id,
         ),
@@ -196,7 +211,9 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
                  target_tv_episode_id: int | None = None,
                  failure_step: str | None = None,
                  failure_message: str | None = None,
-                 raw_log: dict | None = None) -> None:
+                 raw_log: dict | None = None,
+                 prehrajto_status: str | None = None,
+                 prehrajto_rows_written: int = 0) -> None:
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO import_items
@@ -204,9 +221,10 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
             detected_type, imdb_id, tmdb_id, season, episode, action,
             target_film_id, target_series_id, target_episode_id,
             target_tv_show_id, target_tv_episode_id,
-            failure_step, failure_message, raw_log)
+            failure_step, failure_message, raw_log,
+            prehrajto_status, prehrajto_rows_written)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             run_id, video.video_id, video.url, video.title,
             detected_type, imdb_id, tmdb_id,
@@ -217,6 +235,7 @@ def _insert_item(conn, *, run_id: int, video: ScannedVideo,
             target_tv_show_id, target_tv_episode_id,
             failure_step, failure_message,
             json.dumps(raw_log, ensure_ascii=False) if raw_log else None,
+            prehrajto_status, prehrajto_rows_written,
         ),
     )
 
@@ -256,9 +275,68 @@ def _langs_to_flags(langs: list[str]) -> tuple[bool, bool]:
     return has_dub, has_subs
 
 
+def _try_prehrajto_for_film(conn, *, film_id: int, providers: dict,
+                            prh_session: requests.Session,
+                            counters: dict) -> tuple[str, int]:
+    """Search prehraj.to for the just-added film and write hits.
+
+    Returns (status, rows_written) for storage on the import_items row.
+    Status is one of: matched, no_results, no_acceptable, error, blocked.
+    BlockedError is re-raised so the run aborts (we share the proxy with
+    the SK Torrent scanner — losing it kills both pipelines).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT title, original_title, year, runtime_min "
+        "FROM films WHERE id = %s",
+        (film_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return "error", 0
+    title, original_title, year, runtime_min = row
+    try:
+        result = try_prehrajto_match(
+            cur, providers, film_id,
+            title=title, original_title=original_title,
+            year=year, runtime_min=runtime_min, sess=prh_session,
+        )
+    except PrehrajtoBlockedError:
+        conn.rollback()
+        counters["prehrajto_attempted"] += 1
+        raise
+    except Exception as e:
+        log.warning("prehrajto match failed for film_id=%d: %s", film_id, e)
+        conn.rollback()
+        counters["prehrajto_attempted"] += 1
+        return "error", 0
+    counters["prehrajto_attempted"] += 1
+    attached = result["written"] + result["repointed"] + result.get("refreshed", 0)
+    if attached:
+        counters["prehrajto_matched"] += 1
+        # Run-level row counter only counts genuinely new state (insert
+        # or re-point), not pure refreshes — otherwise re-runs of the
+        # daily importer would inflate it indefinitely.
+        counters["prehrajto_rows_written"] += result["written"] + result["repointed"]
+        log.info("  prehrajto match film_id=%d: written=%d repointed=%d "
+                 "refreshed=%d (query=%r)", film_id, result["written"],
+                 result["repointed"], result.get("refreshed", 0),
+                 result["query"])
+        return "matched", result["written"] + result["repointed"]
+    if result["hits"] == 0:
+        return "no_results", 0
+    if result["accepted"] == 0:
+        return "no_acceptable", 0
+    # Hits accepted but nothing attached to our film → all collisions
+    # with other films' existing rows where the title-evidence wasn't
+    # strong enough to re-point. Surface as no_acceptable in the admin UI.
+    return "no_acceptable", 0
+
+
 def _process_film(conn, *, run_id: int, video: ScannedVideo,
                   parsed: ParsedTitle, detail, movies_covers: Path,
-                  counters: dict, tmdb_session: requests.Session) -> None:
+                  counters: dict, tmdb_session: requests.Session,
+                  providers: dict, prh_session: requests.Session) -> None:
     movie = resolve_movie(parsed, session=tmdb_session)
     if movie is None or not movie.imdb_id:
         _mark_skipped(conn, video.video_id, "tmdb_resolve_failed")
@@ -308,15 +386,49 @@ def _process_film(conn, *, run_id: int, video: ScannedVideo,
                      failure_step="already_imported",
                      failure_message="film already linked to this SK Torrent video")
         counters["skipped_count"] += 1
-    else:
+        conn.commit()
+        return
+
+    # Persist the upsert outcome before we touch the network — if the
+    # prehraj.to search fails, the import_items row already exists and
+    # surfaces the SK Torrent video correctly in the admin dashboard.
+    conn.commit()
+    if action == "added_film":
+        counters["added_films"] += 1
+    elif action == "updated_film":
+        counters["updated_films"] += 1
+
+    # Now try prehraj.to. Two reasons it runs even on `updated_film`:
+    # 1) updated_film means a film row matched an existing TMDB id but
+    #    the prehraj.to importer might still have missed it.
+    # 2) The check inside try_prehrajto_match is cheap; if the film
+    #    already has a prehrajto source, write_hits will simply refresh
+    #    the existing rows.
+    prh_status: str | None = None
+    prh_rows = 0
+    try:
+        prh_status, prh_rows = _try_prehrajto_for_film(
+            conn, film_id=film_id, providers=providers,
+            prh_session=prh_session, counters=counters,
+        )
+        conn.commit()
+    except PrehrajtoBlockedError as e:
+        # Record the import_items row anyway, then bubble up to abort run.
         _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
                      detected_type="film",
                      imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
-                     action=action, target_film_id=film_id)
-        if action == "added_film":
-            counters["added_films"] += 1
-        elif action == "updated_film":
-            counters["updated_films"] += 1
+                     action=action, target_film_id=film_id,
+                     prehrajto_status="blocked",
+                     prehrajto_rows_written=0)
+        conn.commit()
+        raise
+
+    _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
+                 detected_type="film",
+                 imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
+                 action=action, target_film_id=film_id,
+                 prehrajto_status=prh_status,
+                 prehrajto_rows_written=prh_rows)
     conn.commit()
 
 
@@ -565,6 +677,8 @@ def run(trigger: str, max_new: int) -> int:
         "added_tv_shows": 0, "added_tv_episodes": 0,
         "updated_films": 0, "updated_episodes": 0,
         "failed_count": 0, "skipped_count": 0,
+        "prehrajto_attempted": 0, "prehrajto_matched": 0,
+        "prehrajto_rows_written": 0,
     }
     checkpoint_after = checkpoint
     checkpoint_after_tv = checkpoint_tv
@@ -573,6 +687,8 @@ def run(trigger: str, max_new: int) -> int:
 
     skt_session = requests.Session()
     tmdb_session = requests.Session()
+    prh_session = requests.Session()
+    providers = get_provider_ids(conn.cursor())
 
     try:
         scan_generic = scan_new_videos(
@@ -648,10 +764,20 @@ def run(trigger: str, max_new: int) -> int:
                                  series_covers=series_covers,
                                  counters=counters, tmdb_session=tmdb_session)
             elif parsed.cz_title or parsed.en_title:
-                _process_film(conn, run_id=run_id, video=video,
-                              parsed=parsed, detail=detail,
-                              movies_covers=movies_covers,
-                              counters=counters, tmdb_session=tmdb_session)
+                try:
+                    _process_film(conn, run_id=run_id, video=video,
+                                  parsed=parsed, detail=detail,
+                                  movies_covers=movies_covers,
+                                  counters=counters,
+                                  tmdb_session=tmdb_session,
+                                  providers=providers,
+                                  prh_session=prh_session)
+                except PrehrajtoBlockedError as e:
+                    log.error("prehraj.to blocked — aborting run after "
+                              "current film: %s", e)
+                    status = "partial"
+                    error_message = f"prehrajto blocked: {e}"
+                    break
             else:
                 _insert_item(conn, run_id=run_id, video=video, parsed=parsed,
                              detected_type="unknown",
@@ -697,6 +823,7 @@ def run(trigger: str, max_new: int) -> int:
         finally:
             skt_session.close()
             tmdb_session.close()
+            prh_session.close()
             conn.close()
 
     log.info("run %d finished: status=%s counters=%s", run_id, status, counters)

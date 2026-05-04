@@ -40,6 +40,17 @@ struct ImportRunRow {
     updated_episodes: i32,
     failed_count: i32,
     skipped_count: i32,
+    /// Summary counters for the prehraj.to search pass that the daily
+    /// auto-import runs after every added/updated film. `attempted` is
+    /// the number of films we searched, `matched` how many got at least
+    /// one new prehrajto upload attached, and `rows_written` the total
+    /// `video_sources` rows inserted/re-pointed.
+    #[sqlx(default)]
+    prehrajto_attempted: i32,
+    #[sqlx(default)]
+    prehrajto_matched: i32,
+    #[sqlx(default)]
+    prehrajto_rows_written: i32,
     error_message: Option<String>,
 }
 
@@ -102,6 +113,22 @@ struct ImportItemRow {
     failure_step: Option<String>,
     failure_message: Option<String>,
     raw_log: Option<JsonValue>,
+    /// Outcome of the prehraj.to search pass for this film:
+    /// `matched` / `no_results` / `no_acceptable` / `error` / `blocked`.
+    /// NULL for non-film rows or when the pre-#651 importer wrote the row.
+    #[sqlx(default)]
+    prehrajto_status: Option<String>,
+    /// Number of `video_sources(provider='prehrajto')` rows inserted or
+    /// re-pointed during the search pass. Zero when status != matched.
+    #[sqlx(default)]
+    prehrajto_rows_written: Option<i32>,
+    /// Title pulled in via the `films` JOIN — used to build the
+    /// `https://prehraj.to/hledej/{title (year)}` link the operator
+    /// clicks when checking a film the script couldn't auto-match.
+    #[sqlx(default)]
+    target_film_title: Option<String>,
+    #[sqlx(default)]
+    target_film_year: Option<i16>,
 }
 
 impl ImportItemRow {
@@ -178,6 +205,66 @@ impl ImportItemRow {
             _ => None,
         }
     }
+
+    /// Short Czech label for the prehraj.to search outcome — matched /
+    /// 0 hits / nezpůsobilé výsledky / chyba / blocked. Returns None if
+    /// the row is non-film or pre-dates the integration.
+    fn prehrajto_label(&self) -> Option<&'static str> {
+        match self.prehrajto_status.as_deref() {
+            Some("matched") => Some("✓ nalezeno"),
+            Some("no_results") => Some("0 výsledků"),
+            Some("no_acceptable") => Some("nezpůsobilé"),
+            Some("error") => Some("⚠ chyba"),
+            Some("blocked") => Some("⚠ blocked"),
+            _ => None,
+        }
+    }
+
+    /// CSS class hook so the template can colour-tag the prehrajto cell.
+    fn prehrajto_class(&self) -> &'static str {
+        match self.prehrajto_status.as_deref() {
+            Some("matched") => "prh-matched",
+            Some("no_results") => "prh-empty",
+            Some("no_acceptable") => "prh-empty",
+            Some("error") | Some("blocked") => "prh-error",
+            _ => "prh-none",
+        }
+    }
+
+    /// Pre-built `https://prehraj.to/hledej/{title (year)}` URL the
+    /// operator clicks when the auto-match missed something. Returns
+    /// None for non-film rows (no title to query with).
+    fn prehrajto_search_url(&self) -> Option<String> {
+        let title = self.target_film_title.as_deref()?;
+        let q = match self.target_film_year {
+            Some(y) => format!("{} ({})", title, y),
+            None => title.to_string(),
+        };
+        // Mirror the script's query cleanup: prehraj.to returns 404
+        // when the path contains `/`, `?`, `#`, etc., even URL-encoded.
+        let cleaned: String = q
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '?' | '#' | '&' | '%') {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+        Some(format!(
+            "https://prehraj.to/hledej/{}",
+            urlencoding::encode(&cleaned)
+        ))
+    }
+
+    fn prehrajto_rows_written_str(&self) -> String {
+        match self.prehrajto_rows_written.unwrap_or(0) {
+            0 => String::new(),
+            n => format!("{n}×"),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -215,7 +302,9 @@ pub async fn admin_import_list(State(state): State<AppState>) -> WebResult<Respo
         "SELECT id, started_at, finished_at, status, trigger, scanned_pages, \
          scanned_videos, checkpoint_before, checkpoint_after, added_films, \
          added_series, added_episodes, added_tv_shows, added_tv_episodes, \
-         updated_films, updated_episodes, failed_count, skipped_count, error_message \
+         updated_films, updated_episodes, failed_count, skipped_count, \
+         prehrajto_attempted, prehrajto_matched, prehrajto_rows_written, \
+         error_message \
          FROM import_runs ORDER BY started_at DESC LIMIT 30",
     )
     .fetch_all(&state.db)
@@ -291,7 +380,9 @@ pub async fn admin_import_detail(
         "SELECT id, started_at, finished_at, status, trigger, scanned_pages, \
          scanned_videos, checkpoint_before, checkpoint_after, added_films, \
          added_series, added_episodes, added_tv_shows, added_tv_episodes, \
-         updated_films, updated_episodes, failed_count, skipped_count, error_message \
+         updated_films, updated_episodes, failed_count, skipped_count, \
+         prehrajto_attempted, prehrajto_matched, prehrajto_rows_written, \
+         error_message \
          FROM import_runs WHERE id = $1",
     )
     .bind(run_id)
@@ -308,13 +399,16 @@ pub async fn admin_import_detail(
          i.target_film_id, i.target_series_id, i.target_episode_id, \
          i.target_tv_show_id, i.target_tv_episode_id, \
          f.slug AS target_film_slug, \
+         f.title AS target_film_title, \
+         f.year AS target_film_year, \
          s.slug AS target_series_slug, \
          e.slug AS target_episode_slug, \
          es.slug AS target_episode_series_slug, \
          ts.slug AS target_tv_show_slug, \
          te.slug AS target_tv_episode_slug, \
          tes.slug AS target_tv_episode_show_slug, \
-         i.failure_step, i.failure_message, i.raw_log \
+         i.failure_step, i.failure_message, i.raw_log, \
+         i.prehrajto_status, i.prehrajto_rows_written \
          FROM import_items i \
          LEFT JOIN films f     ON f.id   = i.target_film_id \
          LEFT JOIN series s    ON s.id   = i.target_series_id \
