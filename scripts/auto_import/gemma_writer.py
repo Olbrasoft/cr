@@ -151,7 +151,8 @@ def generate_unique_cs(
         return None
     keys = _load_keys()
     if not keys:
-        log.warning("No GEMINI_API_KEY env var set — Gemma generation disabled")
+        log.warning("No GEMINI_API_KEY (or GEMINI_API_KEY_1..4) env var set "
+                    "— Gemma generation disabled")
         return None
     builder = _build_prompt_series if is_series else _build_prompt_film
     prompt = builder(title, year, sources)

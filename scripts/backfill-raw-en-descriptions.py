@@ -43,26 +43,43 @@ log = logging.getLogger("backfill-raw-en")
 
 # Same heuristic the user-facing audit query uses to count "suspect raw EN":
 # short description + no Czech diacritics + has a tmdb_id we can re-query.
-SUSPECT_SQL = """
-    SELECT id, title, year, tmdb_id
-      FROM films
-     WHERE description IS NOT NULL
-       AND LENGTH(description) < 200
-       AND description !~ '[ěščřžýáíéůúóďťň]'
-       AND tmdb_id IS NOT NULL
-"""
+# Use `~*` (case-insensitive) so a description starting with an uppercase
+# diacritic like "Český…" is correctly recognized as Czech text and skipped.
+SUSPECT_FILTER = (
+    "description IS NOT NULL "
+    "AND LENGTH(description) < 200 "
+    "AND description !~* '[ěščřžýáíéůúóďťň]'"
+)
+SUSPECT_SQL = (
+    "SELECT id, title, year, tmdb_id "
+    "FROM films "
+    f"WHERE {SUSPECT_FILTER} "
+    "AND tmdb_id IS NOT NULL"
+)
 
 
 def fetch_overview(http: requests.Session, key: str, tmdb_id: int,
                    lang: str) -> str | None:
-    r = http.get(
-        f"{TMDB_BASE}/movie/{tmdb_id}",
-        params={"api_key": key, "language": lang}, timeout=30,
-    )
+    """Fetch TMDB overview for one (movie, lang). Returns None on any
+    transient failure — caller treats it the same as "TMDB has nothing"
+    so a single bad request can't kill the whole backfill run."""
+    try:
+        r = http.get(
+            f"{TMDB_BASE}/movie/{tmdb_id}",
+            params={"api_key": key, "language": lang}, timeout=30,
+        )
+    except requests.RequestException as e:
+        log.warning("TMDB request failed tmdb=%d lang=%s: %s", tmdb_id, lang, e)
+        return None
     if r.status_code != 200:
         log.warning("TMDB %d for tmdb=%d lang=%s", r.status_code, tmdb_id, lang)
         return None
-    return (r.json().get("overview") or "").strip() or None
+    try:
+        body = r.json()
+    except ValueError as e:
+        log.warning("TMDB JSON decode failed tmdb=%d lang=%s: %s", tmdb_id, lang, e)
+        return None
+    return (body.get("overview") or "").strip() or None
 
 
 def main() -> int:
@@ -81,6 +98,18 @@ def main() -> int:
     tmdb_key = os.environ.get("TMDB_API_KEY", "").strip()
     if not (dsn and tmdb_key):
         log.error("DATABASE_URL and TMDB_API_KEY required")
+        return 2
+
+    # Validate Gemma key presence up front — without a working key every
+    # generate_unique_cs() call returns None and the whole run becomes a
+    # TMDB-pounding no-op. Same key sources `gemma_writer._load_keys` checks.
+    has_gemma_key = (os.environ.get("GEMINI_API_KEY", "").strip() or
+                     any(os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
+                         for i in range(1, 5)))
+    if not has_gemma_key:
+        log.error("GEMINI_API_KEY (or GEMINI_API_KEY_1..4) required — "
+                  "without it Gemma returns None for every film and the run "
+                  "would issue %d TMDB requests with nothing to update")
         return 2
 
     conn = psycopg2.connect(dsn)
@@ -134,15 +163,12 @@ def main() -> int:
 
         # Only overwrite if the row STILL matches the suspect pattern — guards
         # against an admin who edited the description manually between SELECT
-        # and UPDATE.
+        # and UPDATE. Same `SUSPECT_FILTER` (case-insensitive) the SELECT
+        # uses, so the two stay in sync if the heuristic ever changes.
         try:
             cur.execute(
-                """UPDATE films
-                      SET description = %s
-                    WHERE id = %s
-                      AND description IS NOT NULL
-                      AND LENGTH(description) < 200
-                      AND description !~ '[ěščřžýáíéůúóďťň]'""",
+                "UPDATE films SET description = %s "
+                f"WHERE id = %s AND {SUSPECT_FILTER}",
                 (generated, film_id),
             )
             if cur.rowcount == 0:
