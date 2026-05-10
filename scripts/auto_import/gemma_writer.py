@@ -18,10 +18,22 @@ import time
 
 import requests
 
-MODEL = "gemma-3-27b-it"
-URL_TPL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={{}}"
+URL_TPL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           "{model}:generateContent?key={key}")
 DEFAULT_TIMEOUT = 120
 RATE_LIMIT_PAUSE = 60
+
+# Try models in this order. Google's `gemma-4-31b-it` started returning
+# HTTP 500 INTERNAL on every prompt around 2026-05-10 (verified independently
+# with all four production keys + a one-word "Řekni ahoj" payload). The
+# 26B-A4B variant works fine and produces equivalent quality CS output, so
+# it's now primary; we keep 31B in the fallback chain so the moment Google
+# fixes the outage we transparently regain access to it (and so a future
+# regression in 26B doesn't kill the import path either). The auto-import
+# silently fell back to raw TMDB EN overview for every single film during
+# the outage — that's the bug this list prevents.
+MODELS = ["gemma-4-26b-a4b-it", "gemma-4-31b-it"]
+MODEL = MODELS[0]  # backwards-compat for callers that import the symbol
 
 log = logging.getLogger(__name__)
 
@@ -68,23 +80,28 @@ def _build_prompt_series(title: str, year: int | None, sources: list[tuple[str, 
     return "\n".join(parts)
 
 
-def _call(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT) -> str | None:
+def _call(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT,
+          model: str = MODEL) -> str | None:
     """Single Gemini call. Returns generated text or None on safety-filter / error."""
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000},
+        # Gemma 4 emits hidden reasoning tokens before the answer, eating
+        # the output budget. Bump high enough that the answer survives.
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 3000},
     }
     try:
-        r = requests.post(URL_TPL.format(key), json=payload, timeout=timeout)
+        r = requests.post(
+            URL_TPL.format(model=model, key=key), json=payload, timeout=timeout
+        )
     except requests.RequestException as e:
-        log.warning("Gemini call failed: %s", e)
+        log.warning("Gemini call failed (%s): %s", model, e)
         return None
     if r.status_code == 429:
-        log.warning("Gemini rate-limited; sleeping %ds", RATE_LIMIT_PAUSE)
+        log.warning("Gemini rate-limited (%s); sleeping %ds", model, RATE_LIMIT_PAUSE)
         time.sleep(RATE_LIMIT_PAUSE)
         return None
     if r.status_code != 200:
-        log.warning("Gemini HTTP %d: %s", r.status_code, r.text[:200])
+        log.warning("Gemini HTTP %d (%s): %s", r.status_code, model, r.text[:200])
         return None
     try:
         data = r.json()
@@ -98,7 +115,14 @@ def _call(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT) -> str | None:
     parts = cands[0].get("content", {}).get("parts") or []
     if not parts:
         return None
-    text = (parts[0].get("text") or "").strip()
+    # Gemma 4 returns reasoning in parts[*] with "thought": true and the
+    # actual answer in a separate part without that flag. Skip thought
+    # parts and join the rest. Older Gemma 3 models don't set the flag,
+    # so this still works for them.
+    answer_parts = [p.get("text", "") for p in parts if not p.get("thought")]
+    text = "\n".join(t for t in answer_parts if t).strip()
+    if not text:
+        text = (parts[-1].get("text") or "").strip()
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1]
     return text or None
@@ -131,7 +155,14 @@ def generate_unique_cs(
         return None
     builder = _build_prompt_series if is_series else _build_prompt_film
     prompt = builder(title, year, sources)
-    return _call(prompt, keys[0])
+    # Try each model in MODELS until one returns text. A 5xx or empty
+    # response on the primary used to silently fall back to raw TMDB EN
+    # — now we transparently retry with the next model first.
+    for model in MODELS:
+        text = _call(prompt, keys[0], model=model)
+        if text:
+            return text
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +179,8 @@ build_prompt_series = _build_prompt_series
 load_keys = _load_keys
 
 
-def call_gemma(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT) -> str | None:
+def call_gemma(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT,
+               model: str | None = None) -> str | None:
     """Single Gemini call with a caller-supplied key.
 
     Returns the generated text, or None on:
@@ -157,5 +189,6 @@ def call_gemma(prompt: str, key: str, timeout: int = DEFAULT_TIMEOUT) -> str | N
       * HTTP != 200
       * network / JSON errors
 
-    The caller decides whether to retry — this function does not loop."""
-    return _call(prompt, key, timeout)
+    The caller decides whether to retry — this function does not loop.
+    `model` defaults to the primary entry of `MODELS`."""
+    return _call(prompt, key, timeout, model=model or MODEL)
