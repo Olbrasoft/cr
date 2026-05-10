@@ -75,10 +75,21 @@ UPDATE film_sledujteto_uploads fsu
   FROM _films_merge_map m
  WHERE fsu.film_id = m.dup_id;
 
-UPDATE film_sources fs
-   SET film_id = m.keep_id
-  FROM _films_merge_map m
- WHERE fs.film_id = m.dup_id;
+-- `film_sources` is a legacy table that exists in production (~70k rows
+-- referencing `films`) but was never created by an in-repo migration —
+-- another piece of pre-068 schema drift, same family as the films
+-- sktorrent columns 067a backfills. Guard the UPDATE with `to_regclass`
+-- so a fresh CI database (no `film_sources` table) treats it as a no-op
+-- while prod still re-points the rows.
+DO $$
+BEGIN
+    IF to_regclass('public.film_sources') IS NOT NULL THEN
+        UPDATE film_sources fs
+           SET film_id = m.keep_id
+          FROM _films_merge_map m
+         WHERE fs.film_id = m.dup_id;
+    END IF;
+END $$;
 
 UPDATE prehrajto_unmatched_clusters puc
    SET resolved_film_id = m.keep_id
