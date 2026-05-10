@@ -130,13 +130,23 @@ def upsert_film(
         csfd_rating = None
 
     # --- Path A: film already in DB? ---
+    # Look up by imdb_id first (most reliable) and fall back to tmdb_id —
+    # legacy films imported before the IMDb linkage existed have only
+    # tmdb_id set, so the imdb_id-only lookup used to miss them and create
+    # a duplicate row. The DB now enforces a partial UNIQUE on tmdb_id, so
+    # the duplicate INSERT below would crash; we resolve it here by
+    # treating the legacy row as the canonical match and backfilling its
+    # imdb_id from this run's TMDB resolution.
     cur.execute(
-        "SELECT id, sktorrent_video_id FROM films WHERE imdb_id = %s",
-        (movie.imdb_id,),
+        "SELECT id, sktorrent_video_id, imdb_id FROM films "
+        "WHERE imdb_id = %s OR tmdb_id = %s "
+        "ORDER BY (imdb_id IS NOT NULL) DESC, id "
+        "LIMIT 1",
+        (movie.imdb_id, movie.tmdb_id),
     )
     row = cur.fetchone()
     if row is not None:
-        film_id, existing_skt = row
+        film_id, existing_skt, existing_imdb = row
         if existing_skt is not None:
             log.info("film %d (imdb=%s) already has SKT %d — skipping",
                      film_id, movie.imdb_id, existing_skt)
@@ -145,12 +155,14 @@ def upsert_film(
         # reflects any previously linked source (e.g. Bombuj) and we only want
         # to OR-in the new signal from SK Torrent, not downgrade to False.
         # Backfill ratings via COALESCE — only fill if DB value is NULL, so
-        # manually-curated numbers are never overwritten.
+        # manually-curated numbers are never overwritten. Same idea for
+        # imdb_id: only fill it if missing.
         cur.execute(
             "UPDATE films SET sktorrent_video_id = %s, sktorrent_cdn = %s, "
             "sktorrent_qualities = %s, "
             "has_dub = has_dub OR %s, "
             "has_subtitles = has_subtitles OR %s, "
+            "imdb_id = COALESCE(imdb_id, %s), "
             "imdb_rating = COALESCE(imdb_rating, %s), "
             "csfd_rating = COALESCE(csfd_rating, %s), "
             "tmdb_poster_path = COALESCE(tmdb_poster_path, %s), "
@@ -158,6 +170,7 @@ def upsert_film(
             "WHERE id = %s",
             (sktorrent_video_id, sktorrent_cdn, qualities_str,
              has_dub, has_subtitles,
+             movie.imdb_id,
              movie.vote_average, csfd_rating,
              movie.poster_path,
              film_id),
