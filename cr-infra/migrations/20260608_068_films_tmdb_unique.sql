@@ -128,7 +128,12 @@ DROP TABLE _films_merge_map;
 
 -- 5) Future-proof: prevent a second row per TMDB id. Partial because some
 --    legacy / manual films legitimately lack a tmdb_id and we don't want
---    to merge those (no shared identifier).
+--    to merge those (no shared identifier). Same upgrade pattern as
+--    migration 050 used for `imdb_id`: create the new UNIQUE index first,
+--    then drop the old non-unique one (`idx_films_tmdb_id` from migration
+--    028) so query plans don't regress if the CREATE blew up.
 CREATE UNIQUE INDEX IF NOT EXISTS films_tmdb_id_unique
     ON films (tmdb_id)
     WHERE tmdb_id IS NOT NULL;
+
+DROP INDEX IF EXISTS idx_films_tmdb_id;

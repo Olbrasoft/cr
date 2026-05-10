@@ -138,7 +138,7 @@ def upsert_film(
     # treating the legacy row as the canonical match and backfilling its
     # imdb_id from this run's TMDB resolution.
     cur.execute(
-        "SELECT id, sktorrent_video_id, imdb_id FROM films "
+        "SELECT id, sktorrent_video_id FROM films "
         "WHERE imdb_id = %s OR tmdb_id = %s "
         "ORDER BY (imdb_id IS NOT NULL) DESC, id "
         "LIMIT 1",
@@ -146,7 +146,7 @@ def upsert_film(
     )
     row = cur.fetchone()
     if row is not None:
-        film_id, existing_skt, existing_imdb = row
+        film_id, existing_skt = row
         if existing_skt is not None:
             log.info("film %d (imdb=%s) already has SKT %d — skipping",
                      film_id, movie.imdb_id, existing_skt)
