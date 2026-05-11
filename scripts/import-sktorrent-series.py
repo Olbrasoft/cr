@@ -51,6 +51,7 @@ from scripts.auto_import.sktorrent_scanner import _parse_listing_html
 from scripts.auto_import.title_parser import parse_sktorrent_title, ParsedTitle
 from scripts.auto_import.tmdb_resolver import resolve_tv
 from scripts.auto_import.series_enricher import process_series_batch
+from scripts.auto_import.tv_show_enricher import process_tv_show_episode
 
 log = logging.getLogger("import-sktorrent-series")
 
@@ -83,7 +84,7 @@ class Target:
     sample_url: str
 
 
-def load_targets(csv_path: Path, top: int, min_eps: int) -> list[Target]:
+def load_targets(csv_path: Path, top: int, min_eps: int, skip: int = 0) -> list[Target]:
     rows: list[Target] = []
     with csv_path.open(encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -101,22 +102,73 @@ def load_targets(csv_path: Path, top: int, min_eps: int) -> list[Target]:
                 sample_url=r["sample_url"],
             ))
     rows.sort(key=lambda t: -t.expected_episode_count)
-    return rows[:top]
+    return rows[skip:skip + top]
 
 
 def _strip_episode_suffix_for_search(title: str) -> str:
-    """Strip episode markers from a CZ/EN title before sending to SK Torrent
-    search — e.g. "Bokutachi Wa Benkyou Ga Dekinai -13" → "Bokutachi Wa
-    Benkyou Ga Dekinai". Search behaves much better on the show name alone.
+    """Strip every episode / season marker from the tail of a CSV title so
+    SK Torrent search hits the actual show name.
+
+    SK Torrent uploaders glue episode numbers onto the show name in many
+    inconsistent shapes — every variant below is real:
+
+        "Bokutachi Wa Benkyou Ga Dekinai S2 -10"
+        "Mairimashita! Iruma-kun S2 - 08"
+        "Mushoku Tensei -23"
+        "Strike the blood -24"
+        "Tensei Shitara Slime Datta Ken - 05 oprava"
+        "Witch Craft Works -13 Ova"
+        "Alenka a Lewis 51"
+        "My Little Pony: Vyprávěj svůj příběh 70"
+        "Gakusen Toshi Asterisk 2 -12"
+        "Strike the blood IV -12"
+        "World Trigger S2 - 09"
+        "ŽIVOT NA ZÁMKU-05_Stopadesát…"
+        "Nanatsu No Taizai - Fundo No Shinpa -10"
+        "Pomocnice / The Housemaid (S04E51)(CZ)"  → SxxExx form
+        "Pohotovost (E05)"                        → bare (E##) form
+
+    We loop the regex set until it stops changing — many real titles need
+    two passes (e.g. "S2 - 08" first strips "- 08", then strips "S2").
     """
     if not title:
         return ""
+    rules = [
+        # Trailing SxxExx (and anything after it).
+        (re.compile(r"\bS\d{1,2}E\d{1,2}\b.*$", re.IGNORECASE), ""),
+        # "Show NN- Episode title" / "Show NN-Episode title" — the dash is
+        # right next to the number, no space. Anchor on word boundary so
+        # we don't eat legitimate hyphenated names.
+        (re.compile(r"\s\d{1,3}\s*-\s*\S.*$"), ""),
+        # Trailing "(E##)" / " E##" / "(EN ##)".
+        (re.compile(r"\s*\(E\d{1,3}\)\s*$", re.IGNORECASE), ""),
+        (re.compile(r"\s+E\d{1,3}\s*$", re.IGNORECASE), ""),
+        # Trailing "Sn - n" / "Sn -n" / "Sn n".
+        (re.compile(r"\s+S\d{1,2}(?:\s*-?\s*\d{1,3})?(?:\s*Ova)?\s*$",
+                    re.IGNORECASE), ""),
+        # Trailing " - <digits>" (with space-dash-space or space-dash) plus
+        # an optional trailing word like "Ova", "oprava", "raw", "extra".
+        (re.compile(r"\s+-\s*\d{1,3}(?:\s+\w+)?\s*$", re.IGNORECASE), ""),
+        # Trailing " IV / V / VI / VII / VIII" Roman season suffix.
+        (re.compile(r"\s+(?:II|III|IV|V|VI|VII|VIII|IX|X)\s*$"), ""),
+    ]
+    prev = None
     s = title
-    s = re.sub(r"\s*-\s*\d{1,3}(?:\s*Ova)?\s*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s*S\d{1,2}\s*-\s*\d{1,3}\s*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bS\d{1,2}E\d{1,2}\b.*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\(E\d{1,3}\)\s*$", "", s)
-    return s.strip(" -")
+    for _ in range(8):
+        if s == prev:
+            break
+        prev = s
+        for rx, repl in rules:
+            s = rx.sub(repl, s).rstrip()
+    # Bare-digit suffix is the most ambiguous: "Ben 10", "Top Gun 2", "1917",
+    # "Sezona 1" all look like "name SPACE digits" but the digit is part of
+    # the name. Only strip when the title is long enough (≥4 words) that the
+    # trailing number is almost certainly an episode-counter dropped on by
+    # the SK Torrent uploader (e.g. "Alenka a Lewis 51",
+    # "My Little Pony: Vyprávěj svůj příběh 70").
+    if len(s.split()) >= 4 and re.search(r"\s+\d{1,3}\s*$", s):
+        s = re.sub(r"\s+\d{1,3}\s*$", "", s)
+    return s.strip(" -:_")
 
 
 def _fetch_search_page(
@@ -173,12 +225,22 @@ def search_episodes_for(
     filtered through union-find equivalence: keep only titles whose parsed
     cz_norm or en_norm matches one of the target's canonical aliases.
     """
-    aliases = {a for a in (target.cz_norm, target.en_norm) if a}
+    # Aliases include BOTH the raw CSV-derived form and the stripped form,
+    # because sktorrent search results parse to the *clean* show name without
+    # the episode marker. Without this, "Misfits" hits returned by searching
+    # for "Misfits" wouldn't match alias "misfitsepizoda7" derived from the
+    # fragmented CSV title "Misfits - Epizoda 7".
+    aliases: set[str] = set()
     queries: list[str] = []
     for raw in (target.cz_title, target.en_title):
+        if raw:
+            aliases.add(_normalize(raw))
         cleaned = _strip_episode_suffix_for_search(raw)
-        if cleaned and cleaned not in queries:
-            queries.append(cleaned)
+        if cleaned:
+            aliases.add(_normalize(cleaned))
+            if cleaned not in queries:
+                queries.append(cleaned)
+    aliases.discard("")
 
     seen_ids: set[int] = set()
     matched: list[tuple[int, str, ParsedTitle]] = []
@@ -217,6 +279,75 @@ def _langs_to_flags(langs: list[str]) -> tuple[bool, bool]:
     has_dub = any(x in langs for x in ("DUB_CZ", "DUB_SK", "CZ", "SK"))
     has_subs = any(x in langs for x in ("SUBS_CZ", "SUBS_SK"))
     return has_dub, has_subs
+
+
+def _import_via_tv_shows(
+    label: str,
+    tv,
+    fresh: list[tuple[int, str, ParsedTitle]],
+    conn: psycopg2.extensions.connection | None,
+    dry_run: bool,
+) -> dict:
+    """Fallback for CZ/SK-only shows: insert into tv_shows / tv_episodes.
+
+    Mirrors auto-import.py's `_process_tv_show` but loops directly over our
+    pre-fetched search results instead of one scanner item at a time.
+    `process_tv_show_episode` is idempotent on the (tv_show_id, season,
+    episode, sktorrent_video_id) key so re-runs are safe.
+    """
+    log.info("[%s] no IMDB on TMDB match — routing to tv_shows fallback", label)
+    if dry_run:
+        log.info("[%s] DRY RUN — would tv_shows-upsert %d episodes",
+                 label, len(fresh))
+        return {"target": label, "status": "dry_run_tv_shows_ok",
+                "found": len(fresh), "fresh": len(fresh),
+                "imported": len(fresh), "failed": 0,
+                "tmdb_id": tv.tmdb_id}
+
+    if conn is None:
+        return {"target": label, "status": "no_db",
+                "found": len(fresh), "fresh": len(fresh),
+                "imported": 0, "failed": len(fresh)}
+
+    added = 0
+    failed = 0
+    for vid, raw_title, parsed in fresh:
+        season = parsed.season if parsed.is_episode and parsed.season else 1
+        episode = parsed.episode if parsed.is_episode and parsed.episode else None
+        if episode is None:
+            failed += 1
+            log.debug("[%s] tv_shows skip vid=%d — no parseable episode#", label, vid)
+            continue
+        has_dub, has_subs = _langs_to_flags(parsed.langs)
+        try:
+            res = process_tv_show_episode(
+                conn,
+                tv=tv,
+                season=season,
+                episode=episode,
+                sktorrent_video_id=vid,
+                sktorrent_cdn=None,        # ephemeral — see series flow
+                sktorrent_qualities=[],
+                has_dub=has_dub,
+                has_subtitles=has_subs,
+            )
+        except Exception:
+            conn.rollback()
+            failed += 1
+            log.exception("[%s] tv_shows insert crashed for vid=%d", label, vid)
+            continue
+        conn.commit()
+        if res.action.startswith("added"):
+            added += 1
+        elif res.action == "skipped":
+            pass
+        else:
+            failed += 1
+    log.info("[%s] tv_shows DONE — added=%d failed=%d", label, added, failed)
+    return {"target": label, "status": "imported_tv_shows",
+            "found": len(fresh), "fresh": len(fresh),
+            "imported": added, "failed": failed,
+            "tmdb_id": tv.tmdb_id}
 
 
 def import_one_series(
@@ -259,13 +390,13 @@ def import_one_series(
         log.warning("[%s] TMDB resolve failed — skipping", label)
         return {"target": label, "status": "tmdb_failed", "found": len(found),
                 "fresh": len(fresh), "imported": 0, "failed": len(fresh)}
-    if not tv.imdb_id:
-        log.warning("[%s] TMDB match has no imdb_id (CZ/SK-only show?) — skipping; "
-                    "tv_show flow not used in backfill", label)
-        return {"target": label, "status": "no_imdb", "found": len(found),
-                "fresh": len(fresh), "imported": 0, "failed": len(fresh)}
     log.info("[%s] TMDB ✓ tmdb_id=%s imdb=%s cs=%r en=%r",
              label, tv.tmdb_id, tv.imdb_id, tv.name_cs, tv.name_en)
+    if not tv.imdb_id:
+        # CZ/SK-only show — TMDB has it but no IMDB link. The `series` table
+        # requires imdb_id; route to `tv_shows` instead, the same way
+        # auto-import.py does for /tv-porady/ scans.
+        return _import_via_tv_shows(label, tv, fresh, conn, dry_run)
 
     # Don't fetch sktorrent detail pages for backfill: per the project memory
     # `feedback_sktorrent_cdn_ephemeral.md`, sktorrent_cdn rotates and is
@@ -331,6 +462,9 @@ def main() -> int:
                     help="Missing-series CSV from find-sktorrent-new-series.py")
     ap.add_argument("--top", type=int, default=20,
                     help="Process the N highest-episode-count missing series")
+    ap.add_argument("--skip", type=int, default=0,
+                    help="Skip the first M series (after sort) — useful to "
+                         "import positions 21..50 without re-searching 1..20")
     ap.add_argument("--min-episodes", type=int, default=2,
                     help="Skip CSV rows below this episode_count")
     ap.add_argument("--covers-dir", default=os.environ.get(
@@ -346,9 +480,10 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    targets = load_targets(Path(args.csv), top=args.top, min_eps=args.min_episodes)
-    log.info("loaded %d target series from %s (top %d, min_eps=%d)",
-             len(targets), args.csv, args.top, args.min_episodes)
+    targets = load_targets(Path(args.csv), top=args.top,
+                           min_eps=args.min_episodes, skip=args.skip)
+    log.info("loaded %d target series from %s (top %d, skip %d, min_eps=%d)",
+             len(targets), args.csv, args.top, args.skip, args.min_episodes)
     for i, t in enumerate(targets, 1):
         log.info("  %2d. %-45s eps=%d", i,
                  (t.cz_title or t.en_title)[:45], t.expected_episode_count)
@@ -370,8 +505,11 @@ def main() -> int:
     if conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT sktorrent_video_id FROM episodes "
-                "WHERE sktorrent_video_id IS NOT NULL"
+                """SELECT sktorrent_video_id FROM episodes
+                   WHERE sktorrent_video_id IS NOT NULL
+                   UNION ALL
+                   SELECT sktorrent_video_id FROM tv_episodes
+                   WHERE sktorrent_video_id IS NOT NULL"""
             )
             known_video_ids = {row[0] for row in cur.fetchall()}
         log.info("DB already knows %d sktorrent episode IDs", len(known_video_ids))
