@@ -154,6 +154,9 @@ struct CountRow {
 pub struct TvShowQuery {
     strana: Option<i64>,
     razeni: Option<String>,
+    /// "asc" or "desc". Absent / unknown → desc (newest/best first), except
+    /// `razeni=nazev` where the page-template default is asc (A–Z).
+    smer: Option<String>,
     q: Option<String>,
 }
 
@@ -162,20 +165,46 @@ impl TvShowQuery {
         self.strana.unwrap_or(1).max(1)
     }
 
+    /// True when the user explicitly asked for ascending order. Mirrors
+    /// the films/series convention so the UI behaves consistently.
+    fn sort_asc(&self) -> bool {
+        self.smer.as_deref() == Some("asc")
+    }
+
     fn order_clause(&self) -> &'static str {
-        match self.razeni.as_deref() {
-            Some("rok") => "s.first_air_year DESC NULLS LAST, s.title",
-            // URL param `razeni=imdb` is kept for backward-compat with old
-            // bookmarks; internally it sorts by `tmdb_rating` because that
-            // is where the score actually lives (see migration 069).
-            Some("imdb") => "s.tmdb_rating DESC NULLS LAST, s.title",
-            Some("nazev") => "s.title ASC",
-            _ => "s.added_at DESC NULLS LAST, s.title",
+        let asc = self.sort_asc();
+        match (self.razeni.as_deref(), asc) {
+            (Some("rok"), false) => "s.first_air_year DESC NULLS LAST, s.title",
+            (Some("rok"), true) => "s.first_air_year ASC NULLS LAST, s.title",
+            // `imdb` and `tmdb` are sibling URL keys, each sorting by its
+            // own *_rating column (#701). Pre-#701 `razeni=imdb` was a
+            // legacy alias for tmdb_rating; the imdb_rating backfill in
+            // #690 retired that alias.
+            (Some("imdb"), false) => "s.imdb_rating DESC NULLS LAST, s.title",
+            (Some("imdb"), true) => "s.imdb_rating ASC NULLS LAST, s.title",
+            (Some("tmdb"), false) => "s.tmdb_rating DESC NULLS LAST, s.title",
+            (Some("tmdb"), true) => "s.tmdb_rating ASC NULLS LAST, s.title",
+            (Some("nazev"), false) => "s.title DESC",
+            (Some("nazev"), true) => "s.title ASC",
+            // Default + razeni=pridano: by added_at. Direction follows smer.
+            (_, false) => "s.added_at DESC NULLS LAST, s.title",
+            (_, true) => "s.added_at ASC NULLS LAST, s.title",
         }
     }
 
     fn sort_key(&self) -> &str {
         self.razeni.as_deref().unwrap_or("pridano")
+    }
+
+    /// Whether the user picked a non-default sort that the latest-episode
+    /// listing can't honour (it's hard-ordered by `created_at`). When true,
+    /// the handler switches to a shows-by-`order_clause` query instead so
+    /// the page actually reorders rather than silently ignoring `razeni=`.
+    fn wants_shows_mode(&self) -> bool {
+        matches!(
+            self.razeni.as_deref(),
+            Some("rok") | Some("imdb") | Some("tmdb") | Some("nazev")
+        )
     }
 }
 
@@ -268,6 +297,30 @@ pub async fn tv_porady_list(
         );
         let rows = sqlx::query_as::<_, TvShowRow>(&query)
             .bind(pattern)
+            .bind(TV_SHOWS_PER_PAGE)
+            .bind(offset)
+            .fetch_all(&state.db)
+            .await?;
+        (count_row.count.unwrap_or(0), rows, Vec::new())
+    } else if params.wants_shows_mode() {
+        // Non-default sort (rok / imdb / tmdb / nazev) can't be honoured by
+        // the latest-episode-per-show query — it's hard-ordered by
+        // `ps.created_at DESC` so the row layout matches the "what's new"
+        // home view. When the user explicitly asks for a different order,
+        // switch to a shows-by-`order_clause` query so the page actually
+        // reorders instead of silently ignoring `razeni=` (#702 review).
+        let count_row = sqlx::query_as::<_, CountRow>("SELECT count(*) as count FROM tv_shows")
+            .fetch_one(&state.db)
+            .await?;
+        let query = format!(
+            "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
+             s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
+             s.season_count, s.episode_count, s.added_at, \
+             s.tmdb_poster_path \
+             FROM tv_shows s \
+             ORDER BY {order} LIMIT $1 OFFSET $2"
+        );
+        let rows = sqlx::query_as::<_, TvShowRow>(&query)
             .bind(TV_SHOWS_PER_PAGE)
             .bind(offset)
             .fetch_all(&state.db)
@@ -818,6 +871,11 @@ fn build_query_string(params: &TvShowQuery) -> String {
     let mut parts: Vec<(&str, String)> = Vec::new();
     if params.razeni.is_some() {
         parts.push(("razeni", params.sort_key().to_string()));
+    }
+    if let Some(ref smer) = params.smer
+        && smer == "asc"
+    {
+        parts.push(("smer", "asc".to_string()));
     }
     if let Some(ref q) = params.q {
         let t = q.trim();

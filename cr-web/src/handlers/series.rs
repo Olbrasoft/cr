@@ -235,11 +235,14 @@ impl SeriesQuery {
         match (self.razeni.as_deref(), desc) {
             (Some("rok"), true) => "s.first_air_year DESC NULLS LAST, s.title",
             (Some("rok"), false) => "s.first_air_year ASC NULLS LAST, s.title",
-            // URL param `razeni=imdb` is kept for backward-compat with old
-            // bookmarks; internally it sorts by `tmdb_rating` because that
-            // is where the score actually lives (see migration 069).
-            (Some("imdb"), true) => "s.tmdb_rating DESC NULLS LAST, s.title",
-            (Some("imdb"), false) => "s.tmdb_rating ASC NULLS LAST, s.title",
+            // `imdb` and `tmdb` are sibling URL keys, each sorting by its
+            // own *_rating column (#701). Pre-#701 `razeni=imdb` was a
+            // legacy alias for tmdb_rating; the imdb_rating backfill in
+            // #690 retired that alias.
+            (Some("imdb"), true) => "s.imdb_rating DESC NULLS LAST, s.title",
+            (Some("imdb"), false) => "s.imdb_rating ASC NULLS LAST, s.title",
+            (Some("tmdb"), true) => "s.tmdb_rating DESC NULLS LAST, s.title",
+            (Some("tmdb"), false) => "s.tmdb_rating ASC NULLS LAST, s.title",
             (Some("nazev"), true) => "s.title DESC",
             (Some("nazev"), false) => "s.title ASC",
             (_, true) => "s.added_at DESC NULLS LAST, s.title",

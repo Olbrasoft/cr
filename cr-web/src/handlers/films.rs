@@ -389,12 +389,15 @@ impl FilmsQuery {
         match (self.razeni.as_deref(), desc) {
             (Some("rok"), true) => "f.year DESC NULLS LAST, f.title",
             (Some("rok"), false) => "f.year ASC NULLS LAST, f.title",
-            // URL param `razeni=imdb` is kept for backward-compat with old
-            // bookmarks; internally it sorts by `tmdb_rating` because that
-            // is where the score actually lives (see migration 069). The UI
-            // label already reads "TMDB" per #584/#586.
-            (Some("imdb"), true) => "f.tmdb_rating DESC NULLS LAST, f.title",
-            (Some("imdb"), false) => "f.tmdb_rating ASC NULLS LAST, f.title",
+            // `imdb` and `tmdb` are sibling URL keys, each sorting by its
+            // own *_rating column (#701). Pre-#701 `razeni=imdb` was a
+            // legacy alias for tmdb_rating (the only rating column at the
+            // time of #584/#586); the imdb_rating backfill in #690 made
+            // that alias misleading and it was retired.
+            (Some("imdb"), true) => "f.imdb_rating DESC NULLS LAST, f.title",
+            (Some("imdb"), false) => "f.imdb_rating ASC NULLS LAST, f.title",
+            (Some("tmdb"), true) => "f.tmdb_rating DESC NULLS LAST, f.title",
+            (Some("tmdb"), false) => "f.tmdb_rating ASC NULLS LAST, f.title",
             (Some("csfd"), true) => "f.csfd_rating DESC NULLS LAST, f.title",
             (Some("csfd"), false) => "f.csfd_rating ASC NULLS LAST, f.title",
             (Some("nazev"), true) => "f.title DESC, f.year DESC NULLS LAST",

@@ -77,23 +77,16 @@
         <div class="films-toolbar">
             <label class="toolbar-group">
                 <span class="toolbar-label">Řazení:</span>
-                <select id="sort-select" onchange="applySortCombined(this.value)" title="Řazení seriálů" class="sort-select-combined">
-                    <optgroup label="Podle přidání">
-                        <option value="pridano:desc">Naposledy přidané</option>
-                        <option value="pridano:asc">Nejdříve přidané</option>
-                    </optgroup>
-                    <optgroup label="Podle roku vydání">
-                        <option value="rok:desc">Od nejnovějších</option>
-                        <option value="rok:asc">Od nejstarších</option>
-                    </optgroup>
-                    <optgroup label="Podle hodnocení TMDB">
-                        <option value="imdb:desc">Nejlépe hodnocené první</option>
-                        <option value="imdb:asc">Nejhůře hodnocené první</option>
-                    </optgroup>
-                    <optgroup label="Podle abecedy">
-                        <option value="nazev:asc">Podle názvu A–Z</option>
-                        <option value="nazev:desc">Podle názvu Z–A</option>
-                    </optgroup>
+                <select id="sort-field" onchange="applySortField(this.value)" title="Podle čeho řadit seriály" class="sort-select-field">
+                    <option value="pridano">Podle přidání</option>
+                    <option value="rok">Podle roku vydání</option>
+                    <option value="imdb">Podle hodnocení IMDb</option>
+                    <option value="tmdb">Podle hodnocení TMDB</option>
+                    <option value="nazev">Podle názvu</option>
+                </select>
+                <select id="sort-dir" onchange="applySortDir(this.value)" title="Směr řazení" class="sort-select-dir">
+                    <option value="desc">↓ Sestupně</option>
+                    <option value="asc">↑ Vzestupně</option>
                 </select>
             </label>
             <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout na zobrazení seznamem" aria-label="Zobrazení">
@@ -295,7 +288,9 @@
     .films-header h1, .films-header h2 { font-size: 1.1rem; }
     .films-toolbar { gap: 0.3rem; }
     .toolbar-group { margin-right: 0; gap: 0.25rem; }
-    .sort-select-combined { min-width: 0; padding-left: 0.4rem; padding-right: 0.4rem; max-width: 150px; }
+    .sort-select-field, .sort-select-dir { min-width: 0; padding-left: 0.4rem; padding-right: 0.4rem; }
+    .sort-select-field { max-width: 145px; }
+    .sort-select-dir { max-width: 100px; }
 }
 .view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; transition: background 0.2s, color 0.2s; display: flex; align-items: center; }
 .view-btn:hover { background: #e0e0e0; }
@@ -335,8 +330,10 @@ a.filter-chip-link:hover { background: #11457E; color: white; }
 .help-icon.show .help-popup, .help-icon:hover .help-popup { display: block; }
 
 /* Combined sort select (field + direction) */
-.sort-select-combined { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; min-width: 200px; }
-.sort-select-combined:focus { outline: 1px solid #11457E; }
+.sort-select-field, .sort-select-dir { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; }
+.sort-select-field { min-width: 170px; }
+.sort-select-dir { min-width: 110px; }
+.sort-select-field:focus, .sort-select-dir:focus { outline: 1px solid #11457E; }
 
 .toolbar-group { display: inline-flex; align-items: center; gap: 0.4rem; margin-right: 0.5rem; }
 .toolbar-label { font-size: 0.82rem; color: #555; font-weight: 500; }
@@ -445,14 +442,20 @@ function toggleView() {
 }
 (function(){ var s = localStorage.getItem('seriesView'); if (s === 'list') setView('list'); })();
 
-/* --- Sort (combined field + direction) --- */
-function applySortCombined(v) {
-    var parts = v.split(':');
-    var field = parts[0];
-    var dir = parts[1] || 'desc';
+/* --- Sort (two separate selects: field + direction) --- */
+function applySortField(field) {
     var u = new URL(window.location);
-    if (field === 'pridano' && dir === 'desc') u.searchParams.delete('razeni');
+    if (field === 'pridano') u.searchParams.delete('razeni');
     else u.searchParams.set('razeni', field);
+    // Per-field default direction: nazev → asc (A–Z), rest → desc.
+    if (field === 'nazev') u.searchParams.set('smer', 'asc');
+    else u.searchParams.delete('smer');
+    u.searchParams.delete('strana');
+    window.location = u.toString();
+}
+
+function applySortDir(dir) {
+    var u = new URL(window.location);
     if (dir === 'asc') u.searchParams.set('smer', 'asc');
     else u.searchParams.delete('smer');
     u.searchParams.delete('strana');
@@ -462,18 +465,14 @@ function applySortCombined(v) {
 (function() {
     var urlParams = new URLSearchParams(window.location.search);
     var razeni = urlParams.get('razeni') || 'pridano';
-    var smer = urlParams.get('smer') === 'asc' ? 'asc' : 'desc';
-    var sortSel = document.getElementById('sort-select');
-    if (sortSel) {
-        var target = razeni + ':' + smer;
-        if (razeni === 'nazev' && !urlParams.get('smer')) target = 'nazev:asc';
-        for (var i = 0; i < sortSel.options.length; i++) {
-            if (sortSel.options[i].value === target) {
-                sortSel.selectedIndex = i;
-                break;
-            }
-        }
-    }
+    var defaultDir = razeni === 'nazev' ? 'asc' : 'desc';
+    var smer = urlParams.get('smer') === 'asc' ? 'asc'
+             : urlParams.get('smer') === 'desc' ? 'desc'
+             : defaultDir;
+    var fieldSel = document.getElementById('sort-field');
+    if (fieldSel) fieldSel.value = razeni;
+    var dirSel = document.getElementById('sort-dir');
+    if (dirSel) dirSel.value = smer;
 })();
 
 /* --- Filter panel toggle --- */
@@ -513,7 +512,8 @@ function applyFilters() {
     var inc = Array.from(incEls).map(function(i){ return i.value; });
     var exc = Array.from(excEls).map(function(i){ return i.value; });
     var year = document.getElementById('filter-year').value;
-    var sort = document.getElementById('sort-select').value;
+    var sortField = document.getElementById('sort-field').value;
+    var sortDir = document.getElementById('sort-dir').value;
     var rezimEl = document.querySelector('input[name="rezim"]:checked');
     var rezim = rezimEl ? rezimEl.value : 'or';
 
@@ -542,15 +542,13 @@ function applyFilters() {
     }
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
-    if (sort && sort !== 'pridano:desc') {
-        var parts = sort.split(':');
-        u.searchParams.set('razeni', parts[0]);
-        if (parts[1] === 'asc') u.searchParams.set('smer', 'asc');
-        else u.searchParams.delete('smer');
-    } else {
-        u.searchParams.delete('razeni');
-        u.searchParams.delete('smer');
-    }
+    // Apply sort field + direction (mirror films_list.html). Drop both
+    // params when they're the defaults so URLs stay clean and shareable.
+    var defaultDir = sortField === 'nazev' ? 'asc' : 'desc';
+    if (sortField && sortField !== 'pridano') u.searchParams.set('razeni', sortField);
+    else u.searchParams.delete('razeni');
+    if (sortDir && sortDir !== defaultDir) u.searchParams.set('smer', sortDir);
+    else u.searchParams.delete('smer');
     window.location = u.toString();
 }
 
