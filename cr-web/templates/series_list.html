@@ -71,7 +71,11 @@
             {% when Some with (g) %}
             <h1>{{ g.pretty_plural() }}<span class="online-word"> online</span> <span class="count">({{ total_count }})</span></h1>
             {% when None %}
-            <h2>Nejnovější epizody z {{ total_count }} seriálů<span class="online-word"> online</span></h2>
+                {% if episodes.is_empty() %}
+                <h1>Seriály<span class="online-word"> online</span> <span class="count">({{ total_count }})</span></h1>
+                {% else %}
+                <h2>Nejnovější epizody z {{ total_count }} seriálů<span class="online-word"> online</span></h2>
+                {% endif %}
             {% endmatch %}
         {% endmatch %}
         <div class="films-toolbar">
