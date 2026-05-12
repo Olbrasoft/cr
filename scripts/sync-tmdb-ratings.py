@@ -70,6 +70,80 @@ TABLE_KIND = {
 }
 
 
+def _insert_run(conn, kind: str) -> int | None:
+    """Open a new `rating_sync_runs` row and return its id.
+
+    Failure here MUST NOT abort the sync — the admin tile is a
+    nice-to-have; the real work is the UPDATEs to films/series/tv_shows.
+    Migration 070 may not be applied yet on legacy environments, so we
+    swallow the error, log it, and fall through to a syncless run.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO rating_sync_runs (kind, status) VALUES (%s, 'running') RETURNING id",
+                (kind,),
+            )
+            run_id = cur.fetchone()[0]
+        conn.commit()
+        return run_id
+    except psycopg2.Error as e:
+        conn.rollback()
+        logging.warning("rating_sync_runs INSERT failed (migration 070?): %s", e)
+        return None
+
+
+def _finalize_run(
+    conn,
+    run_id: int | None,
+    status: str,
+    counts: dict[str, int],
+    error_message: str | None,
+) -> None:
+    """Close out the run row started by `_insert_run`. Safe to call with
+    run_id=None — turns into a no-op for environments without the table.
+
+    `counts` is the Counter returned by `sync()` with keys like
+    `{table}_refreshed`, `{table}_failed`, … We aggregate `failed_count`
+    as the sum of every non-OK bucket so the admin tile shows "0 selhalo"
+    when everything was fine and "N selhalo" otherwise.
+    """
+    if run_id is None:
+        return
+    failed_count = sum(
+        v for k, v in counts.items()
+        if k.endswith("_failed") or k.endswith("_not_found")
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE rating_sync_runs
+                   SET finished_at = now(),
+                       status = %s,
+                       films_refreshed = %s,
+                       series_refreshed = %s,
+                       tv_shows_refreshed = %s,
+                       failed_count = %s,
+                       error_message = %s
+                 WHERE id = %s
+                """,
+                (
+                    status,
+                    counts.get("films_refreshed", 0),
+                    counts.get("series_refreshed", 0),
+                    counts.get("tv_shows_refreshed", 0),
+                    failed_count,
+                    error_message,
+                    run_id,
+                ),
+            )
+        conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        logging.warning("rating_sync_runs UPDATE failed: %s", e)
+
+
 def _load_our_tmdb_ids(cur) -> dict[tuple[int, str], list[str]]:
     """Return (tmdb_id, kind) → list-of-tables mapping. `kind` is "movie"
     or "tv" so the film/tv namespaces don't collide, but `series` and
@@ -382,9 +456,22 @@ def main() -> int:
         raise SystemExit("TMDB_API_KEY required")
 
     conn = psycopg2.connect(dsn)
+    run_id = _insert_run(conn, "tmdb")
+    status = "ok"
+    error_message: str | None = None
+    counts: dict[str, int] = {}
     try:
-        sync(conn, api_key, args.days, args.workers, Path(args.state_dir))
+        counts = sync(conn, api_key, args.days, args.workers, Path(args.state_dir))
+    except Exception as e:
+        status = "error"
+        # Trim to 500 chars — full traceback already lives in journald.
+        error_message = (str(e) or repr(e))[:500]
+        _finalize_run(conn, run_id, status, counts, error_message)
+        conn.close()
+        raise
     finally:
+        if status == "ok":
+            _finalize_run(conn, run_id, status, counts, error_message)
         conn.close()
     return 0
 

@@ -46,6 +46,20 @@
             <p class="tile-status">{{ cache_tile.message }}</p>
         </a>
 
+        <div class="tile {{ imdb_tile.css_class() }}" title="Noční IMDb rating sync z datasets.imdbws.com">
+            <div class="tile-icon">⭐</div>
+            <h3>IMDb hodnocení</h3>
+            <p class="tile-sub">datasets.imdbws.com TSV → films / series / tv_shows (04:30 UTC)</p>
+            <p class="tile-status">{{ imdb_tile.message }}</p>
+        </div>
+
+        <div class="tile {{ tmdb_tile.css_class() }}" title="Noční TMDB rating sync přes /movie/changes + /tv/changes">
+            <div class="tile-icon">🎯</div>
+            <h3>TMDB hodnocení</h3>
+            <p class="tile-sub">/movie/changes + /tv/changes → films / series / tv_shows (04:45 UTC)</p>
+            <p class="tile-status">{{ tmdb_tile.message }}</p>
+        </div>
+
         <a href="/admin/test-sledujteto/" class="tile" title="Diagnostika sledujteto.cz integrace">
             <div class="tile-icon">🎞️</div>
             <h3>Test sledujteto.cz</h3>

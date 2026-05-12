@@ -3,6 +3,8 @@
 //! Zobrazuje dlaždice:
 //!   - Auto-import (SK Torrent → films/series/tv_shows)
 //!   - Zálohy DB (pg_dump → Cloudflare R2)
+//!   - IMDb hodnocení (datasets.imdbws.com TSV → films/series/tv_shows)
+//!   - TMDB hodnocení (/movie/changes + /tv/changes → films/series/tv_shows)
 //!
 //! Každá dlaždice ukazuje stav poslední akce, aby admin ráno věděl, jestli
 //! noční pipeline proběhla v pořádku.
@@ -45,6 +47,8 @@ struct AdminDashboardTemplate {
     import_tile: LastRunTile,
     backup_tile: LastRunTile,
     cache_tile: LastRunTile,
+    imdb_tile: LastRunTile,
+    tmdb_tile: LastRunTile,
 }
 
 fn noindex(html: String) -> Response {
@@ -193,16 +197,102 @@ fn cache_tile(state: &AppState) -> LastRunTile {
     }
 }
 
+/// Read the latest `rating_sync_runs` row for the given kind ('imdb' / 'tmdb')
+/// and render it as a dashboard tile. Same error-vs-empty distinction as
+/// the other tiles — DB error stays loud, empty table is calm.
+async fn fetch_rating_tile(state: &AppState, kind: &'static str) -> LastRunTile {
+    #[derive(sqlx::FromRow)]
+    struct LastRatingSync {
+        started_at: chrono::DateTime<chrono::Utc>,
+        status: String,
+        films_refreshed: i32,
+        series_refreshed: i32,
+        tv_shows_refreshed: i32,
+        failed_count: i32,
+    }
+
+    let row = match sqlx::query_as::<_, LastRatingSync>(
+        "SELECT started_at, status, films_refreshed, series_refreshed, \
+         tv_shows_refreshed, failed_count \
+         FROM rating_sync_runs WHERE kind = $1 \
+         ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(kind)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                "admin dashboard: rating_sync_runs query failed for kind={kind}: {e}"
+            );
+            return LastRunTile {
+                status: "error",
+                message: "Chyba DB (rating_sync_runs) — viz journald.".to_string(),
+            };
+        }
+    };
+
+    match row {
+        None => LastRunTile {
+            status: "none",
+            message: "Zatím žádný běh — sync nikdy neproběhl.".to_string(),
+        },
+        Some(r) => {
+            let h = hours_ago(r.started_at);
+            let status: &'static str = match r.status.as_str() {
+                "ok" => "ok",
+                "partial" => "partial",
+                "error" => "error",
+                "running" => "running",
+                _ => "none",
+            };
+            let total = r.films_refreshed + r.series_refreshed + r.tv_shows_refreshed;
+            let summary = if r.status == "running" {
+                "právě běží".to_string()
+            } else if total == 0 && r.failed_count == 0 && r.status == "ok" {
+                // IMDb sync returns a status=ok / counts=0 row when the
+                // upstream TSV's Last-Modified is unchanged from the
+                // previous run — nothing to refresh, but the pipeline DID
+                // execute (and we want the tile to reflect that, not look
+                // like a missing run). "TMDB /changes empty" hits the same
+                // branch; both meanings are accurate here.
+                "beze změny zdroje".to_string()
+            } else {
+                let base = format!(
+                    "{total} ↻ ({}f / {}s / {}tv)",
+                    r.films_refreshed, r.series_refreshed, r.tv_shows_refreshed,
+                );
+                if r.failed_count > 0 {
+                    format!("{base} / ⚠ {} selhalo", r.failed_count)
+                } else {
+                    base
+                }
+            };
+            LastRunTile {
+                status,
+                message: format!("Před {h}h — {} ({summary})", r.status),
+            }
+        }
+    }
+}
+
 /// GET /admin/ — landing page with per-section status tiles.
 pub async fn admin_dashboard(State(state): State<AppState>) -> WebResult<Response> {
-    let (import_tile, backup_tile) =
-        tokio::join!(fetch_import_tile(&state), fetch_backup_tile(&state));
+    let (import_tile, backup_tile, imdb_tile, tmdb_tile) = tokio::join!(
+        fetch_import_tile(&state),
+        fetch_backup_tile(&state),
+        fetch_rating_tile(&state, "imdb"),
+        fetch_rating_tile(&state, "tmdb"),
+    );
 
     let tmpl = AdminDashboardTemplate {
         img: state.image_base_url.clone(),
         import_tile,
         backup_tile,
         cache_tile: cache_tile(&state),
+        imdb_tile,
+        tmdb_tile,
     };
     Ok(noindex(tmpl.render()?))
 }
