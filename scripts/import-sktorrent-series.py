@@ -146,6 +146,12 @@ def _strip_episode_suffix_for_search(title: str) -> str:
         # Trailing "Sn - n" / "Sn -n" / "Sn n".
         (re.compile(r"\s+S\d{1,2}(?:\s*-?\s*\d{1,3})?(?:\s*Ova)?\s*$",
                     re.IGNORECASE), ""),
+        # Trailing " - Episode NN" / " - Epizoda NN" / " - Ep NN" — uploaders
+        # spell the word out instead of using SxxExx (e.g. "The School Nurse
+        # Files - Episode 6"). Strip BEFORE the bare-dash-digit rule so the
+        # episode word doesn't survive as a tail token.
+        (re.compile(r"\s*-\s*(?:Episode|Epizoda|Episód[ay]|Epis|Ep)\.?\s+\d{1,3}\s*$",
+                    re.IGNORECASE), ""),
         # Trailing " - <digits>" (with space-dash-space or space-dash) plus
         # an optional trailing word like "Ova", "oprava", "raw", "extra".
         (re.compile(r"\s+-\s*\d{1,3}(?:\s+\w+)?\s*$", re.IGNORECASE), ""),
@@ -263,9 +269,18 @@ def search_episodes_for(
                     continue
                 seen_ids.add(it.video_id)
                 parsed = parse_sktorrent_title(it.title)
+                # Apply the same episode-suffix stripper to BOTH sides so e.g.
+                # parsed.cz_title "The School Nurse Files - Episode 1" matches
+                # CSV-derived alias "theschoolnursefiles" (otherwise only the
+                # representative episode whose raw form survives in aliases —
+                # typically the highest-numbered — gets kept and every earlier
+                # episode is silently filtered out). See #684 for repro.
                 cz_n = _normalize(parsed.cz_title)
                 en_n = _normalize(parsed.en_title)
-                if cz_n in aliases or en_n in aliases:
+                cz_stripped = _normalize(_strip_episode_suffix_for_search(parsed.cz_title))
+                en_stripped = _normalize(_strip_episode_suffix_for_search(parsed.en_title))
+                if (cz_n in aliases or en_n in aliases
+                        or cz_stripped in aliases or en_stripped in aliases):
                     matched.append((it.video_id, it.title, parsed))
             time.sleep(PAGE_SLEEP_S)
         if matched:
@@ -561,6 +576,10 @@ def main() -> int:
                          "import positions 21..50 without re-searching 1..20")
     ap.add_argument("--min-episodes", type=int, default=2,
                     help="Skip CSV rows below this episode_count")
+    ap.add_argument("--match", default=None,
+                    help="Case-insensitive substring filter on cz/en title — "
+                         "useful for re-importing a single specific show after "
+                         "a parser/filter fix without re-running the full top-N.")
     ap.add_argument("--covers-dir", default=os.environ.get(
         "SERIES_COVERS_DIR", "data/series/covers-webp"),
                     help="Where ensure_series writes downloaded series cover")
@@ -574,10 +593,23 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    targets = load_targets(Path(args.csv), top=args.top,
-                           min_eps=args.min_episodes, skip=args.skip)
-    log.info("loaded %d target series from %s (top %d, skip %d, min_eps=%d)",
-             len(targets), args.csv, args.top, args.skip, args.min_episodes)
+    if args.match:
+        # --match overrides top/skip — load everything matching the substring,
+        # caller can layer --top on top to cap the result count.
+        targets = load_targets(Path(args.csv), top=10**9,
+                               min_eps=args.min_episodes, skip=0)
+        needle = args.match.lower()
+        targets = [t for t in targets
+                   if needle in (t.cz_title or "").lower()
+                   or needle in (t.en_title or "").lower()]
+        targets = targets[:args.top]
+        log.info("loaded %d target series matching %r (capped at top %d)",
+                 len(targets), args.match, args.top)
+    else:
+        targets = load_targets(Path(args.csv), top=args.top,
+                               min_eps=args.min_episodes, skip=args.skip)
+        log.info("loaded %d target series from %s (top %d, skip %d, min_eps=%d)",
+                 len(targets), args.csv, args.top, args.skip, args.min_episodes)
     for i, t in enumerate(targets, 1):
         log.info("  %2d. %-45s eps=%d", i,
                  (t.cz_title or t.en_title)[:45], t.expected_episode_count)
