@@ -281,6 +281,88 @@ def _langs_to_flags(langs: list[str]) -> tuple[bool, bool]:
     return has_dub, has_subs
 
 
+# Strip noise that confuses the fallback episode detector — parens content
+# ("(CZ)", "(2024)", "(CZsub)"), trailing tags after a slash ("/ CZ"), etc.
+_INFER_PARENS_RE = re.compile(r"\s*\([^)]+\)\s*")
+_INFER_TRAILING_TAG_RE = re.compile(r"\s*/\s*(?:CZ|SK|EN|CZsub|SKsub|2026|2025)\s*$",
+                                     re.IGNORECASE)
+
+
+def _infer_episode_from_title(raw_title: str) -> tuple[int, int] | None:
+    """Best-effort fallback to extract (season, episode) when SxxExx is absent.
+
+    SK Torrent uploaders use many shapes that the strict parser misses:
+
+      "Show NN- Episode title"   → S1ENN  (e.g. "Policajti z předměstí 21- ...")
+      "Show - NN díl"            → S1ENN  (Czech telenovela: "Neskrotné srdce - 159 díl")
+      "Show -NN"                 → S1ENN  (anime, dash glued to number)
+      "Show S2 -NN" / "S2 - NN"  → S2ENN  (with season indicator)
+      "(ENN)"                    → S1ENN
+      "Show NN" (long titles)    → S1ENN  (last-resort, ≥4 words)
+
+    Returns (season, episode) or None when no confident match — we deliberately
+    err on the side of "no match" because a wrong inference would file the
+    episode under the wrong slot and pollute the series page.
+    """
+    if not raw_title:
+        return None
+    s = raw_title.strip()
+
+    # Pattern E (first — runs on raw title before parens stripping): trailing
+    # "(ENN)" with parens intact.
+    m = re.search(r"\(\s*E\s*(\d{1,3})\s*\)\s*$", s, re.IGNORECASE)
+    if m:
+        return 1, int(m.group(1))
+
+    # Strip parens content and trailing lang tags so they don't confuse anchors.
+    s_clean = _INFER_PARENS_RE.sub(" ", s).strip()
+    s_clean = _INFER_TRAILING_TAG_RE.sub("", s_clean).strip()
+
+    # Bail when the title carries a Roman-numeral season indicator AFTER the
+    # series name but BEFORE the episode marker — we'd file it under the wrong
+    # season (e.g. "Strike the blood IV -12" is S4E12, not S1E12). Better to
+    # skip and accept a missed episode than to mis-file it.
+    if re.search(r"\s+(?:II|III|IV|V|VI|VII|VIII|IX|X)\s+-?\s*\d", s_clean):
+        return None
+
+    # Pattern D: "S2 -NN" / "S2 - NN" — season + episode (no Exx form).
+    m = re.search(r"\bS(\d{1,2})\s*-?\s*(\d{1,3})(?:\s*Ova)?\s*$",
+                  s_clean, re.IGNORECASE)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+
+    # Pattern E2: trailing bare " ENN" (no parens).
+    m = re.search(r"\sE\s*(\d{1,3})\s*$", s_clean, re.IGNORECASE)
+    if m:
+        return 1, int(m.group(1))
+
+    # Pattern B: "- NN díl" — Czech telenovela convention.
+    m = re.search(r"-\s*(\d{1,3})\s*díl\s*$", s_clean, re.IGNORECASE)
+    if m:
+        return 1, int(m.group(1))
+
+    # Pattern C: anime "Show -NN" (dash glued to number, optional "Ova" suffix).
+    m = re.search(r"\s-\s*(\d{1,3})(?:\s+Ova)?\s*$", s_clean, re.IGNORECASE)
+    if m:
+        return 1, int(m.group(1))
+
+    # Pattern A: "Show NN- Episode title" — episode-number-with-dash anywhere.
+    m = re.match(r"^.+?\s+(\d{1,3})\s*-\s*\S", s)
+    if m:
+        return 1, int(m.group(1))
+
+    # Pattern F (last-resort): bare trailing number on long enough title.
+    # Same word-count guard as the search-query stripper — protects "Ben 10",
+    # "Top Gun 2", "1917" from being mis-parsed as episodes.
+    if len(s_clean.split()) >= 4:
+        m = re.search(r"\s+(\d{1,3})\s*$", s_clean)
+        if m:
+            n = int(m.group(1))
+            if 0 < n < 500:
+                return 1, n
+    return None
+
+
 def _import_via_tv_shows(
     label: str,
     tv,
@@ -405,17 +487,29 @@ def import_one_series(
     # and empty qualities; the play-time resolver fills them in live.
     episodes_to_add: list[tuple] = []
     skipped_no_episode_marker = 0
+    inferred_count = 0
     for vid, raw_title, parsed in fresh:
-        if not parsed.is_episode:
-            skipped_no_episode_marker += 1
-            log.debug("[%s] skip vid=%d no SxxExx in %r", label, vid, raw_title)
-            continue
+        if parsed.is_episode:
+            season, episode = parsed.season, parsed.episode
+        else:
+            inferred = _infer_episode_from_title(raw_title)
+            if inferred is None:
+                skipped_no_episode_marker += 1
+                log.debug("[%s] skip vid=%d no SxxExx and no fallback match in %r",
+                          label, vid, raw_title)
+                continue
+            season, episode = inferred
+            inferred_count += 1
+            log.debug("[%s] inferred S%dE%d from %r", label, season, episode, raw_title)
         has_dub, has_subs = _langs_to_flags(parsed.langs)
         episodes_to_add.append((
-            parsed.season, parsed.episode, vid,
+            season, episode, vid,
             None, [],          # cdn / qualities — left for play-time resolver
             has_dub, has_subs,
         ))
+    if inferred_count:
+        log.info("[%s] %d episodes inferred via fallback (no SxxExx in title)",
+                 label, inferred_count)
     log.info("[%s] %d episodes have SxxExx and ready to upsert "
              "(skipped %d without episode markers)",
              label, len(episodes_to_add), skipped_no_episode_marker)
