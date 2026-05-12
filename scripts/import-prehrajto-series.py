@@ -1169,9 +1169,11 @@ def main() -> int:
                     help="Process at most N targets — series for enrich, "
                          "clusters for discover (default 10)")
     ap.add_argument("--offset", type=int, default=0,
-                    help="Skip the first N targets (enrich mode only — "
-                         "discover mode sorts by upload count so offset "
-                         "is rarely useful there).")
+                    help="Skip the first N targets. enrich mode: skips N "
+                         "series (ordered by id). discover mode: skips N "
+                         "clusters AFTER the upload-count-desc sort, so "
+                         "`--offset 30 --limit 30` does the second batch "
+                         "of 30. Useful for resuming an interrupted run.")
     ap.add_argument("--match", default=None,
                     help="enrich: case-insensitive substring on "
                          "series.title/.original_title. "
@@ -1322,6 +1324,19 @@ def _run_discover(
         min_distinct_episodes=args.min_distinct_episodes,
         match=args.match,
     )
+    # Apply --offset BEFORE --limit so `--offset 30 --limit 30` does the
+    # second batch of 30 in a paginated run. Without this, the operator
+    # had no way to resume after an SSH-disconnect kill that interrupted
+    # a multi-hour discover; they'd silently re-process the same top-N
+    # clusters every time (which is wasteful — existing-series re-attach
+    # is O(N) database upserts even though they're all no-ops).
+    if args.offset:
+        skipped = clusters[: args.offset]
+        clusters = clusters[args.offset:]
+        log.info("--offset %d: skipping %d cluster(s) (%s ... %s)",
+                 args.offset, len(skipped),
+                 skipped[0].base_title[:30] if skipped else "",
+                 skipped[-1].base_title[:30] if skipped else "")
     if args.limit:
         clusters = clusters[: args.limit]
     if not clusters:
