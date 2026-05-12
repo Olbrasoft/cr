@@ -36,10 +36,14 @@ pub struct SearchQuery {
     tv_episode_id: Option<i32>,
 }
 
-/// Multi-episode pack range marker, e.g. "S01E02-13" or "S 01 E 02 - 13".
-/// Matches when an `SxxExx` is followed by `- N`, which is uploader
-/// shorthand for "this file covers episodes E..N". Single SxxExx uploads
-/// don't match and pass through.
+/// Multi-episode pack range marker, e.g. "S01E02-13" — an `SxxExx` token
+/// immediately followed by an optional-whitespace `- N`, which is uploader
+/// shorthand for "this file covers episodes E..N". Single-episode uploads
+/// (no trailing range) don't match and pass through. The compact `SxxExx`
+/// half is intentional: every spaced-out variant we've seen in prehraj.to
+/// search results has lacked one of the two tokens, so the loose form
+/// would over-match (e.g. "S 01" alone, common in season packs without a
+/// range).
 static PACK_RANGE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)\bS\d{1,2}E\d{1,2}\s*-\s*\d{1,2}\b")
         .expect("const regex literal compiles")
@@ -47,10 +51,16 @@ static PACK_RANGE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 /// Extract the 13- or 16-hex `upload_id` from a prehraj.to URL.
 /// Prehraj.to URLs end in `/<slug>/<upload_id>` (the slug being a
-/// human-readable title) or sometimes `/<upload_id>` directly. Validates
-/// the last segment with [`is_valid_upload_id`] so a stray query string
-/// or a non-prehraj.to URL returns `None` instead of garbage.
+/// human-readable title) or sometimes `/<upload_id>` directly. Verifies
+/// the host is prehraj.to and the last segment matches
+/// [`is_valid_upload_id`] before returning — anything else yields `None`
+/// so a query-string token or an unrelated host whose URL happens to end
+/// in a hex-looking segment can't accidentally collide with a real
+/// `video_sources.external_id`.
 fn extract_upload_id_from_url(url: &str) -> Option<String> {
+    if !is_prehrajto_url(url) {
+        return None;
+    }
     let trimmed = url.trim().trim_end_matches('/');
     let last = trimmed.rsplit('/').next()?;
     let id = last.split(['?', '#']).next()?;
@@ -161,6 +171,17 @@ pub async fn movies_search(
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Err(WebError::bad_request("Missing search query"));
+    }
+
+    // The two id params are mutually exclusive — an upload belongs to
+    // exactly one parent kind, and `filter_extra_episode_sources` runs
+    // the `episodes`-branch query when `episode_id` is set and the
+    // `tv_episodes`-branch when only `tv_episode_id` is set. Accepting
+    // both would silently prefer one and is almost certainly a caller bug.
+    if params.episode_id.is_some() && params.tv_episode_id.is_some() {
+        return Err(WebError::bad_request(
+            "episode_id and tv_episode_id are mutually exclusive",
+        ));
     }
 
     let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or_else(|| {
