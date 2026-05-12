@@ -2243,4 +2243,53 @@ mod tests {
         assert_eq!(normalize_query("()"), "");
         assert_eq!(normalize_query("(  )"), "");
     }
+
+    #[test]
+    fn search_result_json_includes_both_rating_fields() {
+        // The autocomplete UI reads `r.tmdb_rating` AND `r.imdb_rating`
+        // from the JSON payload — both keys must be present in the
+        // serialized output even when None. If a future refactor drops
+        // one of them (e.g. accidentally renames or removes the field
+        // from the struct), the badges disappear silently from the
+        // dropdown. This test locks the contract so the regression is
+        // caught at CI time.
+        let result = super::SearchResult {
+            slug: "matrix".into(),
+            title: "Matrix".into(),
+            year: Some(1999),
+            tmdb_rating: Some(8.7),
+            imdb_rating: Some(8.7),
+            cover: true,
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            json.contains("\"tmdb_rating\":8.7"),
+            "tmdb_rating missing: {json}"
+        );
+        assert!(
+            json.contains("\"imdb_rating\":8.7"),
+            "imdb_rating missing: {json}"
+        );
+
+        // Even with both ratings absent the keys must still be present
+        // (as `null`); some autocomplete clients distinguish "rating
+        // missing from payload" from "rating known to be unset".
+        let none_result = super::SearchResult {
+            slug: "x".into(),
+            title: "X".into(),
+            year: None,
+            tmdb_rating: None,
+            imdb_rating: None,
+            cover: false,
+        };
+        let json = serde_json::to_string(&none_result).expect("serialize");
+        assert!(
+            json.contains("\"tmdb_rating\":null"),
+            "tmdb_rating key missing: {json}"
+        );
+        assert!(
+            json.contains("\"imdb_rating\":null"),
+            "imdb_rating key missing: {json}"
+        );
+    }
 }

@@ -163,6 +163,11 @@
                 {% when None %}
                 {% endmatch %}
 
+                {# Fallback when no rating source has a value (#593 acceptance criterion). #}
+                {% if film.tmdb_rating.is_none() && film.imdb_rating.is_none() && film.csfd_rating.is_none() %}
+                <span class="meta-badge none">Bez hodnocení</span>
+                {% endif %}
+
                 {% match film.runtime_min %}
                 {% when Some with (m) %}
                 <span class="meta-badge runtime">{{ m }} min</span>
@@ -330,6 +335,7 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
 .meta-badge.imdb { background: #f5c518; color: #000; }
 .meta-badge.csfd { background: #ba0305; color: #fff; }
 .meta-badge.runtime { background: #f0f0f0; color: #333; }
+.meta-badge.none { background: #eef2f7; color: #6b7785; font-style: italic; }
 
 .genre-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
 .genre-tag { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 16px; background: #f0f0f0; color: #333; text-decoration: none; font-size: 0.8rem; }

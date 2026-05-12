@@ -76,6 +76,10 @@
                 {% match series.csfd_rating %}
                 {% when Some with (r) %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>
                 {% when None %}{% endmatch %}
+                {# Fallback when no rating source has a value (#593 acceptance criterion). #}
+                {% if series.tmdb_rating.is_none() && series.imdb_rating.is_none() && series.csfd_rating.is_none() %}
+                <span class="meta-badge none">Bez hodnocení</span>
+                {% endif %}
             </div>
             {% if !genres.is_empty() %}
             <div class="genre-tags">
@@ -200,6 +204,7 @@
 .meta-badge.tmdb { background: #01b4e4; color: #fff; }
 .meta-badge.imdb { background: #f5c518; color: #000; }
 .meta-badge.csfd { background: #ba0305; color: #fff; }
+.meta-badge.none { background: #eef2f7; color: #6b7785; font-style: italic; }
 .genre-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
 .genre-tag { padding: 0.3rem 0.8rem; border-radius: 999px; background: #f1f5f9; color: #11457E; text-decoration: none; font-size: 0.85rem; font-weight: 600; transition: background 0.15s, color 0.15s; cursor: pointer; }
 .genre-tag:hover { background: #11457E; color: white; }
