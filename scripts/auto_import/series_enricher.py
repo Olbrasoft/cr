@@ -179,14 +179,21 @@ def upsert_episode(
     series_id: int,
     season: int,
     episode_num: int,
-    sktorrent_video_id: int,
+    sktorrent_video_id: int | None,
     sktorrent_cdn: int | None,
     sktorrent_qualities: list[str],
     ep_meta: EpisodeResolution | None = None,
     has_dub: bool = False,
     has_subtitles: bool = False,
 ) -> tuple[str, int | None]:
-    """Decide updated_episode / added_episode / skipped for a single episode."""
+    """Decide updated_episode / added_episode / skipped for a single episode.
+
+    `sktorrent_video_id=None` is the prehrajto / non-sktorrent caller path
+    (#685): we still create / leave the `episodes` row, but DON'T touch
+    sktorrent columns and DON'T dual-write a sktorrent video_sources row.
+    The caller is responsible for upserting its own provider source after
+    this returns.
+    """
     cur = conn.cursor()
     qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else None
 
@@ -201,6 +208,19 @@ def upsert_episode(
         ep_id, existing_skt = row
         if existing_skt is not None:
             return "skipped", ep_id
+        if sktorrent_video_id is None:
+            # Episode exists without SKT — non-sktorrent caller path. OR-in
+            # the language flags so we never downgrade signals that other
+            # sources (Bombuj, Prehrajto) already set on this row, but
+            # don't touch the sktorrent_* columns.
+            cur.execute(
+                "UPDATE episodes SET "
+                "has_dub = has_dub OR %s, "
+                "has_subtitles = has_subtitles OR %s "
+                "WHERE id = %s",
+                (has_dub, has_subtitles, ep_id),
+            )
+            return "updated_episode_lang_only", ep_id
         # OR-in the language flags so we never downgrade an existing episode
         # that already had dub/subs from another source (Bombuj, Prehraj.to).
         cur.execute(
@@ -234,33 +254,44 @@ def upsert_episode(
     air_date = ep_meta.air_date if ep_meta else None
     runtime = ep_meta.runtime_min if ep_meta else None
 
+    # `sktorrent_added_at` is set to now() only when a sktorrent_video_id
+    # is actually being recorded — non-sktorrent callers leave it NULL so
+    # downstream queries that read "when did we first see this on SKT?"
+    # don't get spurious timestamps.
     cur.execute(
         """INSERT INTO episodes
            (series_id, season, episode, sktorrent_video_id, sktorrent_cdn,
             sktorrent_qualities, episode_name, overview, air_date, runtime,
             has_dub, has_subtitles, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   CASE WHEN %s::int IS NOT NULL THEN now() END)
            RETURNING id""",
         (
             series_id, season, episode_num,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             name, overview, air_date, runtime,
             has_dub, has_subtitles,
+            sktorrent_video_id,
         ),
     )
     ep_id = cur.fetchone()[0]
-    # Dual-write into the unified video_sources schema (#607 / #610).
-    dual_write_sktorrent(
-        cur,
-        providers=get_provider_ids(cur),
-        episode_id=ep_id,
-        sktorrent_video_id=sktorrent_video_id,
-        sktorrent_cdn=sktorrent_cdn,
-        sktorrent_qualities=qualities_str,
-        has_dub=has_dub,
-        has_subtitles=has_subtitles,
-    )
-    log.info("added episode %d S%dE%d (series_id=%d)", ep_id, season, episode_num, series_id)
+    if sktorrent_video_id is not None:
+        # Dual-write into the unified video_sources schema (#607 / #610).
+        dual_write_sktorrent(
+            cur,
+            providers=get_provider_ids(cur),
+            episode_id=ep_id,
+            sktorrent_video_id=sktorrent_video_id,
+            sktorrent_cdn=sktorrent_cdn,
+            sktorrent_qualities=qualities_str,
+            has_dub=has_dub,
+            has_subtitles=has_subtitles,
+        )
+        log.info("added episode %d S%dE%d (series_id=%d, SKT=%d)",
+                 ep_id, season, episode_num, series_id, sktorrent_video_id)
+    else:
+        log.info("added episode %d S%dE%d (series_id=%d, no SKT yet)",
+                 ep_id, season, episode_num, series_id)
     return "added_episode", ep_id
 
 

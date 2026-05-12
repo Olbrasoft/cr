@@ -59,7 +59,12 @@ CATEGORIES = {
     "serialy-cz-sk-titulky": "https://online.sktorrent.eu/videos/serialy-cz-sk-titulky",
 }
 
-DEFAULT_DSN = "postgresql://cr:cr_secret_2026@127.0.0.1:25432/cr"
+# DSN is sourced from `--dsn` or `PROD_DSN` / `DATABASE_URL` env vars. We
+# deliberately don't ship a default with credentials — even a "local SSH
+# tunnel" DSN with the prod password would leak through `git log` once
+# committed. Operators run this script from a host that has the cred in
+# its environment (typically `set -a; . ./.env; set +a`) or pass it on
+# the command line.
 
 # SK Torrent appends the requester's hex-encoded IP as a tracking suffix on
 # every video URL ("...-3139332e3130352e3135382e3135302d" decodes to
@@ -354,50 +359,82 @@ def load_db_signals(dsn: str) -> tuple[set[int], set[str]]:
     return video_ids, titles
 
 
+def _fold(s: str | None) -> str:
+    """Lowercase + strip diacritics. Mirrors the SQL unaccent(lower(...)) we
+    used before; kept in Python so the script doesn't depend on the
+    `unaccent` / `pg_trgm` Postgres extensions."""
+    if not s:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
+
+
 def fetch_closest_matches(
     dsn: str,
     queries: list[tuple[SeriesAgg, str, str]],
     min_similarity: float = 0.4,
 ) -> dict[int, str]:
-    """For each MISSING series, find the closest existing series by trigram
-    similarity (unaccented) on title OR original_title.
+    """For each MISSING series, find the closest existing series by
+    accent-folded SequenceMatcher ratio on title OR original_title.
 
-    Returns a dict keyed by `id(SeriesAgg)` so callers can attach the hint
-    without reordering. Empty string when no candidate clears the threshold —
-    that's signal too: nothing remotely similar exists in our catalogue.
+    Originally implemented as a trigram-similarity SQL query
+    (`similarity()` + `%%` operator from `pg_trgm`), but neither
+    `pg_trgm` nor `unaccent` is enabled by our migrations — relying on
+    them broke this script on fresh dev DBs. SequenceMatcher in Python
+    is plenty fast for our catalogue size (~1k series × ~50 missing
+    candidates = 50k comparisons in under a second) and removes the
+    extension coupling.
+
+    Returns a dict keyed by `id(SeriesAgg)` so callers can attach the
+    hint without reordering. Empty when no candidate clears the
+    threshold — that's signal too: nothing remotely similar exists.
     """
+    import difflib
+
     out: dict[int, str] = {}
     if not queries:
         return out
-    sql = """
-        WITH q(needle) AS (VALUES (%s))
-        SELECT s.title, s.original_title,
-               GREATEST(
-                 similarity(unaccent(lower(s.title)), unaccent(lower((SELECT needle FROM q)))),
-                 similarity(unaccent(lower(coalesce(s.original_title, ''))), unaccent(lower((SELECT needle FROM q))))
-               ) AS sim
-        FROM series s
-        WHERE
-          unaccent(lower(s.title)) %% unaccent(lower((SELECT needle FROM q)))
-          OR unaccent(lower(coalesce(s.original_title, ''))) %% unaccent(lower((SELECT needle FROM q)))
-        ORDER BY sim DESC
-        LIMIT 1
-    """
     with psycopg2.connect(dsn) as conn:
         with conn.cursor() as cur:
-            for ser, _status, _reason in queries:
-                needle = (ser.en_title or ser.cz_title or "").strip()
-                if len(needle) < 3:
-                    continue
-                cur.execute(sql, (needle,))
-                row = cur.fetchone()
-                if not row:
-                    continue
-                title, original_title, sim = row
-                if sim is None or sim < min_similarity:
-                    continue
-                hint = title if not original_title else f"{title} / {original_title}"
-                out[id(ser)] = f"{hint}  (sim={sim:.2f})"
+            cur.execute(
+                "SELECT title, original_title FROM series "
+                "WHERE title IS NOT NULL OR original_title IS NOT NULL"
+            )
+            # Pre-fold every catalogue title once so the inner loop is
+            # O(|queries| × |catalogue|) string-compare instead of
+            # O(|queries| × |catalogue|) string-compare + |catalogue|
+            # repeated unicode normalisations.
+            catalogue: list[tuple[str, str | None, str, str]] = []
+            for t, ot in cur.fetchall():
+                catalogue.append((t, ot, _fold(t), _fold(ot)))
+    for ser, _status, _reason in queries:
+        needle = (ser.en_title or ser.cz_title or "").strip()
+        if len(needle) < 3:
+            continue
+        needle_folded = _fold(needle)
+        best_sim = 0.0
+        best_title = None
+        best_orig = None
+        for title, original_title, t_folded, ot_folded in catalogue:
+            # SequenceMatcher.ratio() is symmetric; compare against both
+            # title and original_title and keep the max (matches the
+            # original SQL's GREATEST(sim_title, sim_orig) semantics).
+            sim_t = difflib.SequenceMatcher(
+                None, t_folded, needle_folded,
+            ).ratio() if t_folded else 0.0
+            sim_o = difflib.SequenceMatcher(
+                None, ot_folded, needle_folded,
+            ).ratio() if ot_folded else 0.0
+            sim = max(sim_t, sim_o)
+            if sim > best_sim:
+                best_sim = sim
+                best_title = title
+                best_orig = original_title
+        if best_sim < min_similarity or best_title is None:
+            continue
+        hint = (best_title if not best_orig
+                else f"{best_title} / {best_orig}")
+        out[id(ser)] = f"{hint}  (sim={best_sim:.2f})"
     return out
 
 
@@ -480,8 +517,13 @@ def print_top_missing(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dsn", default=os.environ.get("PROD_DSN", DEFAULT_DSN),
-                    help="Prod Postgres DSN (default uses SSH tunnel on port 25432)")
+    ap.add_argument("--dsn",
+                    default=os.environ.get("PROD_DSN")
+                            or os.environ.get("DATABASE_URL"),
+                    help="Postgres DSN. Required — pass via --dsn, "
+                         "PROD_DSN env var, or DATABASE_URL env var. No "
+                         "default (we don't bake credentials into the "
+                         "repo, even for a local SSH tunnel).")
     ap.add_argument("--max-pages", type=int, default=2000,
                     help="Per-category page ceiling (default 2000)")
     ap.add_argument("--sleep", type=float, default=PAGE_SLEEP_S,
@@ -497,6 +539,13 @@ def main() -> int:
                     help="DEBUG: cap pages per category (for quick smoke runs)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
+
+    if not args.dsn:
+        raise SystemExit(
+            "DSN is required. Pass --dsn, set PROD_DSN, or set "
+            "DATABASE_URL in the environment (we don't bake credentials "
+            "into the script).",
+        )
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

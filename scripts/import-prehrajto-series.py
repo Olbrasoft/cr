@@ -316,19 +316,41 @@ def enrich_one_series(
             continue
         ep_key = (m.season, m.episode)
         episode_id = existing_eps.get(ep_key)
-        if episode_id is None:
-            # Episode row doesn't exist yet — resolve via TMDB + insert.
-            # Reuses series_enricher.upsert_episode with sktorrent_video_id=None
-            # so the existing UNIQUE (series_id, season, episode,
-            # sktorrent_video_id) constraint is satisfied (NULLs allowed).
-            ep_meta = resolve_episode(series.tmdb_id, m.season, m.episode,
-                                      session=tmdb_sess)
-            if ep_meta is None:
-                log.warning("  TMDB resolve_episode failed: tv_id=%d S%dE%d",
-                            series.tmdb_id, m.season, m.episode)
-                stats.failed_tmdb_episode += 1
-                continue
-            try:
+
+        # Per-match SAVEPOINT — without this, one failed INSERT (UNIQUE
+        # violation, FK error, TMDB schema mismatch, …) puts the whole
+        # connection into "aborted transaction" state and every subsequent
+        # query in the same series fails with InFailedSqlTransaction. The
+        # savepoint lets us roll back THIS match and keep going.
+        cur.execute("SAVEPOINT prh_match")
+        try:
+            # Derive language flags from the same mapping used by
+            # video_sources, so SK_DUB / SK_SUB / CZ_NATIVE are reflected on
+            # the episodes row too (not just video_sources). Otherwise a
+            # Slovak-dubbed upload would land in video_sources with
+            # lang_class=SK_DUB but the parent episode row would still
+            # report has_dub=false.
+            audio_lang, _vs_lang_class, sub_langs = lang_class_to_audio_and_subs(
+                lang_class=m.lang_class,
+            )
+            row_has_dub = audio_lang is not None  # cs / sk / en
+            row_has_subs = bool(sub_langs)
+
+            if episode_id is None:
+                # Episode row doesn't exist yet — resolve via TMDB + insert.
+                # Pass sktorrent_video_id=None so series_enricher skips
+                # its sktorrent dual-write (verified: prior to the
+                # signature change, this leaked a video_sources row with
+                # provider=sktorrent and external_id='None').
+                ep_meta = resolve_episode(series.tmdb_id, m.season, m.episode,
+                                          session=tmdb_sess)
+                if ep_meta is None:
+                    log.warning("  TMDB resolve_episode failed: tv_id=%d S%dE%d",
+                                series.tmdb_id, m.season, m.episode)
+                    stats.failed_tmdb_episode += 1
+                    cur.execute("ROLLBACK TO SAVEPOINT prh_match")
+                    cur.execute("RELEASE SAVEPOINT prh_match")
+                    continue
                 _action, episode_id = upsert_episode(
                     conn,
                     series_id=series.id,
@@ -338,45 +360,51 @@ def enrich_one_series(
                     sktorrent_cdn=None,
                     sktorrent_qualities=[],
                     ep_meta=ep_meta,
-                    has_dub=("DUB_CZ" in (m.lang_class,) or m.lang_class == "CZ_DUB"),
-                    has_subtitles=(m.lang_class == "CZ_SUB"),
+                    has_dub=row_has_dub,
+                    has_subtitles=row_has_subs,
                 )
-            except Exception:  # noqa: BLE001
-                log.exception("  upsert_episode failed S%dE%d", m.season, m.episode)
-                stats.failed_other += 1
-                continue
-            if episode_id is None:
-                stats.failed_other += 1
-                continue
-            existing_eps[ep_key] = episode_id
-            try:
+                if episode_id is None:
+                    stats.failed_other += 1
+                    cur.execute("ROLLBACK TO SAVEPOINT prh_match")
+                    cur.execute("RELEASE SAVEPOINT prh_match")
+                    continue
+                existing_eps[ep_key] = episode_id
                 attach_prehrajto_to_episode(
                     cur, providers=providers,
                     episode_id=episode_id, match=m,
                 )
-            except Exception:  # noqa: BLE001
-                log.exception("  attach (new-episode) failed S%dE%d",
-                              m.season, m.episode)
-                stats.failed_other += 1
-                continue
-            existing_external_ids.add(m.hit.external_id)
-            stats.added_episode += 1
-            log.info("  +episode+source S%02dE%02d ep_id=%d ext=%s",
-                     m.season, m.episode, episode_id, m.hit.external_id)
-        else:
-            try:
+                cur.execute("RELEASE SAVEPOINT prh_match")
+                existing_external_ids.add(m.hit.external_id)
+                stats.added_episode += 1
+                log.info("  +episode+source S%02dE%02d ep_id=%d ext=%s",
+                         m.season, m.episode, episode_id, m.hit.external_id)
+            else:
+                # Episode row exists. Update the parent's lang flags too
+                # (OR-in, never downgrade) so the row reflects the new
+                # source's audio/subtitle availability.
+                cur.execute(
+                    "UPDATE episodes SET "
+                    "has_dub = has_dub OR %s, "
+                    "has_subtitles = has_subtitles OR %s "
+                    "WHERE id = %s",
+                    (row_has_dub, row_has_subs, episode_id),
+                )
                 attach_prehrajto_to_episode(
                     cur, providers=providers,
                     episode_id=episode_id, match=m,
                 )
-            except Exception:  # noqa: BLE001
-                log.exception("  attach failed S%dE%d", m.season, m.episode)
-                stats.failed_other += 1
-                continue
-            existing_external_ids.add(m.hit.external_id)
-            stats.added_source += 1
-            log.info("  +source S%02dE%02d ep_id=%d ext=%s",
-                     m.season, m.episode, episode_id, m.hit.external_id)
+                cur.execute("RELEASE SAVEPOINT prh_match")
+                existing_external_ids.add(m.hit.external_id)
+                stats.added_source += 1
+                log.info("  +source S%02dE%02d ep_id=%d ext=%s",
+                         m.season, m.episode, episode_id, m.hit.external_id)
+        except Exception:  # noqa: BLE001
+            log.exception("  match failed S%dE%d ext=%s — rolling back to savepoint",
+                          m.season, m.episode, m.hit.external_id)
+            cur.execute("ROLLBACK TO SAVEPOINT prh_match")
+            cur.execute("RELEASE SAVEPOINT prh_match")
+            stats.failed_other += 1
+            continue
 
     if dry_run:
         conn.rollback()
