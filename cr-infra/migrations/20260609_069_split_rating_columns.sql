@@ -17,6 +17,16 @@
 --     freshness audit can tell when each was last refreshed
 --   - tmdb_vote_count is a new field (TMDB's `vote_count`) so we can later
 --     rank quality of TMDB ratings; backfill happens in a follow-up sync.
+--
+-- Idempotency (Copilot review on PR #691):
+--   * Copy is gated on `tmdb_rating IS NULL` — never clobber an already-
+--     populated tmdb_rating with the now-empty imdb_rating on a re-run.
+--   * Clear is gated on `imdb_rating_synced_at IS NULL` — that timestamp
+--     is only ever set by scripts/sync-imdb-ratings.py (#690), so before
+--     #690 lands every row matches, and after #690 runs the real IMDb
+--     ratings are skipped instead of wiped.
+--   * tmdb_rating_synced_at is stamped during the copy so freshness audits
+--     can tell when each TMDB number was last touched.
 
 -- films -----------------------------------------------------------------
 ALTER TABLE films
@@ -26,16 +36,16 @@ ALTER TABLE films
     ADD COLUMN IF NOT EXISTS imdb_votes             INTEGER,
     ADD COLUMN IF NOT EXISTS imdb_rating_synced_at  TIMESTAMPTZ;
 
--- Copy the current (misnamed) imdb_rating values into the new tmdb_rating
--- column and then clear imdb_rating so it can later hold the actual IMDb
--- value without ambiguity.
 UPDATE films
-   SET tmdb_rating = imdb_rating
- WHERE imdb_rating IS NOT NULL;
+   SET tmdb_rating = imdb_rating,
+       tmdb_rating_synced_at = now()
+ WHERE imdb_rating IS NOT NULL
+   AND tmdb_rating IS NULL;
 
 UPDATE films
    SET imdb_rating = NULL
- WHERE imdb_rating IS NOT NULL;
+ WHERE imdb_rating IS NOT NULL
+   AND imdb_rating_synced_at IS NULL;
 
 -- series ----------------------------------------------------------------
 ALTER TABLE series
@@ -46,12 +56,15 @@ ALTER TABLE series
     ADD COLUMN IF NOT EXISTS imdb_rating_synced_at  TIMESTAMPTZ;
 
 UPDATE series
-   SET tmdb_rating = imdb_rating
- WHERE imdb_rating IS NOT NULL;
+   SET tmdb_rating = imdb_rating,
+       tmdb_rating_synced_at = now()
+ WHERE imdb_rating IS NOT NULL
+   AND tmdb_rating IS NULL;
 
 UPDATE series
    SET imdb_rating = NULL
- WHERE imdb_rating IS NOT NULL;
+ WHERE imdb_rating IS NOT NULL
+   AND imdb_rating_synced_at IS NULL;
 
 -- tv_shows --------------------------------------------------------------
 -- TV pořady (`tv_shows`) share the same rating model as `series`; the
@@ -65,12 +78,15 @@ ALTER TABLE tv_shows
     ADD COLUMN IF NOT EXISTS imdb_rating_synced_at  TIMESTAMPTZ;
 
 UPDATE tv_shows
-   SET tmdb_rating = imdb_rating
- WHERE imdb_rating IS NOT NULL;
+   SET tmdb_rating = imdb_rating,
+       tmdb_rating_synced_at = now()
+ WHERE imdb_rating IS NOT NULL
+   AND tmdb_rating IS NULL;
 
 UPDATE tv_shows
    SET imdb_rating = NULL
- WHERE imdb_rating IS NOT NULL;
+ WHERE imdb_rating IS NOT NULL
+   AND imdb_rating_synced_at IS NULL;
 
 -- Indexes ---------------------------------------------------------------
 -- Sorting by rating ("top rated" lists) now uses tmdb_rating, since that
