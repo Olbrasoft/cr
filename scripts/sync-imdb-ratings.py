@@ -52,6 +52,68 @@ TSV_FILE_NAME = "title.ratings.tsv.gz"
 TABLES = ("films", "series", "tv_shows")
 
 
+def _insert_run(conn, kind: str) -> int | None:
+    """Open a new `rating_sync_runs` row and return its id.
+
+    Failure here MUST NOT abort the sync — the admin tile is a
+    nice-to-have; the real work is the UPDATEs to films/series/tv_shows.
+    Migration 070 may not be applied yet on legacy environments, so we
+    swallow the error, log it, and fall through to a syncless run.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO rating_sync_runs (kind, status) VALUES (%s, 'running') RETURNING id",
+                (kind,),
+            )
+            run_id = cur.fetchone()[0]
+        conn.commit()
+        return run_id
+    except psycopg2.Error as e:
+        conn.rollback()
+        logging.warning("rating_sync_runs INSERT failed (migration 070?): %s", e)
+        return None
+
+
+def _finalize_run(
+    conn,
+    run_id: int | None,
+    status: str,
+    counts: dict[str, int],
+    error_message: str | None,
+) -> None:
+    """Close out the run row started by `_insert_run`. Safe to call with
+    run_id=None — turns into a no-op for environments without the table."""
+    if run_id is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE rating_sync_runs
+                   SET finished_at = now(),
+                       status = %s,
+                       films_refreshed = %s,
+                       series_refreshed = %s,
+                       tv_shows_refreshed = %s,
+                       error_message = %s
+                 WHERE id = %s
+                """,
+                (
+                    status,
+                    counts.get("films", 0),
+                    counts.get("series", 0),
+                    counts.get("tv_shows", 0),
+                    error_message,
+                    run_id,
+                ),
+            )
+        conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        logging.warning("rating_sync_runs UPDATE failed: %s", e)
+
+
 def _load_our_imdb_ids(cur) -> dict[str, str]:
     """Return imdb_id → table for every row we may want to update.
 
@@ -236,9 +298,26 @@ def main() -> int:
         raise SystemExit("DATABASE_URL required")
 
     conn = psycopg2.connect(dsn)
+    # On dry-run we skip the run-row entirely — admin dashboard should
+    # only track real production syncs, not ad-hoc parses.
+    run_id = None if args.dry_run else _insert_run(conn, "imdb")
+    status = "ok"
+    error_message: str | None = None
+    counts: dict[str, int] = {t: 0 for t in TABLES}
     try:
-        sync(conn, Path(args.cache_dir), args.dry_run, args.force)
+        counts = sync(conn, Path(args.cache_dir), args.dry_run, args.force)
+    except Exception as e:
+        status = "error"
+        # Trim to first 500 chars — full traceback already lives in journald.
+        error_message = (str(e) or repr(e))[:500]
+        _finalize_run(conn, run_id, status, counts, error_message)
+        conn.close()
+        raise
     finally:
+        # Successful path: write the OK summary before closing the conn.
+        # The except branch above already finalized + re-raised.
+        if status == "ok":
+            _finalize_run(conn, run_id, status, counts, error_message)
         conn.close()
     return 0
 
