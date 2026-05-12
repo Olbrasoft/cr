@@ -18,14 +18,15 @@ Pipeline:
   4. Single COMMIT at the end (UPDATEs run in 1 000-row chunks via
      psycopg2.execute_values).
 
-Idempotent: re-running with no new TSV does zero DB writes (HTTP 304 path);
-re-running with the same TSV re-applies the same values and bumps
-`imdb_rating_synced_at`.
+Idempotent: re-running with no new TSV does zero DB writes (HTTP 304 →
+exit before the UPDATE loop runs). Re-running with the same TSV after
+`--force` re-applies the same values and bumps `imdb_rating_synced_at`.
 
 Usage:
-    DATABASE_URL=postgres://... python3 scripts/sync-imdb-ratings.py [--cache-dir DIR] [--dry-run]
+    DATABASE_URL=postgres://... python3 scripts/sync-imdb-ratings.py [--cache-dir DIR] [--dry-run] [--force]
 
 `--cache-dir` defaults to `./data/imdb-cache/` (created on first run).
+`--force` re-syncs from the cached TSV even when IMDb returns 304.
 """
 
 from __future__ import annotations
@@ -95,7 +96,11 @@ def _download_tsv(cache_dir: Path) -> tuple[bytes | None, str]:
 
     body = r.content
     last_modified = r.headers.get("Last-Modified", "")
-    header_path.write_text(last_modified)
+    # Only overwrite the header cache when IMDb actually returned one —
+    # otherwise we'd wipe a previously valid timestamp and break
+    # conditional GET on subsequent runs.
+    if last_modified:
+        header_path.write_text(last_modified)
     (cache_dir / TSV_FILE_NAME).write_bytes(body)
     logging.info(
         "Downloaded TSV (%.1f MB, Last-Modified: %s)",
@@ -141,6 +146,9 @@ def _flush(cur, table: str, batch: list[tuple]) -> None:
     """Apply one batch of (rating, votes, imdb_id) updates for `table`."""
     if not batch:
         return
+    # execute_values defaults to page_size=100, which would split each
+    # flush into multiple round-trips; pass the real batch length so the
+    # whole batch ships in one UPDATE.
     psycopg2.extras.execute_values(
         cur,
         f"""
@@ -153,10 +161,11 @@ def _flush(cur, table: str, batch: list[tuple]) -> None:
         """,
         batch,
         template="(%s, %s, %s)",
+        page_size=len(batch),
     )
 
 
-def sync(conn, cache_dir: Path, dry_run: bool) -> dict[str, int]:
+def sync(conn, cache_dir: Path, dry_run: bool, force: bool) -> dict[str, int]:
     cur = conn.cursor()
     mapping = _load_our_imdb_ids(cur)
     logging.info(
@@ -165,6 +174,12 @@ def sync(conn, cache_dir: Path, dry_run: bool) -> dict[str, int]:
 
     body, _ = _download_tsv(cache_dir)
     if body is None:
+        if not force:
+            logging.info(
+                "TSV unchanged from previous run — exiting without touching DB "
+                "(use --force to re-sync from cache anyway)"
+            )
+            return {t: 0 for t in TABLES}
         body = _load_cached_tsv(cache_dir)
 
     # One batch per table — keeps the UPDATE selective and lets us report
@@ -208,6 +223,8 @@ def main() -> int:
     parser.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
     parser.add_argument("--dry-run", action="store_true",
                         help="parse + match but do not UPDATE or COMMIT")
+    parser.add_argument("--force", action="store_true",
+                        help="re-sync from cached TSV even when IMDb returns 304")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -220,7 +237,7 @@ def main() -> int:
 
     conn = psycopg2.connect(dsn)
     try:
-        sync(conn, Path(args.cache_dir), args.dry_run)
+        sync(conn, Path(args.cache_dir), args.dry_run, args.force)
     finally:
         conn.close()
     return 0
