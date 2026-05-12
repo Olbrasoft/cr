@@ -110,11 +110,11 @@ class MovieResolution:
     runtime_min: int | None
     poster_path: str | None        # TMDB path like "/abc.jpg" — caller fetches via image.tmdb.org
     genre_ids: list[int]           # raw TMDB genre ids
-    # TMDB's own vote_average on 0–10. Our films table stores imdb_rating
-    # (0–10) and TMDB/IMDB usually agree within ±0.5 on popular titles, so
-    # we use it as an imdb_rating proxy until we wire in the real IMDB
-    # endpoint. Small indie/obscure CZ titles may diverge more — accept
-    # that for now.
+    # TMDB's own vote_average on 0–10. Persisted into `films.tmdb_rating`
+    # (renamed from the misnamed `imdb_rating` in migration 069). The real
+    # IMDb rating lives in the sibling `films.imdb_rating` column and is
+    # populated separately by scripts/sync-imdb-ratings.py from the public
+    # IMDb datasets TSV (#690).
     vote_average: float | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0  # how confident we are in the match

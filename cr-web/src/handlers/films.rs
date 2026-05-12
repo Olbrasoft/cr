@@ -34,7 +34,7 @@ const FILMS_PER_PAGE: i64 = 24;
 ///   when the primary upload's CDN is `www`, because data{N} is blocked
 ///   from datacenter ASNs). Preserved here via `cdn = 'www'` predicate.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-    f.imdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
+    f.tmdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
     f.added_at, f.tmdb_poster_path, \
     (SELECT vs.external_id::INTEGER \
        FROM video_sources vs \
@@ -79,7 +79,7 @@ struct FilmRow {
     year: Option<i16>,
     description: Option<String>,
     original_title: Option<String>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     runtime_min: Option<i16>,
     sktorrent_video_id: Option<i32>,
@@ -388,8 +388,12 @@ impl FilmsQuery {
         match (self.razeni.as_deref(), desc) {
             (Some("rok"), true) => "f.year DESC NULLS LAST, f.title",
             (Some("rok"), false) => "f.year ASC NULLS LAST, f.title",
-            (Some("imdb"), true) => "f.imdb_rating DESC NULLS LAST, f.title",
-            (Some("imdb"), false) => "f.imdb_rating ASC NULLS LAST, f.title",
+            // URL param `razeni=imdb` is kept for backward-compat with old
+            // bookmarks; internally it sorts by `tmdb_rating` because that
+            // is where the score actually lives (see migration 069). The UI
+            // label already reads "TMDB" per #584/#586.
+            (Some("imdb"), true) => "f.tmdb_rating DESC NULLS LAST, f.title",
+            (Some("imdb"), false) => "f.tmdb_rating ASC NULLS LAST, f.title",
             (Some("csfd"), true) => "f.csfd_rating DESC NULLS LAST, f.title",
             (Some("csfd"), false) => "f.csfd_rating ASC NULLS LAST, f.title",
             (Some("nazev"), true) => "f.title DESC, f.year DESC NULLS LAST",
@@ -657,7 +661,7 @@ struct SearchResult {
     slug: String,
     title: String,
     year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     cover: bool,
 }
 
@@ -666,7 +670,7 @@ struct SearchRow {
     slug: String,
     title: String,
     year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
 }
 
 // --- Handlers ---
@@ -1195,7 +1199,7 @@ pub async fn films_search(
             slug: r.slug,
             title: r.title,
             year: r.year,
-            imdb_rating: r.imdb_rating,
+            tmdb_rating: r.tmdb_rating,
             cover: true,
         })
         .collect();
@@ -1212,7 +1216,7 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
     // user's diacritics) win bucket 0/1/2; rows that only match after
     // unaccent fall to bucket 3, behind the diacritic-exact hits.
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, imdb_rating \
+        "SELECT slug, title, year, tmdb_rating \
          FROM films \
          WHERE unaccent(title) ILIKE unaccent($1) \
             OR unaccent(original_title) ILIKE unaccent($1) \
@@ -1221,7 +1225,7 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
                 WHEN title ILIKE $1 THEN 1 \
                 WHEN original_title ILIKE $2 THEN 2 \
                 ELSE 3 END, \
-           imdb_rating DESC NULLS LAST \
+           tmdb_rating DESC NULLS LAST \
          LIMIT 10",
     )
     .bind(&pattern)
@@ -1237,7 +1241,7 @@ async fn search_films_by_title_year(
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, imdb_rating \
+        "SELECT slug, title, year, tmdb_rating \
          FROM films \
          WHERE unaccent(CONCAT_WS(' ', title, year::text)) ILIKE unaccent($1) \
             OR unaccent(CONCAT_WS(' ', original_title, year::text)) ILIKE unaccent($1) \
@@ -1246,7 +1250,7 @@ async fn search_films_by_title_year(
                 WHEN CONCAT_WS(' ', title, year::text) ILIKE $1 THEN 1 \
                 WHEN CONCAT_WS(' ', original_title, year::text) ILIKE $2 THEN 2 \
                 ELSE 3 END, \
-           imdb_rating DESC NULLS LAST \
+           tmdb_rating DESC NULLS LAST \
          LIMIT 10",
     )
     .bind(&pattern)

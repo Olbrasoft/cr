@@ -641,7 +641,7 @@ def main() -> int:
         INSERT INTO films (
             title, original_title, slug, year, description,
             imdb_id, tmdb_id, runtime_min,
-            imdb_rating, csfd_rating,
+            tmdb_rating, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             prehrajto_url, prehrajto_has_dub, prehrajto_has_subs,

@@ -68,7 +68,7 @@ pub struct SeriesRow {
     last_air_year: Option<i16>,
     description: Option<String>,
     original_title: Option<String>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     season_count: Option<i16>,
@@ -117,7 +117,7 @@ pub struct EpisodeCardRow {
     pub series_title: String,
     pub series_original_title: Option<String>,
     pub series_first_air_year: Option<i16>,
-    pub series_imdb_rating: Option<f32>,
+    pub series_tmdb_rating: Option<f32>,
     pub series_csfd_rating: Option<i16>,
     pub series_description: Option<String>,
     pub season: i16,
@@ -233,8 +233,11 @@ impl SeriesQuery {
         match (self.razeni.as_deref(), desc) {
             (Some("rok"), true) => "s.first_air_year DESC NULLS LAST, s.title",
             (Some("rok"), false) => "s.first_air_year ASC NULLS LAST, s.title",
-            (Some("imdb"), true) => "s.imdb_rating DESC NULLS LAST, s.title",
-            (Some("imdb"), false) => "s.imdb_rating ASC NULLS LAST, s.title",
+            // URL param `razeni=imdb` is kept for backward-compat with old
+            // bookmarks; internally it sorts by `tmdb_rating` because that
+            // is where the score actually lives (see migration 069).
+            (Some("imdb"), true) => "s.tmdb_rating DESC NULLS LAST, s.title",
+            (Some("imdb"), false) => "s.tmdb_rating ASC NULLS LAST, s.title",
             (Some("nazev"), true) => "s.title DESC",
             (Some("nazev"), false) => "s.title ASC",
             (_, true) => "s.added_at DESC NULLS LAST, s.title",
@@ -402,7 +405,7 @@ pub async fn series_list(
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
-             s.description, s.original_title, s.imdb_rating, s.csfd_rating, \
+             s.description, s.original_title, s.tmdb_rating, s.csfd_rating, \
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM series s \
@@ -576,7 +579,7 @@ async fn fetch_latest_episode_cards(
             s.title AS series_title, \
             s.original_title AS series_original_title, \
             s.first_air_year AS series_first_air_year, \
-            s.imdb_rating AS series_imdb_rating, \
+            s.tmdb_rating AS series_tmdb_rating, \
             s.csfd_rating AS series_csfd_rating, \
             s.description AS series_description, \
             ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
@@ -751,7 +754,7 @@ pub async fn series_resolve(
     // Series detail
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path \
          FROM series WHERE slug = $1",
     )
@@ -765,7 +768,7 @@ pub async fn series_resolve(
             // Check old_slug for 301 redirect (series slug changed, e.g. year removed)
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug_raw)
@@ -892,7 +895,7 @@ pub async fn episode_detail(
     // --- Resolve series (support old slugs with year via redirect) ---
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path FROM series WHERE slug = $1",
     )
     .bind(&slug)
@@ -905,7 +908,7 @@ pub async fn episode_detail(
         None => {
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug)
@@ -1137,7 +1140,7 @@ struct SeriesSearchResult {
     slug: String,
     title: String,
     year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     cover: bool,
 }
 
@@ -1146,7 +1149,7 @@ struct SeriesSearchRow {
     slug: String,
     title: String,
     first_air_year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
 }
 
 /// GET /api/series/search?q=...
@@ -1165,7 +1168,7 @@ pub async fn series_search(
     // title literally contains the user's diacritics rank in buckets
     // 0–2, unaccent-only matches drop to bucket 3.
     let rows = sqlx::query_as::<_, SeriesSearchRow>(
-        "SELECT slug, title, first_air_year, imdb_rating \
+        "SELECT slug, title, first_air_year, tmdb_rating \
          FROM series \
          WHERE unaccent(title) ILIKE unaccent($1) \
             OR unaccent(original_title) ILIKE unaccent($1) \
@@ -1174,7 +1177,7 @@ pub async fn series_search(
                 WHEN title ILIKE $1 THEN 1 \
                 WHEN original_title ILIKE $2 THEN 2 \
                 ELSE 3 END, \
-           imdb_rating DESC NULLS LAST \
+           tmdb_rating DESC NULLS LAST \
          LIMIT 10",
     )
     .bind(&pattern)
@@ -1188,7 +1191,7 @@ pub async fn series_search(
             slug: r.slug,
             title: r.title,
             year: r.first_air_year,
-            imdb_rating: r.imdb_rating,
+            tmdb_rating: r.tmdb_rating,
             cover: true,
         })
         .collect();
