@@ -403,12 +403,23 @@
             reference_voice: "voices/moravec.wav",
             exaggeration: 0.45 }</code></pre>
 
-        <h4>Více informací</h4>
+        <h4>Pipeline pro audio povídky</h4>
         <p>
-            Detailní popis pipeline (povídka → audio → obrázky → video) najdete na stránce
-            <a href="/seznam-hlasu/"><strong>/seznam-hlasu/</strong></a> v sekci „Jak to funguje".
+            Tato pipeline pohání všechny audio povídky na našem
+            <a href="https://www.youtube.com/@ceskarepublika-wiki" target="_blank" rel="noopener">YouTube kanálu</a>.
+            Scénář se rozdělí po replikách, každé je přiřazen jeden hlas, vše projede TTS serverem
+            do MP3 a obalí se vizuálem v 1080p H.264. Příklad hotové povídky:
+            <a href="https://www.youtube.com/watch?v=6uMViLgUAeM" target="_blank" rel="noopener">„Léto v Australisu“</a>
+            (~45 min, 12 hlasů, audio + AI obrázky + video).
+        </p>
+
+        <h4>Zdroje</h4>
+        <p>
             Zdrojový kód modelu:
             <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">github.com/resemble-ai/chatterbox</a>.
+            Base váhy:
+            <a href="https://huggingface.co/ResembleAI/chatterbox" target="_blank" rel="noopener">huggingface.co/ResembleAI/chatterbox</a>.
+            Český T3 fine-tune trénovaný lokálně, není veřejně publikovaný.
         </p>
     </article>
 
