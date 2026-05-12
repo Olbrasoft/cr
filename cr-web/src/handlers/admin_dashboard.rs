@@ -209,11 +209,12 @@ async fn fetch_rating_tile(state: &AppState, kind: &'static str) -> LastRunTile 
         series_refreshed: i32,
         tv_shows_refreshed: i32,
         failed_count: i32,
+        error_message: Option<String>,
     }
 
     let row = match sqlx::query_as::<_, LastRatingSync>(
         "SELECT started_at, status, films_refreshed, series_refreshed, \
-         tv_shows_refreshed, failed_count \
+         tv_shows_refreshed, failed_count, error_message \
          FROM rating_sync_runs WHERE kind = $1 \
          ORDER BY started_at DESC LIMIT 1",
     )
@@ -223,9 +224,22 @@ async fn fetch_rating_tile(state: &AppState, kind: &'static str) -> LastRunTile 
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(
-                "admin dashboard: rating_sync_runs query failed for kind={kind}: {e}"
-            );
+            // Special-case "table does not exist" (Postgres SQLSTATE 42P01).
+            // The Python sync scripts tolerate migration 070 not yet being
+            // applied; if the dashboard treated that as a red incident the
+            // first deploy of this feature on an older instance would scream
+            // false alarms in journald and on /admin/. Real DB errors
+            // (auth, connection, schema-mismatch in *other* columns) still
+            // surface as `error` and get logged loudly.
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err.code().as_deref() == Some("42P01")
+            {
+                return LastRunTile {
+                    status: "none",
+                    message: "Migrace 070 ještě není aplikována.".to_string(),
+                };
+            }
+            tracing::error!("admin dashboard: rating_sync_runs query failed for kind={kind}: {e}");
             return LastRunTile {
                 status: "error",
                 message: "Chyba DB (rating_sync_runs) — viz journald.".to_string(),
@@ -250,6 +264,28 @@ async fn fetch_rating_tile(state: &AppState, kind: &'static str) -> LastRunTile 
             let total = r.films_refreshed + r.series_refreshed + r.tv_shows_refreshed;
             let summary = if r.status == "running" {
                 "právě běží".to_string()
+            } else if r.status == "error" {
+                // error_message is trimmed by the Python scripts to 500
+                // chars; cap further here so a multi-line traceback
+                // doesn't blow up the tile. The full text is still in
+                // journald — link the operator there mentally via the
+                // "viz journald" trailer.
+                let detail = r
+                    .error_message
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        let max = 120;
+                        if s.chars().count() > max {
+                            let truncated: String = s.chars().take(max).collect();
+                            format!("{truncated}…")
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "bez detailu".to_string());
+                format!("{detail} — viz journald")
             } else if total == 0 && r.failed_count == 0 && r.status == "ok" {
                 // IMDb sync returns a status=ok / counts=0 row when the
                 // upstream TSV's Last-Modified is unchanged from the

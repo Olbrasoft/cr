@@ -21,9 +21,14 @@ CREATE TABLE rating_sync_runs (
     films_refreshed     INT NOT NULL DEFAULT 0,
     series_refreshed    INT NOT NULL DEFAULT 0,
     tv_shows_refreshed  INT NOT NULL DEFAULT 0,
-    -- TMDB only — rows that returned 404 or had no votes. IMDb sync
-    -- doesn't track per-row failures (the TSV either parses cleanly or
-    -- the whole run errors).
+    -- TMDB only — rows that returned HTTP 404 (stale tmdb_id) or had a
+    -- transient fetch failure (network / 5xx / unparseable JSON).
+    -- Titles with vote_count=0 ("TMDB knows the title, nobody rated it
+    -- yet") are NOT counted here: that's a normal steady state, not a
+    -- problem worth flagging on the admin tile. The Python sync script
+    -- still logs them as a separate `_no_votes` bucket for diagnostics.
+    -- IMDb sync doesn't track per-row failures (the TSV either parses
+    -- cleanly or the whole run errors at the top level).
     failed_count        INT NOT NULL DEFAULT 0,
     error_message       TEXT
 );

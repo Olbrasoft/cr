@@ -104,9 +104,14 @@ def _finalize_run(
     run_id=None — turns into a no-op for environments without the table.
 
     `counts` is the Counter returned by `sync()` with keys like
-    `{table}_refreshed`, `{table}_failed`, … We aggregate `failed_count`
-    as the sum of every non-OK bucket so the admin tile shows "0 selhalo"
-    when everything was fine and "N selhalo" otherwise.
+    `{table}_refreshed`, `{table}_failed`, `{table}_not_found`,
+    `{table}_no_votes`. `failed_count` aggregates ONLY the buckets that
+    represent a real problem worth surfacing on the admin tile:
+      - `_failed`     — transient network / 5xx / unparseable JSON
+      - `_not_found`  — HTTP 404 from TMDB (our tmdb_id is stale)
+    `_no_votes` is intentionally NOT included: it's a normal state
+    (TMDB has the title but nobody rated it yet) and stays as an
+    informational counter in the logs, not a failure.
     """
     if run_id is None:
         return
