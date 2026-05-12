@@ -242,12 +242,12 @@
                     {# Card view: show TMDB + IMDb + ČSFD stacked (#593). The .rating-badges CSS uses flex-direction: column. #}
                     {% match f.tmdb_rating %}
                     {% when Some with (r) %}
-                    <span class="rating-badge tmdb" title="TMDB hodnocení">{{ "{:.1}"|format(r) }}</span>
+                    <span class="rating-badge tmdb" title="TMDB hodnocení" aria-label="TMDB hodnocení {{ "{:.1}"|format(r) }}">{{ "{:.1}"|format(r) }}</span>
                     {% when None %}
                     {% endmatch %}
                     {% match f.imdb_rating %}
                     {% when Some with (r) %}
-                    <span class="rating-badge imdb" title="IMDb hodnocení">{{ "{:.1}"|format(r) }}</span>
+                    <span class="rating-badge imdb" title="IMDb hodnocení" aria-label="IMDb hodnocení {{ "{:.1}"|format(r) }}">{{ "{:.1}"|format(r) }}</span>
                     {% when None %}
                     {% endmatch %}
                     {% match f.csfd_rating %}
@@ -853,17 +853,31 @@ function doSearch() {
                     if (!results.length) {
                         dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>';
                     } else {
+                        // Escape HTML-special chars from user-visible fields so a title
+                        // like `<script>` or `It's "fine"` can't break out of the
+                        // attribute / text context we splice it into below.
+                        var esc = function(s) { return String(s).replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); };
                         dd.innerHTML = results.map(function(r) {
+                            var slug = esc(r.slug);
+                            var title = esc(r.title);
                             var cover = r.cover
-                                ? '<img src="/filmy-online/' + r.slug + '.webp" alt="">'
+                                ? '<img src="/filmy-online/' + slug + '.webp" alt="">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var ratParts = [];
-                            if (r.tmdb_rating) ratParts.push('<span class="si-rating tmdb">' + r.tmdb_rating.toFixed(1) + '</span>');
-                            if (r.imdb_rating) ratParts.push('<span class="si-rating imdb">' + r.imdb_rating.toFixed(1) + '</span>');
-                            var rat = ratParts.length ? ' ' + ratParts.join('') : '';
-                            return '<a href="/filmy-online/' + r.slug + '/" class="search-item">'
-                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
+                            if (r.tmdb_rating) {
+                                var t = r.tmdb_rating.toFixed(1);
+                                ratParts.push('<span class="si-rating tmdb" title="TMDB hodnocení" aria-label="TMDB hodnocení ' + t + '">' + t + '</span>');
+                            }
+                            if (r.imdb_rating) {
+                                var i = r.imdb_rating.toFixed(1);
+                                ratParts.push('<span class="si-rating imdb" title="IMDb hodnocení" aria-label="IMDb hodnocení ' + i + '">' + i + '</span>');
+                            }
+                            // No leading space — .si-meta is display:flex with gap, so
+                            // a stray text node would render as an extra flex child.
+                            var rat = ratParts.join('');
+                            return '<a href="/filmy-online/' + slug + '/" class="search-item">'
+                                + cover + '<div class="si-info"><span class="si-title">' + title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
                         }).join('');
                     }

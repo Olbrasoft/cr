@@ -645,17 +645,26 @@ function doSearch() {
                 .then(function(results) {
                     if (!results.length) { dd.innerHTML = '<div style="padding:0.8rem;color:#888;text-align:center">Nic nenalezeno</div>'; }
                     else {
+                        var esc = function(s) { return String(s).replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); };
                         dd.innerHTML = results.map(function(r) {
+                            var slug = esc(r.slug);
+                            var title = esc(r.title);
                             var cover = r.cover
-                                ? '<img src="/serialy-online/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
+                                ? '<img src="/serialy-online/' + slug + '.webp" alt="' + title + '" title="' + title + '">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var ratParts = [];
-                            if (r.tmdb_rating) ratParts.push('<span class="si-rating tmdb">' + r.tmdb_rating.toFixed(1) + '</span>');
-                            if (r.imdb_rating) ratParts.push('<span class="si-rating imdb">' + r.imdb_rating.toFixed(1) + '</span>');
-                            var rat = ratParts.length ? ' ' + ratParts.join('') : '';
-                            return '<a href="/serialy-online/' + r.slug + '/" class="search-item" title="' + r.title + '" aria-label="' + r.title + '">'
-                                + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
+                            if (r.tmdb_rating) {
+                                var t = r.tmdb_rating.toFixed(1);
+                                ratParts.push('<span class="si-rating tmdb" title="TMDB hodnocení" aria-label="TMDB hodnocení ' + t + '">' + t + '</span>');
+                            }
+                            if (r.imdb_rating) {
+                                var i = r.imdb_rating.toFixed(1);
+                                ratParts.push('<span class="si-rating imdb" title="IMDb hodnocení" aria-label="IMDb hodnocení ' + i + '">' + i + '</span>');
+                            }
+                            var rat = ratParts.join('');
+                            return '<a href="/serialy-online/' + slug + '/" class="search-item" title="' + title + '" aria-label="' + title + '">'
+                                + cover + '<div class="si-info"><span class="si-title">' + title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
                         }).join('');
                     }
