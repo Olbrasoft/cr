@@ -1145,6 +1145,30 @@ def _push_cover_to_r2(series_id: int, cover_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _non_negative_int(s: str) -> int:
+    """argparse type for `--offset` / `--limit` — rejects negatives.
+
+    Without this guard a `--offset -5` would silently slice `clusters[-5:]`
+    (Python's "last 5" semantics) — counter-intuitive and easy to
+    mistype. `--limit -1` would similarly select all-but-last instead
+    of failing. We require >= 0 and use the value 0 as the documented
+    "no limit / no skip" sentinel (consistent with how `if args.limit:`
+    is already used in the discover and enrich code paths).
+    """
+    try:
+        n = int(s)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"expected a non-negative integer, got {s!r}",
+        ) from e
+    if n < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be >= 0, got {n} "
+            f"(use 0 as the explicit \"no limit / no skip\" value)",
+        )
+    return n
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -1165,13 +1189,18 @@ def main() -> int:
                          "discover (Phase B, #686): parse prehrajto sitemap, "
                          "find shows not yet in our DB, create them via "
                          "TMDB + Gemma and attach episode sources.")
-    ap.add_argument("--limit", type=int, default=10,
+    ap.add_argument("--limit", type=_non_negative_int, default=10,
                     help="Process at most N targets — series for enrich, "
-                         "clusters for discover (default 10)")
-    ap.add_argument("--offset", type=int, default=0,
-                    help="Skip the first N targets (enrich mode only — "
-                         "discover mode sorts by upload count so offset "
-                         "is rarely useful there).")
+                         "clusters for discover (default 10). 0 means "
+                         "\"no limit\" (process every target the filter "
+                         "returns).")
+    ap.add_argument("--offset", type=_non_negative_int, default=0,
+                    help="Skip the first N targets. enrich mode: skips N "
+                         "series (ordered by id). discover mode: skips N "
+                         "clusters AFTER the upload-count-desc sort, so "
+                         "`--offset 30 --limit 30` does the second batch "
+                         "of 30. Useful for resuming an interrupted run. "
+                         "0 means \"start from the beginning.\"")
     ap.add_argument("--match", default=None,
                     help="enrich: case-insensitive substring on "
                          "series.title/.original_title. "
@@ -1322,6 +1351,19 @@ def _run_discover(
         min_distinct_episodes=args.min_distinct_episodes,
         match=args.match,
     )
+    # Apply --offset BEFORE --limit so `--offset 30 --limit 30` does the
+    # second batch of 30 in a paginated run. Without this, the operator
+    # had no way to resume after an SSH-disconnect kill that interrupted
+    # a multi-hour discover; they'd silently re-process the same top-N
+    # clusters every time (which is wasteful — existing-series re-attach
+    # is O(N) database upserts even though they're all no-ops).
+    if args.offset:
+        skipped = clusters[: args.offset]
+        clusters = clusters[args.offset:]
+        log.info("--offset %d: skipping %d cluster(s) (%s ... %s)",
+                 args.offset, len(skipped),
+                 skipped[0].base_title[:30] if skipped else "",
+                 skipped[-1].base_title[:30] if skipped else "")
     if args.limit:
         clusters = clusters[: args.limit]
     if not clusters:
