@@ -4,30 +4,35 @@
 Two-phase pipeline (issue #684). Each phase is independently runnable
 via `--mode`:
 
-* `enrich`   (issue #685, **implemented here**) — for every series
-              already in our DB, search prehraj.to and attach matching
-              episode video sources via `video_sources(provider_id=
-              prehrajto)`.
-* `discover` (issue #686, not yet implemented) — parse prehraj.to
-              sitemap, filter SxxExx hits, group by base-title, TMDB-
-              resolve, create new `series` + `episodes` rows. To be
-              added in a follow-up PR.
+* `enrich`   (issue #685) — for every series already in our DB,
+              search prehraj.to and attach matching episode video
+              sources via `video_sources(provider_id=prehrajto)`.
+* `discover` (issue #686) — stream-parse prehraj.to's sitemap dump
+              cache, keep entries with `SxxExx` in the title, group
+              by normalized base-title + year, TMDB-resolve each
+              cluster, and create new `series` + `episodes` rows
+              (with Gemma-generated CS descriptions via
+              series_enricher.ensure_series) before attaching the
+              cluster's uploads as `video_sources` rows.
 
-The enrich path mirrors the proven sktorrent-series importer
-(`scripts/import-sktorrent-series.py`) but talks to prehraj.to instead
-of online.sktorrent.eu, and writes via the unified `video_sources`
-schema (provider=prehrajto) rather than the legacy
-`episodes.sktorrent_video_id` column.
+Both modes write to the same unified `video_sources` schema; together
+they cover the user-facing ask "for every series prehraj.to has, make
+sure our catalogue has the series + every available source."
 
 Defenses (lessons from commit 9d1d1e08d in the sktorrent path):
   * Alias filter normalizes BOTH the parsed prehraj.to title AND the
     DB series row's `title` / `original_title` — otherwise multi-
     episode shows quietly lose all but one match.
   * Per-series commits — never wrap the whole run in one transaction,
-    or one bad show wipes hours of progress.
+    or one bad show wipes hours of progress. Each per-match block is
+    additionally wrapped in a SAVEPOINT so a single failure (TMDB
+    schema mismatch, FK error, …) doesn't put the connection into
+    aborted-transaction state.
   * `--match SUBSTRING` for targeted re-imports after a parser tweak.
-  * `--dry-run` rolls back at the end so logs can be inspected without
-    touching the DB.
+  * `--dry-run` rolls back every per-series commit so logs can be
+    inspected without touching the DB.
+  * CZ-proxy mandatory in prod — prehraj.to (like SK Torrent) blocks
+    datacenter ASNs.
 
 Usage (Phase A — enrich existing series):
     DATABASE_URL=postgres://... TMDB_API_KEY=... \\
@@ -36,19 +41,26 @@ Usage (Phase A — enrich existing series):
         python3 scripts/import-prehrajto-series.py \\
             --mode enrich --limit 10 --dry-run
 
-For prod: drop --dry-run, raise --limit, optionally narrow with
---match (substring matched against series.title / .original_title).
+Usage (Phase B — discover new series from sitemap):
+    DATABASE_URL=... TMDB_API_KEY=... GEMINI_API_KEY=... \\
+        python3 scripts/import-prehrajto-series.py \\
+            --mode discover \\
+            --sitemap-dir /var/cache/cr/prehrajto-sitemap \\
+            --covers-dir data/movies/series-covers \\
+            --limit 3 --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -69,8 +81,12 @@ from scripts.auto_import.prehrajto_series_search import (
     normalize_alias,
     search_episodes,
 )
-from scripts.auto_import.series_enricher import upsert_episode
-from scripts.auto_import.tmdb_resolver import resolve_episode
+from scripts.auto_import.series_enricher import ensure_series, upsert_episode
+from scripts.auto_import.title_parser import (
+    ParsedTitle,
+    parse_prehrajto_episode_title,
+)
+from scripts.auto_import.tmdb_resolver import resolve_episode, resolve_tv
 from video_sources_helper import (
     get_provider_ids,
     lang_class_to_audio_and_subs,
@@ -414,6 +430,514 @@ def enrich_one_series(
 
 
 # ---------------------------------------------------------------------------
+# Phase B — discover new series via prehraj.to sitemap
+# ---------------------------------------------------------------------------
+#
+# Reuses the sitemap-streaming primitives from
+# `import-prehrajto-new-films.py` (#524) with INVERTED filtering: that
+# script REJECTS entries containing SxxExx ("that's an episode, not the
+# film we're looking for"); Phase B KEEPS them.
+#
+# Pipeline:
+#   1. find_series_clusters() — stream-parse every `video-sitemap-*.xml`
+#      in the cache dir, keep entries whose title has SxxExx, group by
+#      (normalize_alias(base_title), year). Returns one SeriesCluster
+#      per show.
+#   2. discover_one_cluster() — TMDB-resolve the cluster, genre-filter,
+#      find-or-create the `series` row via series_enricher.ensure_series
+#      (which already handles Gemma + cover + genre links), then per
+#      upload row run upsert_episode + attach_prehrajto_to_episode.
+#   3. main() loops over clusters under --limit, with per-cluster
+#      commit (same defense as Phase A).
+#
+# Genres skipped (out of scope for the IMDB-backed `series` table —
+# they belong to `tv_shows`/`tv_episodes`):
+#   10764 Reality, 10767 Talk, 10763 News, 10762 Kids
+TV_SHOWS_GENRES: frozenset[int] = frozenset({10764, 10767, 10763, 10762})
+
+# Sitemap XML regexes (vendored from import-prehrajto-new-films.py so
+# Phase B doesn't have to import a sibling script just for these).
+_SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
+_SITEMAP_TITLE_RE = re.compile(r"<video:title>([^<]*)</video:title>")
+_SITEMAP_DUR_RE = re.compile(r"<video:duration>(\d+)</video:duration>")
+_SITEMAP_VIEWS_RE = re.compile(r"<video:view_count>(\d+)</video:view_count>")
+_SITEMAP_LIVE_RE = re.compile(r"<video:live>(yes|no)</video:live>")
+_SITEMAP_URL_BLOCK_RE = re.compile(r"<url>(.*?)</url>", re.DOTALL)
+_UPLOAD_ID_RE = re.compile(r"/([a-f0-9]{13,16})(?:[/?#]|$)")
+# Looser than `title_parser._EPISODE_RE` — prehrajto uploaders sometimes
+# write `S01.E01` or `S01_E01` with separators between the SxxExx pair.
+# Used only to PRE-FILTER sitemap entries (we still re-parse with
+# `parse_prehrajto_episode_title` for the actual (season, episode)
+# extraction, which knows the separator-tolerant patterns).
+_SITEMAP_EPISODE_RE = re.compile(
+    r"\bS\d{1,2}[\s._\-]?E\d{1,3}\b|\b\d{1,2}x\d{1,2}\b", re.IGNORECASE,
+)
+
+
+def _sitemap_unescape(s: str) -> str:
+    """prehraj.to occasionally double-escapes `&` in `<video:title>`. Same
+    quirk the films-import handles — one unescape pass clears the normal
+    case, two clears the double-encoded one. `html.unescape` is a no-op
+    on already-clean text so the second pass is safe."""
+    return html.unescape(html.unescape(s))
+
+
+def parse_sitemap_for_episodes(path: Path,
+                               chunk_size: int = 1 << 20) -> Iterator[dict]:
+    """Stream-parse a `video-sitemap-*.xml` file, yield dicts for
+    entries whose title matches the loose SxxExx filter.
+
+    Streaming (read-N-bytes loop + `<url>...</url>` block extraction)
+    rather than `etree.iterparse` because the files are 5–15 MB each
+    and a generator-yield API keeps peak memory bounded — important
+    when we're going to chew through 495 files.
+
+    Yields `{url, title, duration, views, live}` with the same shape as
+    `import-prehrajto-new-films.parse_sitemap` so the films-import
+    cluster code and this one can read each other's mind.
+    """
+    carry = ""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            data = carry + chunk
+            last_close = data.rfind("</url>")
+            if last_close < 0:
+                carry = data
+                continue
+            complete = data[: last_close + len("</url>")]
+            carry = data[last_close + len("</url>") :]
+            for m in _SITEMAP_URL_BLOCK_RE.finditer(complete):
+                block = m.group(1)
+                title_m = _SITEMAP_TITLE_RE.search(block)
+                if not title_m:
+                    continue
+                title_raw = _sitemap_unescape(title_m.group(1))
+                # Pre-filter: must contain an SxxExx-style marker.
+                # Saves the full `parse_prehrajto_episode_title` call
+                # on the ~95% of sitemap entries that are films / shorts.
+                if not _SITEMAP_EPISODE_RE.search(title_raw):
+                    continue
+                loc_m = _SITEMAP_LOC_RE.search(block)
+                if not loc_m:
+                    continue
+                dur_m = _SITEMAP_DUR_RE.search(block)
+                views_m = _SITEMAP_VIEWS_RE.search(block)
+                live_m = _SITEMAP_LIVE_RE.search(block)
+                # Skip live streams — they're never on-demand episodes
+                # and prehraj.to occasionally tags webcams with show-
+                # looking titles.
+                if live_m and live_m.group(1) == "yes":
+                    continue
+                yield {
+                    "url": _sitemap_unescape(loc_m.group(1)),
+                    "title": title_raw,
+                    "duration": int(dur_m.group(1)) if dur_m else 0,
+                    "views": int(views_m.group(1)) if views_m else 0,
+                }
+
+
+def _extract_upload_id(url: str) -> str | None:
+    m = _UPLOAD_ID_RE.search(url or "")
+    return m.group(1) if m else None
+
+
+@dataclass
+class ClusterRow:
+    """One sitemap entry that parsed as a series episode upload."""
+    upload_id: str
+    url: str
+    title: str
+    duration_sec: int | None
+    season: int
+    episode: int
+    views: int
+
+
+@dataclass
+class SeriesCluster:
+    """All sitemap uploads that look like episodes of the same show.
+
+    `norm_key` is the alias-normalized base title used for grouping;
+    `base_title` is the readable form (best uploader rendition we saw
+    of the show name) used for TMDB search.
+    """
+    base_title: str
+    norm_key: str
+    year: int | None
+    rows: list[ClusterRow] = field(default_factory=list)
+
+    @property
+    def upload_count(self) -> int:
+        return len(self.rows)
+
+    @property
+    def episode_keys(self) -> set[tuple[int, int]]:
+        return {(r.season, r.episode) for r in self.rows}
+
+
+def find_series_clusters(sitemap_dir: Path,
+                         min_uploads: int = 2) -> list[SeriesCluster]:
+    """Stream-parse every sitemap file under `sitemap_dir`, return a
+    de-duplicated list of `SeriesCluster` sorted by upload count desc.
+
+    Why `min_uploads`: a single SxxExx-tagged upload is more often
+    parser noise (false positive on a film whose title happens to
+    contain "S01E01") than a real series. Requiring at least 2 distinct
+    (season, episode) tuples filters most of that out without sacrificing
+    real coverage — anything with one upload also has one episode in
+    DB-land, which Phase A's per-series search would have caught anyway.
+
+    Grouping key: `(normalize_alias(parsed.cz_title), parsed.year)`.
+    The year is part of the key so reboots of the same name (e.g. "BSG
+    2003" vs "BSG 1978") cluster separately. When the uploader leaves
+    the year out of the title, year=None and all those uploads merge
+    into one cluster — which is fine for TMDB resolution (the resolver
+    will pick whatever's most popular).
+    """
+    log.info("Sitemap scan: %s", sitemap_dir)
+    files = sorted(sitemap_dir.glob("video-sitemap-*.xml"),
+                   key=lambda p: int(re.search(r"(\d+)", p.stem).group(1)))
+    log.info("  %d sitemap files to scan", len(files))
+    if not files:
+        log.error("No video-sitemap-*.xml under %s", sitemap_dir)
+        return []
+
+    clusters: dict[tuple[str, int | None], SeriesCluster] = {}
+    # Per-cluster dedup of upload_ids — prehrajto's sitemap occasionally
+    # lists the same upload across multiple sitemap files when index
+    # boundaries shift between dumps.
+    seen_upload_ids: dict[tuple[str, int | None], set[str]] = {}
+    raw_entries = 0
+    matched_entries = 0
+    parser_skipped = 0
+
+    t0 = time.time()
+    for fi, path in enumerate(files, 1):
+        for entry in parse_sitemap_for_episodes(path):
+            raw_entries += 1
+            parsed = parse_prehrajto_episode_title(entry["title"])
+            if not parsed.is_episode:
+                parser_skipped += 1
+                continue
+            clean = (parsed.cz_title or "").strip()
+            if len(clean) < 2:
+                parser_skipped += 1
+                continue
+            norm = normalize_alias(clean)
+            if not norm:
+                parser_skipped += 1
+                continue
+            upload_id = _extract_upload_id(entry["url"])
+            if not upload_id:
+                parser_skipped += 1
+                continue
+            key = (norm, parsed.year)
+            cluster = clusters.get(key)
+            if cluster is None:
+                cluster = SeriesCluster(
+                    base_title=clean, norm_key=norm, year=parsed.year,
+                )
+                clusters[key] = cluster
+                seen_upload_ids[key] = set()
+            if upload_id in seen_upload_ids[key]:
+                continue
+            seen_upload_ids[key].add(upload_id)
+            # Prefer the longest readable cluster name we've seen so the
+            # TMDB search query has the best signal. Uploaders are
+            # inconsistent — one upload may say "Yellowstone", the next
+            # "Yellowstone (2018)", a third "Yellowstone S5". The
+            # truncate-at-marker parser will give us the bare show name
+            # for each; the LONGEST one is usually the most informative.
+            if len(clean) > len(cluster.base_title):
+                cluster.base_title = clean
+            cluster.rows.append(ClusterRow(
+                upload_id=upload_id, url=entry["url"], title=entry["title"],
+                duration_sec=entry["duration"] or None,
+                season=parsed.season, episode=parsed.episode,
+                views=entry["views"],
+            ))
+            matched_entries += 1
+        if fi % 100 == 0:
+            log.info("  scanned %d/%d files, %d raw entries with SxxExx, "
+                     "%d kept after parser, %d clusters so far (%.0fs)",
+                     fi, len(files), raw_entries, matched_entries,
+                     len(clusters), time.time() - t0)
+    log.info("Sitemap scan done in %.0fs: %d entries with SxxExx pre-filter, "
+             "%d kept, %d parser-skipped → %d raw clusters",
+             time.time() - t0, raw_entries, matched_entries, parser_skipped,
+             len(clusters))
+
+    out = [c for c in clusters.values() if c.upload_count >= min_uploads]
+    out.sort(key=lambda c: -c.upload_count)
+    log.info("  %d clusters with >= %d uploads (dropped %d single-upload "
+             "noise clusters)", len(out), min_uploads, len(clusters) - len(out))
+    return out
+
+
+@dataclass
+class DiscoverStats:
+    cluster_key: str
+    cluster_year: int | None
+    upload_count: int
+    distinct_episodes: int
+    tmdb_id: int | None = None
+    tmdb_name: str | None = None
+    series_id: int | None = None
+    series_was_created: bool = False
+    added_episode: int = 0
+    added_source: int = 0
+    skipped_present: int = 0
+    failed_tmdb_episode: int = 0
+    failed_other: int = 0
+    status: str = "ok"
+
+
+def _series_exists_by_tmdb(cur, tmdb_id: int) -> tuple[int, str, str | None] | None:
+    """Return (id, title, original_title) if a series row has this tmdb_id."""
+    cur.execute(
+        "SELECT id, title, original_title FROM series "
+        "WHERE tmdb_id = %s LIMIT 1",
+        (tmdb_id,),
+    )
+    return cur.fetchone()
+
+
+def discover_one_cluster(
+    conn: psycopg2.extensions.connection,
+    cluster: SeriesCluster,
+    tmdb_sess: requests.Session,
+    providers: dict,
+    cover_dir: str,
+    *,
+    dry_run: bool,
+) -> DiscoverStats:
+    """TMDB-resolve a cluster, find-or-create the series row, attach uploads.
+
+    Per-cluster transaction: caller commits or rolls back based on
+    `dry_run`. Internal per-row work is wrapped in SAVEPOINTs so one
+    bad upload doesn't abort the rest of the cluster.
+    """
+    stats = DiscoverStats(
+        cluster_key=cluster.base_title[:60],
+        cluster_year=cluster.year,
+        upload_count=cluster.upload_count,
+        distinct_episodes=len(cluster.episode_keys),
+    )
+
+    # 1. TMDB resolve. resolve_tv() takes a ParsedTitle; we synthesize
+    # one from cluster metadata. We pass the readable `base_title` as
+    # cz_title because we don't know the uploader's language — the
+    # resolver searches BOTH cs-CZ and en-US TMDB indexes, so either
+    # form usually hits.
+    parsed = ParsedTitle(
+        cz_title=cluster.base_title,
+        en_title=None,
+        year=cluster.year,
+        season=None,
+        episode=None,
+        is_episode=False,
+        raw=cluster.base_title,
+    )
+    try:
+        tv = resolve_tv(parsed, session=tmdb_sess)
+    except Exception as e:  # noqa: BLE001
+        log.exception("  TMDB resolve_tv raised for cluster %r: %s",
+                      cluster.base_title, e)
+        stats.status = f"tmdb_error: {type(e).__name__}"
+        return stats
+    if tv is None:
+        stats.status = "no_tmdb_match"
+        log.info("  no TMDB hit for %r (year=%s)", cluster.base_title,
+                 cluster.year)
+        return stats
+    stats.tmdb_id = tv.tmdb_id
+    stats.tmdb_name = tv.name_cs or tv.name_en or tv.original_name
+
+    # 2. Genre filter — Reality / Talk / News / Kids belong to tv_shows
+    # not series. Skip those clusters here; if the user wants them, a
+    # separate tv_shows importer is the right home.
+    blocked = TV_SHOWS_GENRES & set(tv.genre_ids or ())
+    if blocked:
+        stats.status = f"blocked_genre: {sorted(blocked)}"
+        log.info("  blocked by tv_shows genre %s (%s)",
+                 sorted(blocked), tv.name_cs or tv.name_en)
+        return stats
+
+    # 3. Find or create series row. ensure_series handles both branches
+    # (lookup by imdb_id/tmdb_id; new-series path runs Gemma + cover
+    # download + genre links). For an existing series this is a no-op
+    # SELECT — perfect for the discover-mode fall-through case where
+    # the cluster's show is already in our DB.
+    if dry_run:
+        # ensure_series WRITES — INSERT into series + series_genres +
+        # cover download. In dry-run we only want to surface what WOULD
+        # happen, so we check existence without creating.
+        existing = _series_exists_by_tmdb(conn.cursor(), tv.tmdb_id)
+        if existing:
+            stats.series_id, _, _ = existing
+            stats.series_was_created = False
+            stats.status = "ok_existing"
+        else:
+            stats.series_id = None
+            stats.series_was_created = True
+            stats.status = "ok_would_create"
+        # Dry-run cuts off here — without an actual series_id we can't
+        # safely insert episodes / sources either.
+        conn.rollback()
+        return stats
+
+    try:
+        was_created, series_id = ensure_series(conn, tv, cover_dir)
+    except Exception as e:  # noqa: BLE001
+        log.exception("  ensure_series raised for tmdb=%d: %s",
+                      tv.tmdb_id, e)
+        conn.rollback()
+        stats.status = f"ensure_series_error: {type(e).__name__}"
+        stats.failed_other += 1
+        return stats
+    if series_id is None:
+        conn.rollback()
+        stats.status = "ensure_series_returned_none"
+        stats.failed_other += 1
+        return stats
+    stats.series_id = series_id
+    stats.series_was_created = was_created
+    log.info("  series id=%d (%s, tmdb=%d) %s",
+             series_id, stats.tmdb_name, tv.tmdb_id,
+             "CREATED" if was_created else "existed")
+
+    # 4. Per-upload attach: ensure episode row, attach video_sources.
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT vs.external_id
+             FROM video_sources vs
+             JOIN episodes e ON vs.episode_id = e.id
+            WHERE e.series_id = %s
+              AND vs.provider_id = %s""",
+        (series_id, providers["prehrajto"]),
+    )
+    existing_external_ids: set[str] = {r[0] for r in cur.fetchall()}
+    cur.execute(
+        "SELECT id, season, episode FROM episodes WHERE series_id = %s",
+        (series_id,),
+    )
+    existing_eps: dict[tuple[int, int], int] = {
+        (int(s), int(e)): int(eid) for eid, s, e in cur.fetchall()
+    }
+    # Cache TMDB resolve_episode failures so we don't retry the same
+    # (season, episode) for every duplicate upload. prehrajto clusters
+    # routinely contain dozens of uploads per episode, plus a long
+    # tail of uploads with bogus markers like "S1E16" (a default the
+    # uploader UI fills when they can't be bothered to enter the real
+    # number). Without this cache, a 60k-upload cluster with 200 bogus
+    # markers hits TMDB 60k × 200 = 12M times — many hours of API
+    # roundtrips when the answer is always "no such episode."
+    tmdb_dead_ends: set[tuple[int, int]] = set()
+
+    for r in cluster.rows:
+        if r.upload_id in existing_external_ids:
+            stats.skipped_present += 1
+            continue
+        ep_key = (r.season, r.episode)
+        if ep_key in tmdb_dead_ends:
+            # Already attempted this episode → known dead-end. Count
+            # toward fail-tmdb so the operator sees the cluster has a
+            # parser-noise tail, but skip the TMDB call entirely.
+            stats.failed_tmdb_episode += 1
+            continue
+        cur.execute("SAVEPOINT prh_row")
+        try:
+            audio_lang, vs_lang_class, sub_langs = lang_class_to_audio_and_subs(
+                lang_class=_lang_from_title(r.title),
+            )
+            episode_id = existing_eps.get(ep_key)
+            if episode_id is None:
+                ep_meta = resolve_episode(tv.tmdb_id, r.season, r.episode,
+                                          session=tmdb_sess)
+                if ep_meta is None:
+                    log.warning("    resolve_episode failed tv_id=%d S%dE%d "
+                                "— caching as dead-end for this cluster",
+                                tv.tmdb_id, r.season, r.episode)
+                    tmdb_dead_ends.add(ep_key)
+                    stats.failed_tmdb_episode += 1
+                    cur.execute("ROLLBACK TO SAVEPOINT prh_row")
+                    cur.execute("RELEASE SAVEPOINT prh_row")
+                    continue
+                _action, episode_id = upsert_episode(
+                    conn,
+                    series_id=series_id,
+                    season=r.season,
+                    episode_num=r.episode,
+                    sktorrent_video_id=None,
+                    sktorrent_cdn=None,
+                    sktorrent_qualities=[],
+                    ep_meta=ep_meta,
+                    has_dub=audio_lang is not None,
+                    has_subtitles=bool(sub_langs),
+                )
+                if episode_id is None:
+                    stats.failed_other += 1
+                    cur.execute("ROLLBACK TO SAVEPOINT prh_row")
+                    cur.execute("RELEASE SAVEPOINT prh_row")
+                    continue
+                existing_eps[ep_key] = episode_id
+                stats.added_episode += 1
+            else:
+                # OR-in language flags onto existing row.
+                cur.execute(
+                    "UPDATE episodes SET "
+                    "has_dub = has_dub OR %s, "
+                    "has_subtitles = has_subtitles OR %s "
+                    "WHERE id = %s",
+                    (audio_lang is not None, bool(sub_langs), episode_id),
+                )
+            url = ("https://prehraj.to" + r.url
+                   if r.url.startswith("/") else r.url)
+            metadata = {"url": url, "phase": "prehrajto-series-discover"}
+            source_id = upsert_video_source(
+                cur,
+                provider_id=providers["prehrajto"],
+                external_id=r.upload_id,
+                episode_id=episode_id,
+                title=r.title,
+                duration_sec=r.duration_sec,
+                view_count=r.views or None,
+                lang_class=vs_lang_class,
+                audio_lang=audio_lang,
+                audio_detected_by=("title_regex"
+                                   if vs_lang_class != "UNKNOWN" else None),
+                is_primary=False,
+                is_alive=True,
+                metadata=metadata,
+            )
+            for sub_lang in sub_langs:
+                upsert_subtitle(cur, source_id, sub_lang)
+            cur.execute("RELEASE SAVEPOINT prh_row")
+            existing_external_ids.add(r.upload_id)
+            stats.added_source += 1
+        except Exception:  # noqa: BLE001
+            log.exception("    row failed S%dE%d ext=%s — rollback to savepoint",
+                          r.season, r.episode, r.upload_id)
+            cur.execute("ROLLBACK TO SAVEPOINT prh_row")
+            cur.execute("RELEASE SAVEPOINT prh_row")
+            stats.failed_other += 1
+            continue
+
+    conn.commit()
+    return stats
+
+
+# Re-use the title→lang_class regex bag from prehrajto_search via detect_lang.
+# Importing lazily here so the top-of-file import block stays tidy.
+def _lang_from_title(title: str) -> str:
+    from scripts.auto_import.prehrajto_search import detect_lang
+    return detect_lang(title)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -431,47 +955,63 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--mode", choices=("enrich", "discover", "both"),
+    ap.add_argument("--mode", choices=("enrich", "discover"),
                     default="enrich",
-                    help="enrich = attach prehrajto sources to existing series "
-                         "in DB (issue #685, implemented). discover = create "
-                         "new series from prehrajto sitemap (issue #686, not "
-                         "yet implemented).")
+                    help="enrich (Phase A, #685): attach prehrajto sources "
+                         "to existing series in DB. "
+                         "discover (Phase B, #686): parse prehrajto sitemap, "
+                         "find shows not yet in our DB, create them via "
+                         "TMDB + Gemma and attach episode sources.")
     ap.add_argument("--limit", type=int, default=10,
-                    help="Process at most N series in enrich mode (default 10)")
+                    help="Process at most N targets — series for enrich, "
+                         "clusters for discover (default 10)")
     ap.add_argument("--offset", type=int, default=0,
-                    help="Skip the first N series — for paginated runs.")
+                    help="Skip the first N targets (enrich mode only — "
+                         "discover mode sorts by upload count so offset "
+                         "is rarely useful there).")
     ap.add_argument("--match", default=None,
-                    help="Case-insensitive substring filter on "
-                         "series.title / .original_title — for "
-                         "re-running against a specific show.")
+                    help="enrich: case-insensitive substring on "
+                         "series.title/.original_title. "
+                         "discover: substring on cluster base_title.")
+    ap.add_argument("--sitemap-dir",
+                    default="/var/cache/cr/prehrajto-sitemap",
+                    help="discover mode: directory of video-sitemap-*.xml "
+                         "files (default: /var/cache/cr/prehrajto-sitemap "
+                         "where the daily cron caches them on the VPS).")
+    ap.add_argument("--covers-dir", default="data/movies/series-covers",
+                    help="discover mode: target directory for TMDB cover "
+                         "downloads (id-keyed layout).")
+    ap.add_argument("--min-uploads", type=int, default=2,
+                    help="discover mode: drop clusters with fewer than N "
+                         "distinct uploads (default 2). Single-upload "
+                         "clusters are mostly parser false positives.")
     ap.add_argument("--dry-run", action="store_true",
-                    help="ROLLBACK every per-series commit at the end of "
-                         "the series. Live searches still hit prehraj.to + "
-                         "TMDB. No DB writes persisted.")
+                    help="ROLLBACK every per-cluster/per-series commit at "
+                         "the end. Live searches / TMDB still hit; no DB "
+                         "writes persisted, no covers downloaded.")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     _setup_logging(args.verbose)
-
-    if args.mode in ("discover", "both"):
-        log.error("--mode=%s is not yet implemented — tracked in issue "
-                  "#686. Run with --mode=enrich for Phase A.", args.mode)
-        return 2
 
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         log.error("DATABASE_URL env var required")
         return 2
     if not os.environ.get("TMDB_API_KEY"):
-        log.error("TMDB_API_KEY env var required (for resolve_episode "
-                  "when a matched upload has no episodes row yet)")
+        log.error("TMDB_API_KEY env var required")
         return 2
-    if proxy_config() is None:
-        log.error("CZ_PROXY_URL / CZ_PROXY_KEY env vars required — "
-                  "prehraj.to blocks datacenter ASNs, the CZ residential "
-                  "proxy is mandatory.")
+    if args.mode == "enrich" and proxy_config() is None:
+        log.error("CZ_PROXY_URL / CZ_PROXY_KEY env vars required for "
+                  "enrich mode — prehraj.to /hledej blocks Hetzner ASNs.")
         return 2
+    # discover mode doesn't hit prehraj.to over HTTP (it reads the
+    # cached sitemap from disk), so the CZ proxy isn't strictly
+    # required. But if it's missing we still WARN — sitemap covers may
+    # need refreshing via the proxy at some point.
+    if args.mode == "discover" and proxy_config() is None:
+        log.warning("CZ_PROXY_URL / CZ_PROXY_KEY not set — sitemap will "
+                    "be read from disk but any fallback refresh would fail")
 
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
@@ -482,6 +1022,9 @@ def main() -> int:
 
     cur = conn.cursor()
     providers = get_provider_ids(cur)
+
+    if args.mode == "discover":
+        return _run_discover(args, conn, tmdb_sess, providers)
 
     targets = load_target_series(
         cur, match=args.match, limit=args.limit, offset=args.offset,
@@ -544,6 +1087,101 @@ def main() -> int:
     print(f"|    |       | TOTAL                                    | "
           f"{tot_found:5d} | {tot_matched:7d} | {tot_added_src:7d} | "
           f"{tot_added_ep:3d} | {tot_skipped:7d} | {tot_fail_tmdb:9d} | "
+          f"{tot_fail:4d} | {'DRY' if args.dry_run else 'LIVE'} |")
+    return 0
+
+
+def _run_discover(
+    args: argparse.Namespace,
+    conn: psycopg2.extensions.connection,
+    tmdb_sess: requests.Session,
+    providers: dict,
+) -> int:
+    """Phase B entry point. Scan sitemap → cluster → TMDB → create/attach."""
+    sitemap_dir = Path(args.sitemap_dir)
+    if not sitemap_dir.is_dir():
+        log.error("--sitemap-dir does not exist or is not a directory: %s",
+                  sitemap_dir)
+        return 2
+
+    cover_dir = args.covers_dir
+    Path(cover_dir).mkdir(parents=True, exist_ok=True)
+
+    clusters = find_series_clusters(sitemap_dir, min_uploads=args.min_uploads)
+    if args.match:
+        needle = args.match.lower()
+        clusters = [c for c in clusters if needle in c.base_title.lower()]
+        log.info("--match filter kept %d clusters", len(clusters))
+    if args.limit:
+        clusters = clusters[: args.limit]
+    if not clusters:
+        log.info("No clusters to process — nothing to do.")
+        return 0
+
+    log.info("Discover plan (top %d by upload count, dry_run=%s):",
+             len(clusters), args.dry_run)
+    for i, c in enumerate(clusters, 1):
+        log.info("  %2d. %-45s year=%s uploads=%d distinct_eps=%d",
+                 i, c.base_title[:45], c.year, c.upload_count,
+                 len(c.episode_keys))
+
+    summary: list[DiscoverStats] = []
+    t0 = time.time()
+    try:
+        for i, cluster in enumerate(clusters, 1):
+            log.info("\n>>> [%d/%d] cluster %r (year=%s, %d uploads)",
+                     i, len(clusters), cluster.base_title,
+                     cluster.year, cluster.upload_count)
+            stats = discover_one_cluster(
+                conn, cluster, tmdb_sess, providers, cover_dir,
+                dry_run=args.dry_run,
+            )
+            summary.append(stats)
+            # Inter-cluster sleep — TMDB resolve_tv burns 2-4 calls per
+            # cluster, and we want to stay well under the 50 rps ceiling
+            # the films-import discovered.
+            if i < len(clusters):
+                time.sleep(INTER_SERIES_SLEEP_S)
+    finally:
+        conn.close()
+
+    elapsed = time.time() - t0
+    log.info("=" * 70)
+    log.info("Discover done in %.0fs.", elapsed)
+    print()
+    print("| # | cluster                                    | year  | upl |"
+          " eps | tmdb_id  | series_id | new_series | +ep | +src | skip |"
+          " fail-tmdb | fail | status |")
+    print("|--:|---------------------------------------------|------:|----:|"
+          "----:|---------:|----------:|-----------:|----:|-----:|-----:|"
+          "----------:|-----:|--------|")
+    tot_uploads = tot_eps = tot_new_series = 0
+    tot_added_ep = tot_added_src = tot_skipped = 0
+    tot_fail_tmdb = tot_fail = 0
+    for i, s in enumerate(summary, 1):
+        print(f"| {i:2d} | {s.cluster_key[:43]:<43} | "
+              f"{(s.cluster_year or 0):5d} | {s.upload_count:3d} | "
+              f"{s.distinct_episodes:3d} | "
+              f"{(s.tmdb_id or 0):8d} | "
+              f"{(s.series_id or 0):9d} | "
+              f"{('Y' if s.series_was_created else 'N'):^10s} | "
+              f"{s.added_episode:3d} | {s.added_source:4d} | "
+              f"{s.skipped_present:4d} | {s.failed_tmdb_episode:9d} | "
+              f"{s.failed_other:4d} | {s.status} |")
+        tot_uploads += s.upload_count
+        tot_eps += s.distinct_episodes
+        if s.series_was_created:
+            tot_new_series += 1
+        tot_added_ep += s.added_episode
+        tot_added_src += s.added_source
+        tot_skipped += s.skipped_present
+        tot_fail_tmdb += s.failed_tmdb_episode
+        tot_fail += s.failed_other
+    print(f"|    | TOTAL ({len(summary)} clusters){'':23} | "
+          f"{'':5s} | {tot_uploads:3d} | {tot_eps:3d} | "
+          f"{'':8s} | {'':9s} | {tot_new_series:^10d} | "
+          f"{tot_added_ep:3d} | {tot_added_src:4d} | "
+          f"{tot_skipped:4d} | {tot_fail_tmdb:9d} | "
           f"{tot_fail:4d} | {'DRY' if args.dry_run else 'LIVE'} |")
     return 0
 
