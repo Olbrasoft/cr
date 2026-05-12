@@ -18,6 +18,12 @@ User=root
 WorkingDirectory=/opt/cr
 EnvironmentFile=/opt/cr/.env
 ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-prehrajto-sync.service; then echo "cr-prehrajto-sync.service still active — refusing to start" >&2; exit 1; fi'
+# Also block on cr-imdb-rating-sync — it UPDATEs the same films/series/tv_shows
+# rows that this script writes to (different columns, but row-level lock
+# contention still slows both down). 04:30 IMDb tick + 04:45 TMDB tick are
+# normally well-separated; this guard catches the rare cold-disk / long-IMDb
+# case where they overlap.
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-imdb-rating-sync.service; then echo "cr-imdb-rating-sync.service still active — refusing to start" >&2; exit 1; fi'
 ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/sync-tmdb-ratings.py'
 StandardOutput=append:/var/log/cr-tmdb-rating-sync.log
 StandardError=append:/var/log/cr-tmdb-rating-sync.log
