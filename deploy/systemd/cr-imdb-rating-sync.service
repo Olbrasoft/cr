@@ -1,0 +1,27 @@
+[Unit]
+Description=CR — Refresh IMDb ratings from datasets.imdbws.com (films + series + tv_shows)
+Documentation=https://github.com/Olbrasoft/cr/issues/690
+# After= only orders start jobs in the same transaction. The 04:00 UTC
+# prehraj.to sitemap sync can occasionally overrun past the 04:30 IMDb
+# tick (heavy sitemap days), and its end-of-run UPDATE on `films`
+# would contend for the same rows. The ExecStartPre guard below mirrors
+# cr-llm-resolver.service and refuses to start if the sync is active.
+After=docker.service network-online.target cr-prehrajto-sync.service
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-prehrajto-sync.service; then echo "cr-prehrajto-sync.service still active — refusing to start" >&2; exit 1; fi'
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/sync-imdb-ratings.py'
+StandardOutput=append:/var/log/cr-imdb-rating-sync.log
+StandardError=append:/var/log/cr-imdb-rating-sync.log
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
