@@ -356,6 +356,14 @@ async fn main() -> Result<()> {
         .route("/seznam-hlasu", axum::routing::get(handlers::voices))
         .route("/seznam-hlasu/", axum::routing::get(handlers::voices))
         .route(
+            "/prevod-textu-na-hlas",
+            axum::routing::get(handlers::prevod_textu_na_hlas),
+        )
+        .route(
+            "/prevod-textu-na-hlas/",
+            axum::routing::get(handlers::prevod_textu_na_hlas),
+        )
+        .route(
             "/stahnout-video",
             axum::routing::get(handlers::download_video),
         )

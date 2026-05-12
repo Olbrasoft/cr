@@ -52,7 +52,7 @@ pub use video_api::{
     video_file, video_file_part, video_info, video_prepare, video_recent, video_status,
     video_thumb,
 };
-pub use voices::voices;
+pub use voices::{prevod_textu_na_hlas, voices};
 
 // --- Shared response helpers ---
 
@@ -609,6 +609,13 @@ pub(crate) struct AudiobooksTemplate {
 #[derive(Template)]
 #[template(path = "voices.html")]
 pub(crate) struct VoicesTemplate {
+    pub(crate) img: String,
+    pub(crate) voices: Vec<voices::VoiceEntry>,
+}
+
+#[derive(Template)]
+#[template(path = "prevod_textu_na_hlas.html")]
+pub(crate) struct PrevodTextuNaHlasTemplate {
     pub(crate) img: String,
     pub(crate) voices: Vec<voices::VoiceEntry>,
 }
