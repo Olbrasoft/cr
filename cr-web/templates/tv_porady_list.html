@@ -48,12 +48,16 @@
 </nav>
 
 <div class="films-header">
-    <h2>
-        {% match search_query %}
-        {% when Some with (q) %}Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span>
-        {% when None %}Nejnovější epizody z {{ total_count }} TV pořadů
-        {% endmatch %}
-    </h2>
+    {% match search_query %}
+    {% when Some with (q) %}
+    <h2>Výsledky hledání pro „{{ q }}" <span class="count">({{ total_count }})</span></h2>
+    {% when None %}
+        {% if episodes.is_empty() %}
+        <h1>TV pořady <span class="count">({{ total_count }})</span></h1>
+        {% else %}
+        <h2>Nejnovější epizody z {{ total_count }} TV pořadů</h2>
+        {% endif %}
+    {% endmatch %}
     <div class="films-toolbar">
         <label class="toolbar-group">
             <span class="toolbar-label">Řazení:</span>
