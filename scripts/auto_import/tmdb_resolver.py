@@ -138,6 +138,11 @@ class TvResolution:
     episode_count: int | None
     poster_path: str | None
     genre_ids: list[int]
+    # TMDB's 0–10 average. Persisted into `series.tmdb_rating` (migration
+    # 069). None for brand-new shows with no votes yet — same convention
+    # as the films resolver: TMDB returns vote_average=0 to mean "no
+    # votes," not "zero stars," so we coerce that to None.
+    vote_average: float | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0
 
@@ -375,6 +380,20 @@ def _build_tv_resolution(session: requests.Session, candidate: dict, score: floa
         episode_count=src.get("number_of_episodes"),
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
+        # TMDB returns vote_average=0 for TV shows with no votes yet —
+        # treat that as None so we don't pollute `series.tmdb_rating`
+        # with a spurious 0.0 (same rule as the films resolver above).
+        # Resolve from src first, fall back to src_en — and crucially
+        # coerce BEFORE the float() call so a None from one side doesn't
+        # crash the other side's lookup. Previously this expression
+        # called `float(src.get("vote_average"))` even when src lacked
+        # the key but src_en had it, raising TypeError, and silently
+        # stored 0.0 when src had 0 but src_en had a real rating.
+        vote_average=(
+            (lambda va: float(va) if va else None)(
+                src.get("vote_average") or src_en.get("vote_average")
+            )
+        ),
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )
