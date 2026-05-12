@@ -227,3 +227,131 @@ def parse_sktorrent_title(title: str) -> ParsedTitle:
         is_episode=season is not None and episode is not None,
         raw=raw,
     )
+
+
+# Bracketed noise blocks ([...] or (...)) — prehraj.to uploaders pack release
+# metadata (resolution, codec, lang) into brackets after the show name. Strip
+# them before SxxExx-trim so the leftover show title is clean.
+_BRACKET_NOISE_RE = re.compile(r"[\[\(][^\]\)]*[\]\)]")
+
+# Release-tag scaffolding that survives bracket stripping (e.g. "S01E03 1080p
+# WEBRip x264 CZ-DAB" — uploaders skip brackets and just append flags with
+# spaces / dots / dashes). Match each token in isolation so we don't eat real
+# words from a title that happens to contain them.
+_PRH_TAIL_NOISE_RE = re.compile(
+    r"\b(?:"
+    r"2160p|1080p|1080i|720p|480p|360p|"
+    r"4k|uhd|fhd|hd|"
+    r"bdrip|bluray|blu[\s\-]?ray|webrip|web[\s\-]?dl|hdrip|dvdrip|hdtv|tvrip|cam|ts|"
+    r"x264|x265|h\.?264|h\.?265|hevc|xvid|divx|"
+    r"aac|ac3|dts|mp3|5\.1|7\.1|"
+    r"avi|mkv|mp4|"
+    r"cz[\s\-\.]?dab(?:ing)?|cz[\s\-\.]?dub|cz[\s\-\.]?tit(?:ulky)?|"
+    r"sk[\s\-\.]?dab(?:ing)?|sk[\s\-\.]?dub|sk[\s\-\.]?tit(?:ulky)?|"
+    r"cesk[yáé]\s*dab(?:ing)?|cesk[yé]\s*titulky|cesky\s*dabing|"
+    r"slovensk[yáé]\s*dab(?:ing)?|"
+    r"czdab|cztit|skdab|sktit|engsub|engdub|eng[\s\-]?sub|eng[\s\-]?only|"
+    r"cz|sk|en|cze?s|"
+    r"cely\s*film|cely|remastered|extended|uncut|directors?\s*cut|"
+    r"novinka|premiera|hit"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# "- Episode/Epizoda N" / "- Ep N" suffix uploaders sometimes spell out
+# instead of using SxxExx (e.g. "Yellowstone - Episode 3"). Strip BEFORE
+# tail-noise so the digit doesn't survive as a bare token.
+_PRH_SPELLED_EPISODE_RE = re.compile(
+    r"\s*-\s*(?:Episode|Epizoda|Epizode|Episód[ay]|Epis|Ep)\.?\s+\d{1,3}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_prehrajto_noise(s: str) -> str:
+    """Truncate a prehraj.to upload title at the FIRST recognised metadata
+    boundary (SxxExx, NxM, "- Episode N", year-in-parens), returning the
+    bare show name.
+
+    Why truncate, not strip: prehraj.to uploaders glue the episode name
+    AFTER the episode marker, e.g.
+        "The Last of Us S01E02-Nakažení-2023 CZ-DAB"
+        "Yellowstone S05E01 - Half the Money"
+    Strip-then-collapse would leave "The Last of Us Nakažení", which
+    won't normalize-match the series alias "thelastofus" — the alias
+    filter would then reject every multi-episode show that names its
+    episodes in the upload title (i.e. most CS/SK fan-uploads).
+
+    Truncating at the first marker mirrors what `parse_sktorrent_title`
+    already does for SK Torrent titles (see `_split_titles.clean`
+    line ~192) — same convention across both providers.
+
+    Steps:
+      1. peel brackets / parens — they're always release metadata, not
+         part of the show name (e.g. "(2019)", "[CZ-DAB]")
+      2. find the earliest boundary among {SxxExx, NxM, "- Episode N",
+         standalone year} and truncate there
+      3. strip leftover release tokens that survive (uploads with no
+         marker at all, e.g. "Yellowstone 1080p WEBRip CZ-DAB" — rare
+         since the caller will reject these via `is_episode=False`,
+         but still desirable for consistent normalization)
+      4. collapse whitespace + trim
+    """
+    s = _BRACKET_NOISE_RE.sub(" ", s)
+    s = _PRH_SPELLED_EPISODE_RE.sub("", s)
+
+    # Earliest match wins — pick the lowest start position across the
+    # boundary patterns and truncate there.
+    boundaries: list[int] = []
+    for rx in (_EPISODE_RE, _EPISODE_X_RE, _YEAR_BARE_RE):
+        m = rx.search(s)
+        if m:
+            boundaries.append(m.start())
+    if boundaries:
+        s = s[: min(boundaries)]
+
+    s = _PRH_TAIL_NOISE_RE.sub(" ", s)
+    s = re.sub(r"\s*[=\-•·.,/_]+\s*", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_prehrajto_episode_title(title: str) -> ParsedTitle:
+    """Parse a prehraj.to upload title — never raises.
+
+    Prehraj.to uploaders don't use `/` as a CZ/EN separator (the way SK
+    Torrent does), so `_split_titles` would mis-parse the title. Instead
+    we strip the metadata noise directly and emit the bare show name as
+    `cz_title` (it's whichever language the uploader chose — CS or EN —
+    so the caller has to alias-match against BOTH `series.title` and
+    `series.original_title` to be safe).
+
+    Examples:
+      "Yellowstone S05E01 1080p WEBRip CZ-DAB" →
+          cz_title="Yellowstone", season=5, episode=1, year=None
+      "Eufórie S02E03 [CZ-DAB] (2019)" →
+          cz_title="Eufórie", season=2, episode=3, year=2019
+      "The Last of Us 1x05 [1080p]" →
+          cz_title="The Last of Us", season=1, episode=5
+
+    `is_episode` is True only if BOTH season + episode were detected,
+    matching the existing convention in `parse_sktorrent_title`.
+    """
+    if not title:
+        return ParsedTitle(raw="")
+    raw = html.unescape(html.unescape(title)).strip()
+    season, episode = _detect_episode(raw)
+    year = _detect_year(raw)
+    quality = _detect_quality(raw)
+    langs = _detect_langs(raw)
+    clean = _strip_prehrajto_noise(raw)
+    return ParsedTitle(
+        cz_title=clean or None,
+        en_title=None,
+        year=year,
+        season=season,
+        episode=episode,
+        quality=quality,
+        langs=langs,
+        csfd_rating=_detect_csfd(raw),
+        is_episode=season is not None and episode is not None,
+        raw=raw,
+    )
