@@ -112,20 +112,36 @@ def _fetch_rating(
     if not r.ok:
         logging.warning("%s/%s returned %s", kind, tmdb_id, r.status_code)
         return None, None, _Outcome.FAILED
-    body = r.json()
+    # `r.json()` can raise (cloudflare error page, truncated body…) — treat
+    # as a transient failure rather than letting it bubble through the
+    # ThreadPool and abort the whole run on one bad response.
+    try:
+        body = r.json()
+    except ValueError as exc:
+        logging.warning("%s/%s JSON parse failed: %s", kind, tmdb_id, exc)
+        return None, None, _Outcome.FAILED
     vote_average = body.get("vote_average")
     vote_count = body.get("vote_count")
-    if not vote_average or not vote_count:
+    # Missing fields = real API anomaly (TMDB always returns both, even
+    # as 0). Don't bury that in NO_VOTES — that bucket means "TMDB has the
+    # title, nobody rated it yet", which is genuine 0/0 data.
+    if vote_average is None or vote_count is None:
+        return None, None, _Outcome.FAILED
+    if vote_count == 0:
         return None, None, _Outcome.NO_VOTES
     return float(vote_average), int(vote_count), _Outcome.OK
 
 
 def _load_targets(cur, table: str, limit: int) -> list[int]:
-    """Return tmdb_ids for rows with tmdb_id set but tmdb_rating NULL."""
+    """Return distinct tmdb_ids for rows with tmdb_id set but tmdb_rating NULL.
+
+    DISTINCT guards against the same tmdb_id appearing on multiple rows
+    (the schema doesn't enforce uniqueness for series/tv_shows) — without
+    it we'd dispatch redundant TMDB requests for the same id."""
     sql = (
-        f"SELECT tmdb_id FROM {table} "
+        f"SELECT DISTINCT tmdb_id FROM {table} "
         "WHERE tmdb_id IS NOT NULL AND tmdb_rating IS NULL "
-        "ORDER BY id"
+        "ORDER BY tmdb_id"
     )
     if limit > 0:
         sql += f" LIMIT {int(limit)}"
@@ -136,6 +152,11 @@ def _load_targets(cur, table: str, limit: int) -> list[int]:
 def _flush(cur, table: str, batch: list[tuple]) -> None:
     if not batch:
         return
+    # `AND t.tmdb_rating IS NULL` keeps the backfill idempotent even if
+    # another process (daily sync) filled in the rating between
+    # _load_targets and _flush — and protects against accidentally
+    # rewriting an already-rated row that happens to share a tmdb_id with
+    # a target row (schema permits duplicates on series/tv_shows).
     psycopg2.extras.execute_values(
         cur,
         f"""
@@ -145,6 +166,7 @@ def _flush(cur, table: str, batch: list[tuple]) -> None:
                tmdb_rating_synced_at = now()
           FROM (VALUES %s) AS v(rating, votes, tmdb_id)
          WHERE t.tmdb_id = v.tmdb_id
+           AND t.tmdb_rating IS NULL
         """,
         batch,
         template="(%s, %s, %s)",
@@ -155,8 +177,11 @@ def _flush(cur, table: str, batch: list[tuple]) -> None:
 def _insert_run(conn) -> int | None:
     try:
         with conn.cursor() as cur:
+            # Parameterise `kind` to match sync-{imdb,tmdb}-ratings.py and
+            # keep the SQL surface uniform — no embedded literals.
             cur.execute(
-                "INSERT INTO rating_sync_runs (kind, status) VALUES ('tmdb', 'running') RETURNING id"
+                "INSERT INTO rating_sync_runs (kind, status) VALUES (%s, 'running') RETURNING id",
+                ("tmdb",),
             )
             run_id = cur.fetchone()[0]
         conn.commit()
@@ -242,7 +267,16 @@ def backfill(
             done = 0
             for fut in as_completed(futures):
                 tmdb_id = futures[fut]
-                rating, votes, outcome = fut.result()
+                # Defensive: if anything inside the worker raises despite
+                # the in-function guards, count it as a fetch failure
+                # instead of letting it abort the whole as_completed loop.
+                try:
+                    rating, votes, outcome = fut.result()
+                except Exception as exc:
+                    logging.warning(
+                        "%s/%s worker raised: %s", table, tmdb_id, exc
+                    )
+                    rating, votes, outcome = None, None, _Outcome.FAILED
                 done += 1
                 if done % 100 == 0:
                     logging.info(
