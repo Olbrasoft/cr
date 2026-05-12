@@ -34,7 +34,7 @@ const FILMS_PER_PAGE: i64 = 24;
 ///   when the primary upload's CDN is `www`, because data{N} is blocked
 ///   from datacenter ASNs). Preserved here via `cdn = 'www'` predicate.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-    f.tmdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
+    f.tmdb_rating, f.imdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
     f.added_at, f.tmdb_poster_path, \
     (SELECT vs.external_id::INTEGER \
        FROM video_sources vs \
@@ -80,6 +80,7 @@ struct FilmRow {
     description: Option<String>,
     original_title: Option<String>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     runtime_min: Option<i16>,
     sktorrent_video_id: Option<i32>,
@@ -662,6 +663,7 @@ struct SearchResult {
     title: String,
     year: Option<i16>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
     cover: bool,
 }
 
@@ -671,6 +673,7 @@ struct SearchRow {
     title: String,
     year: Option<i16>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
 }
 
 // --- Handlers ---
@@ -1200,6 +1203,7 @@ pub async fn films_search(
             title: r.title,
             year: r.year,
             tmdb_rating: r.tmdb_rating,
+            imdb_rating: r.imdb_rating,
             cover: true,
         })
         .collect();
@@ -1216,7 +1220,7 @@ async fn search_films_by_title(db: &sqlx::PgPool, q: &str) -> Result<Vec<SearchR
     // user's diacritics) win bucket 0/1/2; rows that only match after
     // unaccent fall to bucket 3, behind the diacritic-exact hits.
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, tmdb_rating \
+        "SELECT slug, title, year, tmdb_rating, imdb_rating \
          FROM films \
          WHERE unaccent(title) ILIKE unaccent($1) \
             OR unaccent(original_title) ILIKE unaccent($1) \
@@ -1241,7 +1245,7 @@ async fn search_films_by_title_year(
     let pattern = format!("%{q}%");
     let starts_pattern = format!("{q}%");
     sqlx::query_as::<_, SearchRow>(
-        "SELECT slug, title, year, tmdb_rating \
+        "SELECT slug, title, year, tmdb_rating, imdb_rating \
          FROM films \
          WHERE unaccent(CONCAT_WS(' ', title, year::text)) ILIKE unaccent($1) \
             OR unaccent(CONCAT_WS(' ', original_title, year::text)) ILIKE unaccent($1) \

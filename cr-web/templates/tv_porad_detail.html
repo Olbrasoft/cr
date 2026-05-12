@@ -67,7 +67,10 @@
             {% when None %}{% endmatch %}
             <div class="meta-row">
                 {% match show.tmdb_rating %}
-                {% when Some with (r) %}<span class="meta-badge imdb" title="TMDB hodnocení">TMDB {{ r }}</span>
+                {% when Some with (r) %}<span class="meta-badge tmdb" title="TMDB hodnocení">TMDB {{ r }}</span>
+                {% when None %}{% endmatch %}
+                {% match show.imdb_rating %}
+                {% when Some with (r) %}<span class="meta-badge imdb" title="IMDb hodnocení">IMDb {{ r }}</span>
                 {% when None %}{% endmatch %}
                 {% match show.csfd_rating %}
                 {% when Some with (r) %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>
@@ -136,6 +139,7 @@
 .original-title { color: #888; font-style: italic; margin: 0 0 0.6rem; font-size: 0.9rem; }
 .meta-row { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
 .meta-badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.meta-badge.tmdb { background: #01b4e4; color: #fff; }
 .meta-badge.imdb { background: #f5c518; color: #000; }
 .meta-badge.csfd { background: #ba0305; color: #fff; }
 .film-description { line-height: 1.6; color: #333; }
