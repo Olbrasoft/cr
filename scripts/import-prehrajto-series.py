@@ -519,8 +519,15 @@ def _stamp_ratings(cur, series_id: int, tv,
 
     Idempotent + non-clobbering — `COALESCE(col, %s)` keeps any value
     that's already there (the daily IMDB sync cron, manual fixes, an
-    earlier discover run). Stamps `tmdb_rating_synced_at` to now() so
-    freshness audits work the same way as `sync-imdb-ratings.py`.
+    earlier discover run).
+
+    Both `tmdb_rating_synced_at` and `imdb_rating_synced_at` are
+    stamped to now() in the same UPDATE — without the IMDb timestamp
+    a re-run of migration 069 would re-clear our freshly-stamped
+    `imdb_rating` because that migration's WHERE filter is
+    `imdb_rating_synced_at IS NULL` (the column is treated as
+    "definitely-not-synced" until proven otherwise). Same freshness
+    convention as `sync-imdb-ratings.py`.
     """
     tmdb_rating = tv.vote_average
     imdb_rating: float | None = None
@@ -539,9 +546,15 @@ def _stamp_ratings(cur, series_id: int, tv,
                   ELSE tmdb_rating_synced_at
               END,
               imdb_rating           = COALESCE(imdb_rating, %s),
-              imdb_votes            = COALESCE(imdb_votes, %s)
+              imdb_votes            = COALESCE(imdb_votes, %s),
+              imdb_rating_synced_at = CASE
+                  WHEN imdb_rating IS NULL AND %s IS NOT NULL THEN now()
+                  ELSE imdb_rating_synced_at
+              END
            WHERE id = %s""",
-        (tmdb_rating, tmdb_rating, imdb_rating, imdb_votes, series_id),
+        (tmdb_rating, tmdb_rating,
+         imdb_rating, imdb_votes, imdb_rating,
+         series_id),
     )
 
 # Sitemap XML regexes (vendored from import-prehrajto-new-films.py so
