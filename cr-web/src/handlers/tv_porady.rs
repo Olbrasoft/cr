@@ -63,7 +63,7 @@ pub struct TvShowRow {
     last_air_year: Option<i16>,
     description: Option<String>,
     original_title: Option<String>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     #[allow(dead_code)]
     season_count: Option<i16>,
@@ -110,7 +110,7 @@ pub struct TvEpisodeCardRow {
     pub tv_show_title: String,
     pub tv_show_original_title: Option<String>,
     pub tv_show_first_air_year: Option<i16>,
-    pub tv_show_imdb_rating: Option<f32>,
+    pub tv_show_tmdb_rating: Option<f32>,
     pub tv_show_csfd_rating: Option<i16>,
     pub tv_show_description: Option<String>,
     pub season: i16,
@@ -163,7 +163,10 @@ impl TvShowQuery {
     fn order_clause(&self) -> &'static str {
         match self.razeni.as_deref() {
             Some("rok") => "s.first_air_year DESC NULLS LAST, s.title",
-            Some("imdb") => "s.imdb_rating DESC NULLS LAST, s.title",
+            // URL param `razeni=imdb` is kept for backward-compat with old
+            // bookmarks; internally it sorts by `tmdb_rating` because that
+            // is where the score actually lives (see migration 069).
+            Some("imdb") => "s.tmdb_rating DESC NULLS LAST, s.title",
             Some("nazev") => "s.title ASC",
             _ => "s.added_at DESC NULLS LAST, s.title",
         }
@@ -251,7 +254,7 @@ pub async fn tv_porady_list(
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
-             s.description, s.original_title, s.imdb_rating, s.csfd_rating, \
+             s.description, s.original_title, s.tmdb_rating, s.csfd_rating, \
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s \
@@ -340,7 +343,7 @@ async fn fetch_latest_episode_cards(
         s.title AS tv_show_title, \
         s.original_title AS tv_show_original_title, \
         s.first_air_year AS tv_show_first_air_year, \
-        s.imdb_rating AS tv_show_imdb_rating, \
+        s.tmdb_rating AS tv_show_tmdb_rating, \
         s.csfd_rating AS tv_show_csfd_rating, \
         s.description AS tv_show_description, \
         ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
@@ -364,7 +367,7 @@ struct TvPoradSearchResult {
     slug: String,
     title: String,
     year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
     cover: bool,
 }
 
@@ -373,7 +376,7 @@ struct TvPoradSearchRow {
     slug: String,
     title: String,
     first_air_year: Option<i16>,
-    imdb_rating: Option<f32>,
+    tmdb_rating: Option<f32>,
 }
 
 /// GET /api/tv-porady/search?q=...
@@ -392,7 +395,7 @@ pub async fn tv_porady_search(
     // CASE keeps diacritic-exact hits ranked ahead of unaccent-only
     // hits.
     let rows = sqlx::query_as::<_, TvPoradSearchRow>(
-        "SELECT slug, title, first_air_year, imdb_rating \
+        "SELECT slug, title, first_air_year, tmdb_rating \
          FROM tv_shows \
          WHERE unaccent(title) ILIKE unaccent($1) \
             OR unaccent(original_title) ILIKE unaccent($1) \
@@ -401,7 +404,7 @@ pub async fn tv_porady_search(
                 WHEN title ILIKE $1 THEN 1 \
                 WHEN original_title ILIKE $2 THEN 2 \
                 ELSE 3 END, \
-           imdb_rating DESC NULLS LAST \
+           tmdb_rating DESC NULLS LAST \
          LIMIT 10",
     )
     .bind(&pattern)
@@ -415,7 +418,7 @@ pub async fn tv_porady_search(
             slug: r.slug,
             title: r.title,
             year: r.first_air_year,
-            imdb_rating: r.imdb_rating,
+            tmdb_rating: r.tmdb_rating,
             cover: true,
         })
         .collect();
@@ -441,7 +444,7 @@ pub async fn tv_porad_detail(
 
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug_raw)
@@ -453,7 +456,7 @@ pub async fn tv_porad_detail(
         None => {
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug_raw)
@@ -524,7 +527,7 @@ pub async fn tv_epizoda_detail(
 ) -> WebResult<Response> {
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug)
@@ -536,7 +539,7 @@ pub async fn tv_epizoda_detail(
         None => {
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, imdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug)
