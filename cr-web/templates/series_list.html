@@ -174,9 +174,9 @@
                 <div class="rating-badges">
                     {# Card view: show all available ratings stacked (#593) #}
                     {% match ep.series_tmdb_rating %}
-                    {% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                    {% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
                     {% match ep.series_imdb_rating %}
-                    {% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                    {% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
                     {% match ep.series_csfd_rating %}
                     {% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
                 </div>
@@ -211,8 +211,8 @@
             <div class="film-poster">
                 <img src="/serialy-online/{{ s.slug }}.webp" alt="{{ s.title }}" title="{{ s.title }}" loading="lazy" width="200" height="300">
                 <div class="rating-badges">
-                    {% match s.tmdb_rating %}{% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
-                    {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                    {% match s.tmdb_rating %}{% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                    {% match s.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
                     {% match s.csfd_rating %}{% when Some with (r) %}<span class="rating-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}%</span>{% when None %}{% endmatch %}
                 </div>
             </div>
@@ -276,7 +276,10 @@
 .search-item .si-placeholder { width: 40px; height: 60px; background: #eee; border-radius: 4px; flex-shrink: 0; }
 .search-item .si-info { flex: 1; min-width: 0; }
 .search-item .si-title { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.search-item .si-meta { font-size: 0.8rem; color: #888; }
+.search-item .si-meta { font-size: 0.8rem; color: #888; display: flex; gap: 0.25rem; align-items: center; }
+.search-item .si-rating { display: inline-block; padding: 0.05rem 0.35rem; border-radius: 3px; font-size: 0.72rem; font-weight: 700; }
+.search-item .si-rating.tmdb { background: #01b4e4; color: #fff; }
+.search-item .si-rating.imdb { background: #f5c518; color: #000; }
 
 /* --- Header + toolbar --- */
 .films-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; }
@@ -705,9 +708,9 @@ function doSearch() {
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
                             var ratParts = [];
-                            if (r.tmdb_rating) ratParts.push('TMDB ' + r.tmdb_rating.toFixed(1));
-                            if (r.imdb_rating) ratParts.push('IMDb ' + r.imdb_rating.toFixed(1));
-                            var rat = ratParts.length ? ' — ' + ratParts.join(' · ') : '';
+                            if (r.tmdb_rating) ratParts.push('<span class="si-rating tmdb">' + r.tmdb_rating.toFixed(1) + '</span>');
+                            if (r.imdb_rating) ratParts.push('<span class="si-rating imdb">' + r.imdb_rating.toFixed(1) + '</span>');
+                            var rat = ratParts.length ? ' ' + ratParts.join('') : '';
                             return '<a href="/serialy-online/' + r.slug + '/" class="search-item" title="' + r.title + '">'
                                 + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
