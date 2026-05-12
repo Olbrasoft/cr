@@ -206,6 +206,7 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
 
 <script>
 var seriesTitle = "{{ series.title }}";
+var episodeId = {{ episode.id }};
 var initialSeason = {{ episode.season }};
 var initialEpisode = {{ episode.episode }};
 var initialVideoId = {{ episode.sktorrent_video_id.unwrap_or(0) }};
@@ -387,7 +388,7 @@ function loadPrehrajtoForEpisode(season, episode) {
     var eStr = episode < 10 ? '0' + episode : '' + episode;
     var query = seriesTitle + ' S' + sStr + 'E' + eStr;
 
-    fetch('/api/movies/search?q=' + encodeURIComponent(query))
+    fetch('/api/movies/search?q=' + encodeURIComponent(query) + '&episode_id=' + episodeId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
             container.innerHTML = '';

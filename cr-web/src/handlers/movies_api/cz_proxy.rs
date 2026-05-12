@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -5,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
+use super::prehrajto::is_valid_upload_id;
 use super::subtitles::{SubtitleTrack, extract_subtitles_from_html};
 use super::thumbnail::is_prehrajto_url;
 
@@ -13,6 +17,48 @@ use super::thumbnail::is_prehrajto_url;
 #[derive(Deserialize)]
 pub struct SearchQuery {
     q: String,
+    /// When set, the search is being run for the "Další zdroje" panel of a
+    /// specific `episodes` row. Triggers two extra filters that prevent
+    /// wrong-series uploads from showing on the episode page:
+    ///   1. Pack/range rejection — drops titles whose `SxxExx` is followed
+    ///      by `-N` (e.g. `S01E02-13`, a Winchesterovi multi-episode pack
+    ///      that bleeds into the Supernatural single-episode search).
+    ///   2. DB cross-check — drops uploads whose `external_id` is already
+    ///      claimed in `video_sources` by a different parent (another
+    ///      series' episode, a tv-shows episode, or a film).
+    ///
+    /// When neither id is set, the endpoint stays a pass-through search.
+    #[serde(default)]
+    episode_id: Option<i32>,
+    /// Same as `episode_id` but identifies the row in `tv_episodes` (the
+    /// `/tv-porady/...` template).
+    #[serde(default)]
+    tv_episode_id: Option<i32>,
+}
+
+/// Multi-episode pack range marker, e.g. "S01E02-13" or "S 01 E 02 - 13".
+/// Matches when an `SxxExx` is followed by `- N`, which is uploader
+/// shorthand for "this file covers episodes E..N". Single SxxExx uploads
+/// don't match and pass through.
+static PACK_RANGE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\bS\d{1,2}E\d{1,2}\s*-\s*\d{1,2}\b")
+        .expect("const regex literal compiles")
+});
+
+/// Extract the 13- or 16-hex `upload_id` from a prehraj.to URL.
+/// Prehraj.to URLs end in `/<slug>/<upload_id>` (the slug being a
+/// human-readable title) or sometimes `/<upload_id>` directly. Validates
+/// the last segment with [`is_valid_upload_id`] so a stray query string
+/// or a non-prehraj.to URL returns `None` instead of garbage.
+fn extract_upload_id_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed.rsplit('/').next()?;
+    let id = last.split(['?', '#']).next()?;
+    if is_valid_upload_id(id) {
+        Some(id.to_string())
+    } else {
+        None
+    }
 }
 
 #[derive(Deserialize)]
@@ -150,7 +196,7 @@ pub async fn movies_search(
         ));
     }
 
-    let movies: Vec<MovieResult> = data
+    let mut movies: Vec<MovieResult> = data
         .movies
         .unwrap_or_default()
         .into_iter()
@@ -166,6 +212,11 @@ pub async fn movies_search(
         })
         .collect();
 
+    if params.episode_id.is_some() || params.tv_episode_id.is_some() {
+        filter_extra_episode_sources(&state, &mut movies, params.episode_id, params.tv_episode_id)
+            .await;
+    }
+
     let count = movies.len();
 
     Ok(Json(SearchResponse {
@@ -174,6 +225,131 @@ pub async fn movies_search(
         count,
         movies,
     }))
+}
+
+/// In-place filter for the "Další zdroje" panel: drops multi-episode packs
+/// (range marker like `S01E02-13`) and drops uploads whose `external_id` is
+/// already linked in `video_sources` to a different parent (different
+/// series, a tv-shows episode, or a film).
+///
+/// The DB cross-check assumes the import pipelines (e.g.
+/// `scripts/import-prehrajto-series.py`) have claimed each upload against
+/// its rightful parent — uploads we haven't seen yet pass through.
+async fn filter_extra_episode_sources(
+    state: &AppState,
+    movies: &mut Vec<MovieResult>,
+    episode_id: Option<i32>,
+    tv_episode_id: Option<i32>,
+) {
+    movies.retain(|m| !PACK_RANGE_RE.is_match(&m.title));
+
+    let upload_ids: Vec<String> = movies
+        .iter()
+        .filter_map(|m| extract_upload_id_from_url(&m.url))
+        .collect();
+    if upload_ids.is_empty() {
+        return;
+    }
+
+    // Sibling-aware exclusion list — populated by the branch that matches
+    // the caller's parent kind. Uploads claimed by the *current* parent
+    // (same series / same tv_show) are NOT in this set, so primary-source
+    // duplicates render normally if they happen to appear in the search.
+    let claimed_elsewhere: HashSet<String> = if let Some(eid) = episode_id {
+        let series_id: Option<i32> =
+            match sqlx::query_scalar::<_, i32>("SELECT series_id FROM episodes WHERE id = $1")
+                .bind(eid)
+                .fetch_optional(&state.db)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        episode_id = eid,
+                        error = ?e,
+                        "movies_search: failed to load series_id; skipping DB cross-check"
+                    );
+                    return;
+                }
+            };
+        let Some(series_id) = series_id else {
+            return;
+        };
+        match sqlx::query_scalar::<_, String>(
+            "SELECT vs.external_id \
+               FROM video_sources vs \
+               JOIN video_providers p ON p.id = vs.provider_id \
+               LEFT JOIN episodes e ON e.id = vs.episode_id \
+              WHERE p.slug = 'prehrajto' \
+                AND vs.external_id = ANY($1) \
+                AND (vs.film_id IS NOT NULL \
+                     OR vs.tv_episode_id IS NOT NULL \
+                     OR (e.series_id IS NOT NULL AND e.series_id <> $2))",
+        )
+        .bind(&upload_ids)
+        .bind(series_id)
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(error = ?e, "movies_search: cross-check query failed; skipping");
+                return;
+            }
+        }
+    } else if let Some(teid) = tv_episode_id {
+        let tv_show_id: Option<i32> =
+            match sqlx::query_scalar::<_, i32>("SELECT tv_show_id FROM tv_episodes WHERE id = $1")
+                .bind(teid)
+                .fetch_optional(&state.db)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        tv_episode_id = teid,
+                        error = ?e,
+                        "movies_search: failed to load tv_show_id; skipping DB cross-check"
+                    );
+                    return;
+                }
+            };
+        let Some(tv_show_id) = tv_show_id else {
+            return;
+        };
+        match sqlx::query_scalar::<_, String>(
+            "SELECT vs.external_id \
+               FROM video_sources vs \
+               JOIN video_providers p ON p.id = vs.provider_id \
+               LEFT JOIN tv_episodes te ON te.id = vs.tv_episode_id \
+              WHERE p.slug = 'prehrajto' \
+                AND vs.external_id = ANY($1) \
+                AND (vs.film_id IS NOT NULL \
+                     OR vs.episode_id IS NOT NULL \
+                     OR (te.tv_show_id IS NOT NULL AND te.tv_show_id <> $2))",
+        )
+        .bind(&upload_ids)
+        .bind(tv_show_id)
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(error = ?e, "movies_search: cross-check query failed; skipping");
+                return;
+            }
+        }
+    } else {
+        return;
+    };
+
+    if claimed_elsewhere.is_empty() {
+        return;
+    }
+    movies.retain(|m| match extract_upload_id_from_url(&m.url) {
+        Some(id) => !claimed_elsewhere.contains(&id),
+        None => true,
+    });
 }
 
 /// Get video CDN URL via CzProxy -> prehraj.to page
