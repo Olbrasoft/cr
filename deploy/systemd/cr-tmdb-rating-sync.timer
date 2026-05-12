@@ -1,0 +1,16 @@
+[Unit]
+Description=CR — TMDB rating refresh daily at 04:45 UTC
+Documentation=https://github.com/Olbrasoft/cr/issues/591
+
+[Timer]
+# Slot between cr-imdb-rating-sync (04:30) and cr-auto-import (05:00).
+# TMDB /changes pulls "last 24h" by default, so the actual wall time of
+# the tick is not critical — picking 04:45 keeps the three rating jobs
+# clustered before the SK Torrent import touches the same tables.
+OnCalendar=*-*-* 04:45:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+Unit=cr-tmdb-rating-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,28 @@
+[Unit]
+Description=CR — Incremental TMDB rating refresh via /movie/changes + /tv/changes (#591)
+Documentation=https://github.com/Olbrasoft/cr/issues/591
+# After= only orders start jobs in the same transaction. The 04:00 UTC
+# prehraj.to sitemap sync can overrun past the 04:45 TMDB tick on
+# heavy sitemap days, and its end-of-run UPDATE on `films` would
+# contend with the TMDB UPDATE on the same rows. The ExecStartPre
+# guard below refuses to start if the sync is still active. Same
+# pattern as cr-llm-resolver.service and cr-imdb-rating-sync.service.
+After=docker.service network-online.target cr-prehrajto-sync.service cr-imdb-rating-sync.service
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-prehrajto-sync.service; then echo "cr-prehrajto-sync.service still active — refusing to start" >&2; exit 1; fi'
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/sync-tmdb-ratings.py'
+StandardOutput=append:/var/log/cr-tmdb-rating-sync.log
+StandardError=append:/var/log/cr-tmdb-rating-sync.log
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

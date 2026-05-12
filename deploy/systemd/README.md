@@ -1,12 +1,13 @@
 # Systemd units (produkční VPS)
 
-Pět nezávislých nočních úloh:
+Šest nezávislých nočních úloh:
 
 | Unit | Čas | Účel | Admin přehled |
 |------|-----|------|---------------|
 | `cr-backup-db.timer`         | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
 | `cr-prehrajto-sync.timer`    | 04:00 UTC | prehraj.to sitemap → DB + mark-dead rotated IDs | (TODO) |
 | `cr-imdb-rating-sync.timer`  | 04:30 UTC | IMDb datasets TSV → `imdb_rating` + `imdb_votes` na films/series/tv_shows | (logs) |
+| `cr-tmdb-rating-sync.timer`  | 04:45 UTC | TMDB `/movie/changes` + `/tv/changes` → `tmdb_rating` + `tmdb_vote_count` (inkrementální) | (logs) |
 | `cr-auto-import.timer`       | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
 | `cr-llm-resolver.timer`      | 06:30 UTC | LLM resolver: prehraj.to unmatched clusters → TMDB ID (Gemma + TMDB API) | `/admin/prehrajto/unmatched` |
 
@@ -229,6 +230,58 @@ ssh -p "$VPS_PORT" "root@$VPS_HOST" \
 
 ```bash
 ssh -p "$VPS_PORT" "root@$VPS_HOST" "tail -200 /var/log/cr-imdb-rating-sync.log"
+```
+
+---
+
+## TMDB rating sync (issue #591, parent #588)
+
+Daily incremental refresh of `tmdb_rating` + `tmdb_vote_count` on
+`films`, `series` and `tv_shows`. Unlike IMDb, TMDB has no public batch
+dataset with rating values — the only practical refresh path is the
+`/movie/changes` and `/tv/changes` endpoints, which return ID lists of
+titles that have changed in the last 24 h. We intersect those with our
+`tmdb_id` set and re-fetch only those rows via `/movie/{id}` / `/tv/{id}`
+to read `vote_average` + `vote_count`.
+
+Typical run: ~10k changed IDs in window across all of TMDB, ~1.5k of
+which match our DB. With 8 worker threads + 429 retries the whole pass
+finishes in ~30–90 s. Runs at 04:45 UTC, between the 04:30 IMDb tick
+and the 05:00 SK Torrent import.
+
+### Install / enable on VPS
+
+```bash
+# Copy unit files + script
+scp -P "$VPS_PORT" deploy/systemd/cr-tmdb-rating-sync.{service,timer} \
+    "root@$VPS_HOST:/etc/systemd/system/"
+scp -P "$VPS_PORT" scripts/sync-tmdb-ratings.py \
+    "root@$VPS_HOST:/opt/cr/scripts/"
+
+# TMDB_API_KEY must already be set in /opt/cr/.env (used by auto-import too).
+
+# Enable + smoke-run
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "systemctl daemon-reload && \
+     systemctl enable --now cr-tmdb-rating-sync.timer && \
+     systemctl start cr-tmdb-rating-sync.service && \
+     tail -f /var/log/cr-tmdb-rating-sync.log"
+```
+
+### Manual catch-up
+
+```bash
+# Pull the last 7 days instead of the default 24 h — useful after an outage.
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "cd /opt/cr && set -a && . ./.env && \
+     export DATABASE_URL=\${DATABASE_URL//@db:/@127.0.0.1:} && set +a && \
+     python3 scripts/sync-tmdb-ratings.py --days 7"
+```
+
+### Logs
+
+```bash
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "tail -200 /var/log/cr-tmdb-rating-sync.log"
 ```
 
 ---
