@@ -165,10 +165,12 @@ impl TvShowQuery {
     fn order_clause(&self) -> &'static str {
         match self.razeni.as_deref() {
             Some("rok") => "s.first_air_year DESC NULLS LAST, s.title",
-            // URL param `razeni=imdb` is kept for backward-compat with old
-            // bookmarks; internally it sorts by `tmdb_rating` because that
-            // is where the score actually lives (see migration 069).
-            Some("imdb") => "s.tmdb_rating DESC NULLS LAST, s.title",
+            // `imdb` and `tmdb` are sibling URL keys, each sorting by its
+            // own *_rating column (#701). Pre-#701 `razeni=imdb` was a
+            // legacy alias for tmdb_rating; the imdb_rating backfill in
+            // #690 retired that alias.
+            Some("imdb") => "s.imdb_rating DESC NULLS LAST, s.title",
+            Some("tmdb") => "s.tmdb_rating DESC NULLS LAST, s.title",
             Some("nazev") => "s.title ASC",
             _ => "s.added_at DESC NULLS LAST, s.title",
         }
