@@ -69,6 +69,7 @@ pub struct SeriesRow {
     description: Option<String>,
     original_title: Option<String>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     season_count: Option<i16>,
@@ -118,6 +119,7 @@ pub struct EpisodeCardRow {
     pub series_original_title: Option<String>,
     pub series_first_air_year: Option<i16>,
     pub series_tmdb_rating: Option<f32>,
+    pub series_imdb_rating: Option<f32>,
     pub series_csfd_rating: Option<i16>,
     pub series_description: Option<String>,
     pub season: i16,
@@ -405,7 +407,7 @@ pub async fn series_list(
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
-             s.description, s.original_title, s.tmdb_rating, s.csfd_rating, \
+             s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM series s \
@@ -580,6 +582,7 @@ async fn fetch_latest_episode_cards(
             s.original_title AS series_original_title, \
             s.first_air_year AS series_first_air_year, \
             s.tmdb_rating AS series_tmdb_rating, \
+            s.imdb_rating AS series_imdb_rating, \
             s.csfd_rating AS series_csfd_rating, \
             s.description AS series_description, \
             ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
@@ -754,7 +757,7 @@ pub async fn series_resolve(
     // Series detail
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path \
          FROM series WHERE slug = $1",
     )
@@ -768,7 +771,7 @@ pub async fn series_resolve(
             // Check old_slug for 301 redirect (series slug changed, e.g. year removed)
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug_raw)
@@ -895,7 +898,7 @@ pub async fn episode_detail(
     // --- Resolve series (support old slugs with year via redirect) ---
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
+         original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
          added_at, tmdb_poster_path FROM series WHERE slug = $1",
     )
     .bind(&slug)
@@ -908,7 +911,7 @@ pub async fn episode_detail(
         None => {
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, tmdb_rating, csfd_rating, season_count, episode_count, \
+                 original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
                  added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug)
@@ -1141,6 +1144,7 @@ struct SeriesSearchResult {
     title: String,
     year: Option<i16>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
     cover: bool,
 }
 
@@ -1150,6 +1154,7 @@ struct SeriesSearchRow {
     title: String,
     first_air_year: Option<i16>,
     tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
 }
 
 /// GET /api/series/search?q=...
@@ -1168,7 +1173,7 @@ pub async fn series_search(
     // title literally contains the user's diacritics rank in buckets
     // 0–2, unaccent-only matches drop to bucket 3.
     let rows = sqlx::query_as::<_, SeriesSearchRow>(
-        "SELECT slug, title, first_air_year, tmdb_rating \
+        "SELECT slug, title, first_air_year, tmdb_rating, imdb_rating \
          FROM series \
          WHERE unaccent(title) ILIKE unaccent($1) \
             OR unaccent(original_title) ILIKE unaccent($1) \
@@ -1192,6 +1197,7 @@ pub async fn series_search(
             title: r.title,
             year: r.first_air_year,
             tmdb_rating: r.tmdb_rating,
+            imdb_rating: r.imdb_rating,
             cover: true,
         })
         .collect();

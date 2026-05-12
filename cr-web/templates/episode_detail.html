@@ -647,7 +647,10 @@ function doSearch() {
                                 ? '<img src="/serialy-online/' + r.slug + '.webp" alt="' + r.title + '" title="' + r.title + '">'
                                 : '<div class="si-placeholder"></div>';
                             var yr = r.year ? ' (' + r.year + ')' : '';
-                            var rat = r.tmdb_rating ? ' — TMDB ' + r.tmdb_rating : '';
+                            var ratParts = [];
+                            if (r.tmdb_rating) ratParts.push('TMDB ' + r.tmdb_rating.toFixed(1));
+                            if (r.imdb_rating) ratParts.push('IMDb ' + r.imdb_rating.toFixed(1));
+                            var rat = ratParts.length ? ' — ' + ratParts.join(' · ') : '';
                             return '<a href="/serialy-online/' + r.slug + '/" class="search-item" title="' + r.title + '" aria-label="' + r.title + '">'
                                 + cover + '<div class="si-info"><span class="si-title">' + r.title + yr + '</span>'
                                 + '<span class="si-meta">' + rat + '</span></div></a>';
