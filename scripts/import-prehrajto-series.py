@@ -455,6 +455,95 @@ def enrich_one_series(
 #   10764 Reality, 10767 Talk, 10763 News, 10762 Kids
 TV_SHOWS_GENRES: frozenset[int] = frozenset({10764, 10767, 10763, 10762})
 
+
+# IMDB ratings index — loaded once per run from the cached TSV that
+# `sync-imdb-ratings.py` keeps fresh via a daily cron. The TSV is
+# ~10 MB compressed, ~1.5 M rows; loading it into a {imdb_id:
+# (rating, votes)} dict takes ~3 s and ~150 MB RAM — cheap compared
+# to the alternative of an OMDb / IMDb-API call per cluster. The
+# index is a process-global cache so multiple `discover_one_cluster`
+# invocations share it.
+DEFAULT_IMDB_CACHE = Path("/opt/cr/data/imdb-cache/title.ratings.tsv.gz")
+_IMDB_INDEX: dict[str, tuple[float, int]] | None = None
+
+
+def _load_imdb_ratings(cache_path: Path = DEFAULT_IMDB_CACHE
+                       ) -> dict[str, tuple[float, int]]:
+    """Parse `title.ratings.tsv.gz` into a {tconst: (rating, votes)} map.
+
+    Schema (tab-separated, header on row 0):
+        tconst    averageRating    numVotes
+        tt0000001 5.7              2104
+        tt0000002 5.6              287
+        ...
+
+    Cached at module scope: subsequent calls return the same dict.
+    Returns an empty dict (and logs a warning) when the TSV is
+    missing — Phase B can still create series, they'll just lack
+    IMDB ratings until the next `sync-imdb-ratings.py` cron tick.
+    """
+    global _IMDB_INDEX
+    if _IMDB_INDEX is not None:
+        return _IMDB_INDEX
+    if not cache_path.exists():
+        log.warning("IMDB ratings TSV not found at %s — new series will "
+                    "have imdb_rating=NULL until the daily sync cron "
+                    "fills them in", cache_path)
+        _IMDB_INDEX = {}
+        return _IMDB_INDEX
+    import gzip
+    index: dict[str, tuple[float, int]] = {}
+    t0 = time.time()
+    with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
+        next(fh, None)  # header row
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            tconst, avg, votes = parts[0], parts[1], parts[2]
+            if not tconst.startswith("tt"):
+                continue
+            try:
+                index[tconst] = (float(avg), int(votes))
+            except ValueError:
+                continue
+    log.info("Loaded %d IMDB ratings from %s in %.1fs",
+             len(index), cache_path, time.time() - t0)
+    _IMDB_INDEX = index
+    return index
+
+
+def _stamp_ratings(cur, series_id: int, tv,
+                   imdb_index: dict[str, tuple[float, int]]) -> None:
+    """Fill `series.tmdb_rating` / `.imdb_rating` / `.imdb_votes` if NULL.
+
+    Idempotent + non-clobbering — `COALESCE(col, %s)` keeps any value
+    that's already there (the daily IMDB sync cron, manual fixes, an
+    earlier discover run). Stamps `tmdb_rating_synced_at` to now() so
+    freshness audits work the same way as `sync-imdb-ratings.py`.
+    """
+    tmdb_rating = tv.vote_average
+    imdb_rating: float | None = None
+    imdb_votes: int | None = None
+    if getattr(tv, "imdb_id", None):
+        hit = imdb_index.get(tv.imdb_id)
+        if hit is not None:
+            imdb_rating, imdb_votes = hit
+    if tmdb_rating is None and imdb_rating is None:
+        return  # nothing to write
+    cur.execute(
+        """UPDATE series SET
+              tmdb_rating           = COALESCE(tmdb_rating, %s),
+              tmdb_rating_synced_at = CASE
+                  WHEN tmdb_rating IS NULL AND %s IS NOT NULL THEN now()
+                  ELSE tmdb_rating_synced_at
+              END,
+              imdb_rating           = COALESCE(imdb_rating, %s),
+              imdb_votes            = COALESCE(imdb_votes, %s)
+           WHERE id = %s""",
+        (tmdb_rating, tmdb_rating, imdb_rating, imdb_votes, series_id),
+    )
+
 # Sitemap XML regexes (vendored from import-prehrajto-new-films.py so
 # Phase B doesn't have to import a sibling script just for these).
 _SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
@@ -836,6 +925,27 @@ def discover_one_cluster(
              series_id, stats.tmdb_name, tv.tmdb_id,
              "CREATED" if was_created else "existed")
 
+    # Stamp TMDB + IMDB ratings on the series row. Runs for BOTH the
+    # newly-created and the existed branches because legacy series
+    # rows often have NULL ratings the daily IMDB sync cron hasn't
+    # yet filled in. `_stamp_ratings` uses COALESCE so an existing
+    # non-NULL value is never clobbered.
+    try:
+        _stamp_ratings(conn.cursor(), series_id, tv, _load_imdb_ratings())
+    except Exception:  # noqa: BLE001
+        log.exception("    rating stamp failed for series id=%d "
+                      "(continuing — sources still get attached)",
+                      series_id)
+    if was_created:
+        # ensure_series writes cover bytes to the local cover_dir but
+        # NEVER touches R2. The Rust handler at
+        # `/serialy-online/{slug}.webp` reads from R2 directly via
+        # `series/{id}/cover.webp` — so without this upload the new
+        # series page would serve the 1×1 placeholder. We push it
+        # right after series creation so the cover lands at the same
+        # time as the series row commits in step 5.
+        _push_cover_to_r2(series_id, cover_dir)
+
     # 4. Per-upload attach: ensure episode row, attach video_sources.
     cur = conn.cursor()
     cur.execute(
@@ -962,6 +1072,59 @@ def discover_one_cluster(
 def _lang_from_title(title: str) -> str:
     from scripts.auto_import.prehrajto_search import detect_lang
     return detect_lang(title)
+
+
+def _push_cover_to_r2(series_id: int, cover_dir: str) -> None:
+    """Upload `cover_dir/{id}/cover{,-large}.webp` to R2 via rclone.
+
+    R2 layout matches what `cr-web/src/handlers/series.rs::series_cover`
+    reads: `cr-images/series/{id}/cover.webp` (200×300) and
+    `cr-images/series/{id}/cover-large.webp` (780×1170). Without this
+    push the new series page would serve the 1×1 placeholder since the
+    Rust handler reads from R2, not from local disk.
+
+    `--s3-no-check-bucket` skips a ListBuckets call our R2 token isn't
+    authorised for — without that flag every copyto prints an "Access
+    Denied" notice despite the PUT itself succeeding. Best-effort: a
+    failure here leaves the cover only locally; surrounding cluster
+    work continues regardless.
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("rclone"):
+        log.warning("    rclone not in PATH — series id=%d cover stays "
+                    "local only; user sees placeholder until manual "
+                    "sync", series_id)
+        return
+    cover_root = Path(cover_dir) / str(series_id)
+    small = cover_root / "cover.webp"
+    large = cover_root / "cover-large.webp"
+    if not small.exists():
+        log.warning("    series id=%d: local cover.webp missing — "
+                    "ensure_series did not download a poster", series_id)
+        return
+    for path, variant in ((small, "cover.webp"),
+                          (large, "cover-large.webp")):
+        if not path.exists():
+            continue
+        dest = f"cr-r2:cr-images/series/{series_id}/{variant}"
+        try:
+            r = subprocess.run(
+                ["rclone", "copyto", "--s3-no-check-bucket",
+                 str(path), dest],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                tail = ((r.stderr or r.stdout or "").strip()
+                        .splitlines()[-3:])
+                log.warning("    rclone push failed for %s: %s",
+                            dest, " | ".join(tail))
+            else:
+                log.info("    pushed %s to R2", dest)
+        except subprocess.TimeoutExpired:
+            log.warning("    rclone push timed out for %s", dest)
+        except Exception as e:  # noqa: BLE001
+            log.warning("    rclone push raised for %s: %s", dest, e)
 
 
 # ---------------------------------------------------------------------------

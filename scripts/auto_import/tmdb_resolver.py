@@ -138,6 +138,11 @@ class TvResolution:
     episode_count: int | None
     poster_path: str | None
     genre_ids: list[int]
+    # TMDB's 0–10 average. Persisted into `series.tmdb_rating` (migration
+    # 069). None for brand-new shows with no votes yet — same convention
+    # as the films resolver: TMDB returns vote_average=0 to mean "no
+    # votes," not "zero stars," so we coerce that to None.
+    vote_average: float | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0
 
@@ -375,6 +380,14 @@ def _build_tv_resolution(session: requests.Session, candidate: dict, score: floa
         episode_count=src.get("number_of_episodes"),
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
+        # TMDB returns vote_average=0 for TV shows with no votes yet —
+        # treat that as None so we don't pollute `series.tmdb_rating`
+        # with a spurious 0.0 (same rule as the films resolver above).
+        vote_average=(
+            float(src.get("vote_average"))
+            if (src.get("vote_average") or src_en.get("vote_average"))
+            else None
+        ),
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )
