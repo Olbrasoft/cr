@@ -84,11 +84,20 @@ class Target:
     sample_url: str
 
 
-def load_targets(csv_path: Path, top: int, min_eps: int, skip: int = 0) -> list[Target]:
+def load_targets(csv_path: Path, top: int, min_eps: int, skip: int = 0,
+                  include_in_db: bool = False) -> list[Target]:
+    """Load candidate series from the discovery CSV.
+
+    By default only `status="missing"` rows are returned. `include_in_db=True`
+    relaxes that so partially-imported shows (the CSV marks them `in_db`,
+    meaning *at least one* episode already had a sktorrent link at scan time
+    but possibly not all of them) are also candidates — useful in combination
+    with --match when targeting a specific show whose import was incomplete.
+    """
     rows: list[Target] = []
     with csv_path.open(encoding="utf-8") as f:
         for r in csv.DictReader(f):
-            if r["status"] != "missing":
+            if r["status"] != "missing" and not (include_in_db and r["status"] == "in_db"):
                 continue
             eps = int(r["episode_count"])
             if eps < min_eps:
@@ -150,7 +159,7 @@ def _strip_episode_suffix_for_search(title: str) -> str:
         # spell the word out instead of using SxxExx (e.g. "The School Nurse
         # Files - Episode 6"). Strip BEFORE the bare-dash-digit rule so the
         # episode word doesn't survive as a tail token.
-        (re.compile(r"\s*-\s*(?:Episode|Epizoda|Episód[ay]|Epis|Ep)\.?\s+\d{1,3}\s*$",
+        (re.compile(r"\s*-\s*(?:Episode|Epizoda|Epizode|Episód[ay]|Epis|Ep)\.?\s+\d{1,3}\s*$",
                     re.IGNORECASE), ""),
         # Trailing " - <digits>" (with space-dash-space or space-dash) plus
         # an optional trailing word like "Ova", "oprava", "raw", "extra".
@@ -595,9 +604,12 @@ def main() -> int:
 
     if args.match:
         # --match overrides top/skip — load everything matching the substring,
-        # caller can layer --top on top to cap the result count.
+        # including in_db rows (partial imports might still have new episodes
+        # surfaceable via sktorrent search), caller can layer --top on top to
+        # cap the result count.
         targets = load_targets(Path(args.csv), top=10**9,
-                               min_eps=args.min_episodes, skip=0)
+                               min_eps=args.min_episodes, skip=0,
+                               include_in_db=True)
         needle = args.match.lower()
         targets = [t for t in targets
                    if needle in (t.cz_title or "").lower()
