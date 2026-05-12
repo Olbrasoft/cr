@@ -57,12 +57,16 @@
     <div class="films-toolbar">
         <label class="toolbar-group">
             <span class="toolbar-label">Řazení:</span>
-            <select id="sort-select" onchange="applySortCombined(this.value)" aria-label="Řazení" class="sort-select-combined">
-                <option value="pridano:desc">Naposledy přidané</option>
-                <option value="rok:desc">Od nejnovějších</option>
-                <option value="imdb:desc">Nejlépe hodnocené IMDb</option>
-                <option value="tmdb:desc">Nejlépe hodnocené TMDB</option>
-                <option value="nazev:asc">Podle názvu A–Z</option>
+            <select id="sort-field" onchange="applySortField(this.value)" aria-label="Podle čeho řadit TV pořady" class="sort-select-field">
+                <option value="pridano">Podle přidání</option>
+                <option value="rok">Podle roku vydání</option>
+                <option value="imdb">Podle hodnocení IMDb</option>
+                <option value="tmdb">Podle hodnocení TMDB</option>
+                <option value="nazev">Podle názvu</option>
+            </select>
+            <select id="sort-dir" onchange="applySortDir(this.value)" aria-label="Směr řazení" class="sort-select-dir">
+                <option value="desc">↓ Sestupně</option>
+                <option value="asc">↑ Vzestupně</option>
             </select>
         </label>
         <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" aria-label="Přepnout zobrazení mřížka / seznam">
@@ -177,7 +181,10 @@
 .films-toolbar { display: flex; align-items: center; gap: 0.4rem; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 0.4rem; }
 .toolbar-label { font-size: 0.82rem; color: #555; font-weight: 500; }
-.sort-select-combined { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; min-width: 200px; }
+.sort-select-field, .sort-select-dir { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; }
+.sort-select-field { min-width: 170px; }
+.sort-select-dir { min-width: 110px; }
+.sort-select-field:focus, .sort-select-dir:focus { outline: 1px solid #11457E; }
 .view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; display: flex; align-items: center; transition: background 0.15s; }
 .view-btn:hover { background: #e0e0e0; }
 .view-toggle { background: #f1f5f9; color: #555; border-radius: 6px; padding: 0.4rem 0.7rem; }
@@ -263,27 +270,36 @@ function toggleView() {
 }
 (function(){ var s = localStorage.getItem('tvPoradyView'); if (s === 'list') setView('list'); })();
 
-function applySortCombined(v) {
-    var field = v.split(':')[0];
+/* --- Sort (two separate selects: field + direction) — mirrors films/series --- */
+function applySortField(field) {
     var u = new URL(window.location);
     if (field === 'pridano') u.searchParams.delete('razeni');
     else u.searchParams.set('razeni', field);
+    if (field === 'nazev') u.searchParams.set('smer', 'asc');
+    else u.searchParams.delete('smer');
     u.searchParams.delete('strana');
     window.location = u.toString();
 }
+
+function applySortDir(dir) {
+    var u = new URL(window.location);
+    if (dir === 'asc') u.searchParams.set('smer', 'asc');
+    else u.searchParams.delete('smer');
+    u.searchParams.delete('strana');
+    window.location = u.toString();
+}
+
 (function() {
     var urlParams = new URLSearchParams(window.location.search);
     var razeni = urlParams.get('razeni') || 'pridano';
-    var sortSel = document.getElementById('sort-select');
-    if (sortSel) {
-        var target = razeni === 'nazev' ? 'nazev:asc' : razeni + ':desc';
-        for (var i = 0; i < sortSel.options.length; i++) {
-            if (sortSel.options[i].value === target) {
-                sortSel.selectedIndex = i;
-                break;
-            }
-        }
-    }
+    var defaultDir = razeni === 'nazev' ? 'asc' : 'desc';
+    var smer = urlParams.get('smer') === 'asc' ? 'asc'
+             : urlParams.get('smer') === 'desc' ? 'desc'
+             : defaultDir;
+    var fieldSel = document.getElementById('sort-field');
+    if (fieldSel) fieldSel.value = razeni;
+    var dirSel = document.getElementById('sort-dir');
+    if (dirSel) dirSel.value = smer;
 })();
 
 /* Autocomplete — hits /api/tv-porady/search. Uses DOM APIs + AbortController
