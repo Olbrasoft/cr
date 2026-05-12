@@ -254,6 +254,18 @@ impl SeriesQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    /// Whether the user picked a non-default sort that the latest-episode
+    /// listing can't honour (it's hard-ordered by `created_at`). When true
+    /// and no genre/year filters are active, the handler switches to a
+    /// series-by-`order_clause` query so the page actually reorders rather
+    /// than silently ignoring `razeni=` (parity with tv_porady #702 review).
+    fn wants_shows_mode(&self) -> bool {
+        matches!(
+            self.razeni.as_deref(),
+            Some("rok") | Some("imdb") | Some("tmdb") | Some("nazev")
+        )
+    }
+
     fn parse_genre_slugs(input: Option<&String>) -> Vec<String> {
         // Dedup to keep AND-mode `HAVING COUNT(DISTINCT g.slug) = slugs.len()` correct.
         let mut slugs: Vec<String> = Vec::new();
@@ -422,6 +434,33 @@ pub async fn series_list(
         );
         let rows = sqlx::query_as::<_, SeriesRow>(&query)
             .bind(pattern)
+            .bind(SERIES_PER_PAGE)
+            .bind(offset)
+            .fetch_all(&state.db)
+            .await?;
+        (count_row.count.unwrap_or(0), rows, Vec::new())
+    } else if include.is_empty()
+        && exclude.is_empty()
+        && year_f.is_none()
+        && params.wants_shows_mode()
+    {
+        // Non-default sort (rok / imdb / tmdb / nazev) without filters: the
+        // latest-episode listing is hard-ordered by `created_at` and would
+        // silently ignore `razeni=`, so switch to a series-by-`order_clause`
+        // query (parity with tv_porady, originally surfaced by Copilot review
+        // on #702).
+        let count_row = sqlx::query_as::<_, CountRow>("SELECT count(*) as count FROM series")
+            .fetch_one(&state.db)
+            .await?;
+        let query = format!(
+            "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
+             s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
+             s.season_count, s.episode_count, s.added_at, \
+             s.tmdb_poster_path \
+             FROM series s \
+             ORDER BY {order} LIMIT $1 OFFSET $2"
+        );
+        let rows = sqlx::query_as::<_, SeriesRow>(&query)
             .bind(SERIES_PER_PAGE)
             .bind(offset)
             .fetch_all(&state.db)
