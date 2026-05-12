@@ -56,5 +56,6 @@ data/npu/*.csv
 data/prototypes/
 data/scripts/
 data/sledujteto/
+data/imdb-cache/
 scripts/__pycache__/
 scripts/auto_import/__pycache__/

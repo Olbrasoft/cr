@@ -1,0 +1,21 @@
+[Unit]
+Description=CR — Refresh IMDb ratings from datasets.imdbws.com (films + series + tv_shows)
+Documentation=https://github.com/Olbrasoft/cr/issues/690
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/sync-imdb-ratings.py'
+StandardOutput=append:/var/log/cr-imdb-rating-sync.log
+StandardError=append:/var/log/cr-imdb-rating-sync.log
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

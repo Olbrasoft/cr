@@ -1,0 +1,15 @@
+[Unit]
+Description=CR — IMDb rating refresh daily at 04:30 UTC
+Documentation=https://github.com/Olbrasoft/cr/issues/690
+
+[Timer]
+# IMDb publishes the TSV around 00:30 UTC. Run a few hours later so the
+# day's snapshot is reliably uploaded; off-peak relative to the existing
+# 05:00 UTC auto-import to avoid contending with each other on the DB.
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=cr-imdb-rating-sync.service
+
+[Install]
+WantedBy=timers.target

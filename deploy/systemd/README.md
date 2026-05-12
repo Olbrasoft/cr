@@ -1,13 +1,14 @@
 # Systemd units (produkční VPS)
 
-Čtyři nezávislé noční úlohy:
+Pět nezávislých nočních úloh:
 
 | Unit | Čas | Účel | Admin přehled |
 |------|-----|------|---------------|
-| `cr-backup-db.timer`       | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
-| `cr-prehrajto-sync.timer`  | 04:00 UTC | prehraj.to sitemap → DB + mark-dead rotated IDs | (TODO) |
-| `cr-auto-import.timer`     | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
-| `cr-llm-resolver.timer`    | 06:30 UTC | LLM resolver: prehraj.to unmatched clusters → TMDB ID (Gemma + TMDB API) | `/admin/prehrajto/unmatched` |
+| `cr-backup-db.timer`         | 03:00 UTC | `pg_dump` celé DB → Cloudflare R2 (30 dní retence) | `/admin/backups/` |
+| `cr-prehrajto-sync.timer`    | 04:00 UTC | prehraj.to sitemap → DB + mark-dead rotated IDs | (TODO) |
+| `cr-imdb-rating-sync.timer`  | 04:30 UTC | IMDb datasets TSV → `imdb_rating` + `imdb_votes` na films/series/tv_shows | (logs) |
+| `cr-auto-import.timer`       | 05:00 UTC | SK Torrent → films/series/tv_shows | `/admin/import/` |
+| `cr-llm-resolver.timer`      | 06:30 UTC | LLM resolver: prehraj.to unmatched clusters → TMDB ID (Gemma + TMDB API) | `/admin/prehrajto/unmatched` |
 
 ## Auto-import (issue #423)
 
@@ -190,6 +191,45 @@ Každý běh zapíše row do `backup_runs` viditelnou na
 Mimo skript — nastavit jednou v R2 dashboardu na bucketu `cr-backups`:
 - Prefix: `auto/`
 - Expire objects: 30 days after upload
+
+---
+
+## IMDb rating sync (issue #690, parent #588)
+
+Daily refresh of `imdb_rating` + `imdb_votes` on `films`, `series` and
+`tv_shows` from the public IMDb datasets TSV
+(<https://datasets.imdbws.com/title.ratings.tsv.gz>). The TSV is ~8 MB
+compressed, contains ~1.5 M titles, and IMDb republishes it once a day
+around 00:30 UTC. We pull at 04:30 UTC — well after that, but ahead of
+the 05:00 SK Torrent import.
+
+Conditional GET via `Last-Modified` keeps re-runs in the same day cheap:
+when IMDb hasn't republished, the script logs `TSV unchanged` and falls
+back to the cached copy under `data/imdb-cache/`. Total runtime ~3 s
+(load IMDb IDs from DB → stream-parse 1.5 M TSV rows → batched UPDATE).
+
+### Install / enable on VPS
+
+```bash
+# Copy unit files + script
+scp -P "$VPS_PORT" deploy/systemd/cr-imdb-rating-sync.{service,timer} \
+    "root@$VPS_HOST:/etc/systemd/system/"
+scp -P "$VPS_PORT" scripts/sync-imdb-ratings.py \
+    "root@$VPS_HOST:/opt/cr/scripts/"
+
+# Enable + smoke-run
+ssh -p "$VPS_PORT" "root@$VPS_HOST" \
+    "systemctl daemon-reload && \
+     systemctl enable --now cr-imdb-rating-sync.timer && \
+     systemctl start cr-imdb-rating-sync.service && \
+     tail -f /var/log/cr-imdb-rating-sync.log"
+```
+
+### Logs
+
+```bash
+ssh -p "$VPS_PORT" "root@$VPS_HOST" "tail -200 /var/log/cr-imdb-rating-sync.log"
+```
 
 ---
 
