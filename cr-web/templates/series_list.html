@@ -155,11 +155,57 @@
                 <option value="">Všechny roky</option>
             </select>
         </div>
+        {# Audio-language filter (#716). Language is a property of the video
+           source on each episode, so a series may be only partially in CZ
+           (e.g. just S01) or fully in CZ (every episode has a CZ source).
+           The "Pokrytí" toggle picks which rollup column the WHERE applies
+           against: any → series.audio_langs_any, all → audio_langs_all. #}
+        <div class="filter-section">
+            <div class="filter-label-row">
+                <label>Jazyk zvuku:</label>
+                <div class="genre-mode">
+                    <label class="mode-option">
+                        <input type="radio" name="audio_mode" value="any"{% if !audio_mode_all %} checked{% endif %}>
+                        <span>Alespoň částečně</span>
+                    </label>
+                    <label class="mode-option">
+                        <input type="radio" name="audio_mode" value="all"{% if audio_mode_all %} checked{% endif %}>
+                        <span>Kompletně</span>
+                    </label>
+                    <button type="button" class="help-icon" aria-label="Nápověda k pokrytí jazyka" onclick="this.classList.toggle('show')" onkeydown="if(event.key==='Enter'||event.key===' ')event.stopPropagation()">?<span class="help-popup"><strong>Alespoň částečně:</strong> seriál má v&nbsp;daném jazyce alespoň jednu epizodu (např. jen 1.&nbsp;sérii v&nbsp;češtině).<br><strong>Kompletně:</strong> seriál má v&nbsp;daném jazyce <em>každou</em> epizodu.</span></button>
+                </div>
+            </div>
+            <div class="filter-genres" id="filter-audio">
+                <label class="filter-chip"><input type="checkbox" value="cs" data-filter="audio"{% if self.is_audio_selected("cs") %} checked{% endif %}> Čeština</label>
+                <label class="filter-chip"><input type="checkbox" value="sk" data-filter="audio"{% if self.is_audio_selected("sk") %} checked{% endif %}> Slovenština</label>
+                <label class="filter-chip"><input type="checkbox" value="en" data-filter="audio"{% if self.is_audio_selected("en") %} checked{% endif %}> Angličtina</label>
+            </div>
+        </div>
         <div class="filter-actions">
             <button class="btn-apply" onclick="applyFilters()">Použít filtr</button>
             <button class="btn-reset" onclick="resetFilters()">Zrušit filtry</button>
         </div>
     </div>
+
+    {# Active filter chips for audio. Show "🎧 Čeština (kompletně)" /
+       "🎧 Čeština (částečně)" so the user sees both which language AND
+       which coverage mode is on. Clicking removes the audio filter
+       entirely (since the chips are mode-bound). #}
+    {% if self.has_audio_filter() %}
+    <div class="active-filters" id="active-filters">
+        <span class="active-filters-label">Aktivní filtry:</span>
+        {% for lang in selected_audio_langs %}
+        <span class="active-filter-chip" title="Pokrytí: {% if audio_mode_all %}kompletně{% else %}alespoň částečně{% endif %}">
+            🎧
+            {% if lang.as_str() == "cs" %}Čeština
+            {%- else if lang.as_str() == "sk" %}Slovenština
+            {%- else if lang.as_str() == "en" %}Angličtina
+            {%- else %}{{ lang }}{% endif %}
+            ({% if audio_mode_all %}kompletně{% else %}částečně{% endif %})
+        </span>
+        {% endfor %}
+    </div>
+    {% endif %}
 
     {# Main grid: episodes (default) or series (search mode) #}
     {% if !episodes.is_empty() %}
@@ -520,6 +566,11 @@ function applyFilters() {
     var sortDir = document.getElementById('sort-dir').value;
     var rezimEl = document.querySelector('input[name="rezim"]:checked');
     var rezim = rezimEl ? rezimEl.value : 'or';
+    // #716 — audio filter + coverage mode (any/all).
+    var audioEls = document.querySelectorAll('#filter-audio input:checked');
+    var audioLangs = Array.from(audioEls).map(function(el){ return el.value; });
+    var audioModeEl = document.querySelector('input[name="audio_mode"]:checked');
+    var audioMode = audioModeEl ? audioModeEl.value : 'any';
 
     var panel = document.getElementById('filter-panel');
     var currentGenre = panel ? panel.getAttribute('data-current-genre') : null;
@@ -546,6 +597,16 @@ function applyFilters() {
     }
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
+    // #716 — emit audio + audio_mode. Omit both when no languages selected
+    // so the URL stays clean; omit audio_mode when it's the default `any`.
+    if (audioLangs.length > 0) {
+        u.searchParams.set('audio', audioLangs.join(','));
+        if (audioMode === 'all') u.searchParams.set('audio_mode', 'all');
+        else u.searchParams.delete('audio_mode');
+    } else {
+        u.searchParams.delete('audio');
+        u.searchParams.delete('audio_mode');
+    }
     // Apply sort field + direction (mirror films_list.html). Drop both
     // params when they're the defaults so URLs stay clean and shareable.
     var defaultDir = sortField === 'nazev' ? 'asc' : 'desc';
@@ -590,6 +651,19 @@ function resetFilters() {
     if (yearParam) {
         var yrSel = document.getElementById('filter-year');
         if (yrSel) yrSel.value = yearParam;
+    }
+    // #716 — prefill audio chips + coverage mode radio from URL.
+    var audioParam = urlParams.get('audio');
+    if (audioParam) {
+        audioParam.split(',').forEach(function(lang){
+            var cb = panel.querySelector('#filter-audio input[value="' + lang + '"]');
+            if (cb) cb.checked = true;
+        });
+    }
+    var audioModeParam = urlParams.get('audio_mode');
+    if (audioModeParam === 'all') {
+        var rb = panel.querySelector('input[name="audio_mode"][value="all"]');
+        if (rb) rb.checked = true;
     }
 
     function updateFilterBadge() {
