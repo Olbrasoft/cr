@@ -116,6 +116,10 @@ class MovieResolution:
     # populated separately by scripts/sync-imdb-ratings.py from the public
     # IMDb datasets TSV (#690).
     vote_average: float | None = None
+    # TMDB's vote_count — paired with vote_average. Persisted into
+    # `films.tmdb_vote_count` so the listing-rating filter (#704) can
+    # apply a credibility threshold ("hide titles with <N votes").
+    vote_count: int | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0  # how confident we are in the match
 
@@ -143,6 +147,9 @@ class TvResolution:
     # as the films resolver: TMDB returns vote_average=0 to mean "no
     # votes," not "zero stars," so we coerce that to None.
     vote_average: float | None = None
+    # Paired vote_count — persisted into `series.tmdb_vote_count` /
+    # `tv_shows.tmdb_vote_count`. None when there are no votes yet.
+    vote_count: int | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0
 
@@ -316,9 +323,13 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
 
     # TMDB returns vote_average=0 for brand-new films with no votes yet —
     # treat that as "no rating" to avoid seeding the column with a bogus 0.0
-    # that the list page would then display as a legit rating.
+    # that the list page would then display as a legit rating. Same gate
+    # applies to vote_count: 0 means "TMDB has the row but no votes", which
+    # we want represented as NULL in the DB (the column is nullable).
     va_raw = src.get("vote_average") or src_en.get("vote_average")
     vote_average = float(va_raw) if va_raw else None
+    vc_raw = src.get("vote_count") or src_en.get("vote_count")
+    vote_count = int(vc_raw) if vc_raw else None
 
     raw_cs_title = (cs or {}).get("title")
     en_title = src_en.get("title") or src.get("title")
@@ -338,6 +349,7 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
         vote_average=vote_average,
+        vote_count=vote_count,
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )
@@ -392,6 +404,11 @@ def _build_tv_resolution(session: requests.Session, candidate: dict, score: floa
         vote_average=(
             (lambda va: float(va) if va else None)(
                 src.get("vote_average") or src_en.get("vote_average")
+            )
+        ),
+        vote_count=(
+            (lambda vc: int(vc) if vc else None)(
+                src.get("vote_count") or src_en.get("vote_count")
             )
         ),
         popularity=float(candidate.get("popularity") or 0.0),

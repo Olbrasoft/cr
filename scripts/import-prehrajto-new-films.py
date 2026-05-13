@@ -433,8 +433,8 @@ def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
     """Fetch cs-CZ + en-US /movie/{id} and merge into one dict.
 
     Returns keys: title_cs, title_en, original_title, overview_cs, overview_en,
-    year, runtime_min, poster_path, genre_ids, imdb_id. Returns None if both
-    language fetches fail (usually a stale tmdb_id).
+    year, runtime_min, poster_path, genre_ids, imdb_id, vote_average, vote_count.
+    Returns None if both language fetches fail (usually a stale tmdb_id).
     """
     cs = tmdb_get(f"/movie/{tmdb_id}", {"language": "cs-CZ"}, api_key)
     en = tmdb_get(f"/movie/{tmdb_id}", {"language": "en-US"}, api_key)
@@ -444,6 +444,11 @@ def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
     src_en = en or {}
     rd = src_cs.get("release_date") or src_en.get("release_date") or ""
     year = int(rd[:4]) if len(rd) >= 4 and rd[:4].isdigit() else None
+    # vote_average=0 / vote_count=0 means "no votes yet" on TMDB — coerce
+    # to None so we don't seed films.tmdb_rating with a bogus 0.0 that the
+    # listing page would render as a legit "zero stars" badge (#590).
+    va_raw = src_cs.get("vote_average") or src_en.get("vote_average")
+    vc_raw = src_cs.get("vote_count") or src_en.get("vote_count")
     return {
         "tmdb_id": tmdb_id,
         "imdb_id": src_cs.get("imdb_id") or src_en.get("imdb_id") or None,
@@ -456,6 +461,8 @@ def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
         "runtime_min": src_cs.get("runtime") or src_en.get("runtime") or None,
         "poster_path": src_cs.get("poster_path") or src_en.get("poster_path") or None,
         "genre_ids": [g["id"] for g in (src_cs.get("genres") or src_en.get("genres") or []) if g.get("id")],
+        "vote_average": float(va_raw) if va_raw else None,
+        "vote_count": int(vc_raw) if vc_raw else None,
     }
 
 
@@ -637,11 +644,17 @@ def main() -> int:
         # INSERT film. ON CONFLICT (imdb_id) requires the partial UNIQUE index
         # added by migration 050; we always supply a non-NULL imdb_id so the
         # conflict target is well-defined.
+        # tmdb_rating + tmdb_vote_count are seeded from TMDB at INSERT
+        # (#590). tmdb_rating_synced_at is stamped unconditionally so the
+        # daily sync-tmdb-ratings.py knows the row was already touched —
+        # before this fix the row stayed NULL until sync happened to hit
+        # the tmdb_id via /movie/changes, which only includes recently
+        # updated TMDB titles and never our backlog imports.
         insert_film_sql = """
         INSERT INTO films (
             title, original_title, slug, year, description,
             imdb_id, tmdb_id, runtime_min,
-            tmdb_rating, csfd_rating,
+            tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             prehrajto_url, prehrajto_has_dub, prehrajto_has_subs,
@@ -651,7 +664,7 @@ def main() -> int:
         ) VALUES (
             %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
             %(imdb_id)s, %(tmdb_id)s, %(runtime_min)s,
-            NULL, NULL,
+            %(tmdb_rating)s, %(tmdb_vote_count)s, NOW(), NULL,
             NULL, NULL, NULL,
             false, false,
             NULL, %(has_cz_audio)s, %(has_cz_subs)s,
@@ -846,6 +859,8 @@ def main() -> int:
                         "imdb_id": imdb,
                         "tmdb_id": tmdb_id,
                         "runtime_min": runtime_min,
+                        "tmdb_rating": movie.get("vote_average"),
+                        "tmdb_vote_count": movie.get("vote_count"),
                         "has_cz_audio": has_cz_audio,
                         "has_cz_subs": has_cz_subs,
                         "primary_upload": primary_upload_id,

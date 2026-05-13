@@ -530,6 +530,7 @@ def _stamp_ratings(cur, series_id: int, tv,
     convention as `sync-imdb-ratings.py`.
     """
     tmdb_rating = tv.vote_average
+    tmdb_vote_count = tv.vote_count
     imdb_rating: float | None = None
     imdb_votes: int | None = None
     if getattr(tv, "imdb_id", None):
@@ -541,6 +542,7 @@ def _stamp_ratings(cur, series_id: int, tv,
     cur.execute(
         """UPDATE series SET
               tmdb_rating           = COALESCE(tmdb_rating, %s),
+              tmdb_vote_count       = COALESCE(tmdb_vote_count, %s),
               tmdb_rating_synced_at = CASE
                   WHEN tmdb_rating IS NULL AND %s IS NOT NULL THEN now()
                   ELSE tmdb_rating_synced_at
@@ -552,7 +554,7 @@ def _stamp_ratings(cur, series_id: int, tv,
                   ELSE imdb_rating_synced_at
               END
            WHERE id = %s""",
-        (tmdb_rating, tmdb_rating,
+        (tmdb_rating, tmdb_vote_count, tmdb_rating,
          imdb_rating, imdb_votes, imdb_rating,
          series_id),
     )

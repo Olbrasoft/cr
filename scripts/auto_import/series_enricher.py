@@ -132,12 +132,22 @@ def ensure_series(
     generated = generate_unique_cs(name_cs, tv.first_air_year, sources, is_series=True)
     description = generated or tv.overview_cs or tv.overview_en
 
+    # Seed tmdb_rating + tmdb_vote_count at INSERT (#590). Both may be None
+    # for brand-new shows with no votes — the resolver already coerces
+    # vote_average=0/vote_count=0 to None to avoid bogus 0.0 ratings on the
+    # list page. tmdb_rating_synced_at is stamped unconditionally (matching
+    # the films INSERT in enricher.py) so the daily sync-tmdb-ratings.py
+    # treats this row as "we tried, no votes yet" instead of "never synced".
     cur.execute(
         """INSERT INTO series
            (title, original_title, slug, first_air_year, last_air_year,
             description, imdb_id, tmdb_id,
-            season_count, episode_count, tmdb_poster_path, added_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            season_count, episode_count, tmdb_poster_path,
+            tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at,
+            added_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   %s,%s,now(),
+                   now())
            RETURNING id""",
         (
             name_cs, name_en if name_en != name_cs else None, slug,
@@ -146,6 +156,7 @@ def ensure_series(
             tv.imdb_id, tv.tmdb_id,
             tv.season_count, tv.episode_count,
             tv.poster_path,
+            tv.vote_average, tv.vote_count,
         ),
     )
     series_id = cur.fetchone()[0]

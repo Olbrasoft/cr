@@ -320,12 +320,12 @@ INSERT_FILM_SQL = """
 INSERT INTO films (
     title, original_title, slug, year, description,
     tmdb_id, runtime_min, tmdb_poster_path, lang,
-    tmdb_rating, tmdb_rating_synced_at,
+    tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at,
     created_at, added_at
 ) VALUES (
     %(title)s, %(original_title)s, %(slug)s, %(year)s, %(description)s,
     %(tmdb_id)s, %(runtime_min)s, %(tmdb_poster_path)s, %(lang)s,
-    %(tmdb_rating)s, NOW(),
+    %(tmdb_rating)s, %(tmdb_vote_count)s, NOW(),
     NOW(), NOW()
 )
 RETURNING id
@@ -494,10 +494,13 @@ def build_film_row(
 
     # TMDB returns 0.0 for films with no votes; we store NULL in that case
     # so the listing badge is hidden rather than showing a misleading 0.0.
-    # The real IMDb rating lives in `films.imdb_rating` and is populated
-    # separately by scripts/sync-imdb-ratings.py from the IMDb datasets TSV.
+    # Same rule for vote_count: 0 → None (#590). The real IMDb rating lives
+    # in `films.imdb_rating` and is populated separately by
+    # scripts/sync-imdb-ratings.py from the IMDb datasets TSV.
     vote_average = (tmdb_meta or {}).get("vote_average")
     tmdb_rating = float(vote_average) if vote_average and vote_average > 0 else None
+    vote_count = (tmdb_meta or {}).get("vote_count")
+    tmdb_vote_count = int(vote_count) if vote_count and vote_count > 0 else None
 
     return {
         "title": title[:255],
@@ -510,6 +513,7 @@ def build_film_row(
         "tmdb_poster_path": ((tmdb_meta or {}).get("poster_path") or "")[:64] or None,
         "lang": ((tmdb_meta or {}).get("original_language") or "")[:20] or None,
         "tmdb_rating": tmdb_rating,
+        "tmdb_vote_count": tmdb_vote_count,
     }
 
 
