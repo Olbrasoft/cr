@@ -17,6 +17,14 @@ sections at all. This script fills the gap by calling TMDB
      `created_by` (TV shows store their primary creator there, not in
      crew). De-duplicates against `(series_id, person_id)` PK.
 
+     Limitation: episode-level directors on TV shows live on per-
+     episode crew (`/tv/{id}/season/{n}/episode/{m}/credits`), not on
+     the series-level `/tv/{id}/credits` endpoint this script reads.
+     In practice `series_directors` ends up populated almost entirely
+     from `created_by`; rows with `job == 'Director'` at the series
+     level are rare. Episode directors are imported separately by the
+     existing series enricher pipeline.
+
 After running, kick off `scripts/backfill-person-photos.py` to upload
 WebP for the newly-inserted persons — that script picks them up via
 `profile_filename IS NOT NULL` so they're already in its work set.
@@ -42,6 +50,7 @@ import os
 import sys
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 try:
@@ -194,10 +203,11 @@ def _fetch_credits(
     return cast, director_rows
 
 
-# Per-connection lock keeps thread workers from interleaving statements
-# on the same psycopg2 connection (which is NOT thread-safe). We open
-# one connection per worker via threading.local instead, which is even
-# simpler.
+# psycopg2 connections are NOT thread-safe, so we keep one connection
+# per worker thread via threading.local. The same local also caches a
+# `requests.Session` so HTTP keep-alive + TLS state survive across the
+# ~hundred series each worker handles, instead of paying connection
+# setup on every series.
 _conn_local = threading.local()
 
 
@@ -207,6 +217,32 @@ def _get_conn(dsn: str):
         conn = psycopg2.connect(dsn)
         _conn_local.conn = conn
     return conn
+
+
+def _get_session() -> requests.Session:
+    """Reuse a single requests.Session per worker thread. Without this
+    every series would open a fresh TLS connection to api.themoviedb.org
+    and we'd burn through their Retry-After budget faster.
+    """
+    sess = getattr(_conn_local, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        _conn_local.session = sess
+    return sess
+
+
+# Schema column widths (cr-infra/migrations/20260421_030_episode_metadata.sql).
+# Truncate before INSERT so one overlong field can't abort the whole
+# series transaction.
+_NAME_MAX = 255            # people.name VARCHAR(255)
+_CHARACTER_NAME_MAX = 255  # series_actors.character_name VARCHAR(255)
+_ORDER_INDEX_MAX = 32767   # series_actors.order_index SMALLINT
+
+
+def _clip(s: str | None, n: int) -> str | None:
+    if s is None:
+        return None
+    return s if len(s) <= n else s[:n]
 
 
 def _upsert_person(cur, row: CreditRow) -> int:
@@ -232,7 +268,7 @@ def _upsert_person(cur, row: CreditRow) -> int:
         # cast UPSERT which can fire for unrelated reasons.
         "    profile_filename = COALESCE(EXCLUDED.profile_filename, people.profile_filename) "
         "RETURNING id",
-        (row.tmdb_id, row.name, filename),
+        (row.tmdb_id, _clip(row.name, _NAME_MAX), filename),
     )
     return cur.fetchone()[0]
 
@@ -246,7 +282,7 @@ def _process_series(
     dry_run: bool,
 ) -> tuple[int, str, int, int]:
     """Returns (series_id, status, actors_inserted, directors_inserted)."""
-    session = requests.Session()
+    session = _get_session()
     result = _fetch_credits(session, tmdb_id, api_key)
     if result is None:
         return series_id, "tmdb_error", 0, 0
@@ -274,13 +310,18 @@ def _process_series(
             # conflict can read as 0 even when a fresh INSERT actually
             # landed (observed under threaded use). fetchone() returns
             # a row only on real insert, None on conflict.
+            # Clip both VARCHAR fields to fit the schema and clamp
+            # `order_index` to SMALLINT range. TMDB's `order` is usually
+            # small but is not bounded, and one overlong character_name
+            # would otherwise blow up the whole transaction.
+            order_idx = min(c.order or 0, _ORDER_INDEX_MAX)
             cur.execute(
                 "INSERT INTO series_actors "
                 "(series_id, person_id, character_name, order_index) "
                 "VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (series_id, person_id) DO NOTHING "
                 "RETURNING person_id",
-                (series_id, pid, c.character, c.order or 0),
+                (series_id, pid, _clip(c.character, _CHARACTER_NAME_MAX), order_idx),
             )
             if cur.fetchone() is not None:
                 actors_inserted += 1
@@ -362,10 +403,10 @@ def main() -> int:
     rows = _fetch_candidates(dsn, args.limit)
     log.info("processing %d series with %d workers", len(rows), args.jobs)
 
-    stats = {
-        "ok": 0, "ok_dry": 0, "empty_credits": 0,
-        "tmdb_error": 0, "db_error": 0,
-    }
+    # Counter so an unexpected new status doesn't crash the aggregator
+    # mid-run and lose all in-flight progress. `worker_exception` is a
+    # synthetic status for futures that raised — keeps the loop going.
+    stats: Counter[str] = Counter()
     actor_total = 0
     director_total = 0
 
@@ -379,21 +420,30 @@ def main() -> int:
             for sid, tmdb_id in rows
         ]
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
-            _sid, status, a, d = fut.result()
+            try:
+                _sid, status, a, d = fut.result()
+            except Exception as e:
+                # Don't let one worker exception abort the run and
+                # discard the rest of the futures' results. Log + tally
+                # and keep going so we still get a summary.
+                log.warning("worker exception: %s", e)
+                stats["worker_exception"] += 1
+                continue
             stats[status] += 1
             actor_total += a
             director_total += d
             if i % 25 == 0 or i == len(rows):
                 log.info(
-                    "progress %d/%d ok=%d empty=%d tmdb_err=%d db_err=%d | actors=%d directors=%d",
+                    "progress %d/%d ok=%d empty=%d tmdb_err=%d db_err=%d worker_exc=%d | actors=%d directors=%d",
                     i, len(rows), stats["ok"] + stats["ok_dry"],
                     stats["empty_credits"], stats["tmdb_error"],
-                    stats["db_error"], actor_total, director_total,
+                    stats["db_error"], stats["worker_exception"],
+                    actor_total, director_total,
                 )
 
     log.info("DONE: %s | actors=%d directors=%d",
-             stats, actor_total, director_total)
-    return 0 if stats["tmdb_error"] == 0 and stats["db_error"] == 0 else 1
+             dict(stats), actor_total, director_total)
+    return 0 if stats["tmdb_error"] == 0 and stats["db_error"] == 0 and stats["worker_exception"] == 0 else 1
 
 
 if __name__ == "__main__":
