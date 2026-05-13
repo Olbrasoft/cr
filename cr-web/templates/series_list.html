@@ -204,20 +204,23 @@
 
     {# Active filter chips for audio. Show "🎧 Čeština (kompletně)" /
        "🎧 Čeština (částečně)" so the user sees both which language AND
-       which coverage mode is on. Clicking removes the audio filter
-       entirely (since the chips are mode-bound). #}
+       which coverage mode is on. Each chip is an <a> link that removes
+       that one language from the audio CSV (preserving the others), so
+       a user with `?audio=cs,sk` clicking on "Čeština" lands on
+       `?audio=sk`. Mirrors films_list.html (#717 Copilot review). #}
     {% if self.has_audio_filter() %}
     <div class="active-filters" id="active-filters">
         <span class="active-filters-label">Aktivní filtry:</span>
         {% for lang in selected_audio_langs %}
-        <span class="active-filter-chip" title="Pokrytí: {% if audio_mode_all %}kompletně{% else %}alespoň částečně{% endif %}">
+        <a class="active-filter-chip" href="{{ self.remove_audio_url(lang) }}" title="Odebrat filtr zvuku ({% if audio_mode_all %}kompletně{% else %}alespoň částečně{% endif %})">
             🎧
             {% if lang.as_str() == "cs" %}Čeština
             {%- else if lang.as_str() == "sk" %}Slovenština
             {%- else if lang.as_str() == "en" %}Angličtina
             {%- else %}{{ lang }}{% endif %}
             ({% if audio_mode_all %}kompletně{% else %}částečně{% endif %})
-        </span>
+            <span class="chip-x">✕</span>
+        </a>
         {% endfor %}
     </div>
     {% endif %}

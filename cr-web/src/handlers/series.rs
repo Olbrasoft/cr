@@ -373,6 +373,10 @@ struct SeriesListTemplate {
     /// `true` when `audio_mode=all` is active (strict "every episode has it").
     /// `false` is the permissive "any episode" default.
     audio_mode_all: bool,
+    /// Full set of query params currently on the URL, keyed by param name.
+    /// Used by chip-removal links so a click rebuilds the URL minus one
+    /// param while preserving everything else (Copilot review on PR #717).
+    full_query: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl SeriesListTemplate {
@@ -390,6 +394,41 @@ impl SeriesListTemplate {
     }
     fn has_audio_filter(&self) -> bool {
         !self.selected_audio_langs.is_empty()
+    }
+
+    /// Build a URL back to /serialy-online/ with the current filters
+    /// minus one audio language. Mirrors films `remove_audio_url`. If
+    /// the removed language was the last one, `audio_mode` is dropped
+    /// too so the URL doesn't carry a dangling coverage flag with no
+    /// languages to apply it to. `strana` is reset so removing a filter
+    /// returns the user to page 1 of the new result set.
+    fn remove_audio_url(&self, lang: &str) -> String {
+        let mut params = self.full_query.clone();
+        if let Some(vs) = params.get_mut("audio") {
+            let rebuilt: Vec<String> = vs
+                .iter()
+                .filter_map(|existing_csv| {
+                    let filtered: Vec<&str> = existing_csv
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| *s != lang)
+                        .collect();
+                    if filtered.is_empty() {
+                        None
+                    } else {
+                        Some(filtered.join(","))
+                    }
+                })
+                .collect();
+            if rebuilt.is_empty() {
+                params.remove("audio");
+                params.remove("audio_mode");
+            } else {
+                *vs = rebuilt;
+            }
+        }
+        params.remove("strana");
+        build_series_filter_url(&params)
     }
     // NOTE: Askama auto-refs arguments in template method calls — `{{ self.series_genres(s.id) }}`
     // generates a call with `&s.id`. Keep the signature as `&i32` to match; Copilot's
@@ -644,6 +683,7 @@ pub async fn series_list(
         series_genres_map,
         selected_audio_langs,
         audio_mode_all: params.audio_mode_is_all(),
+        full_query: build_series_query_map(&params),
     };
     let html = tmpl.render()?;
     // Search-result HTML is `?q=`-derived: tag it `private,
@@ -1447,6 +1487,7 @@ async fn series_by_genre(
         series_genres_map,
         selected_audio_langs,
         audio_mode_all: params.audio_mode_is_all(),
+        full_query: build_series_query_map(&params),
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -1669,6 +1710,75 @@ pub async fn series_cover_large_dynamic(
 }
 
 /// Build pagination query string for series list views.
+/// Snapshot the active query into a BTreeMap that chip-removal links
+/// can mutate without touching the SeriesQuery itself. Keys mirror the
+/// SeriesQuery field names so build_series_filter_url emits the same
+/// shape the handler accepts on the next request.
+fn build_series_query_map(params: &SeriesQuery) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    if let Some(z) = params.zanry.as_ref()
+        && !z.trim().is_empty()
+    {
+        map.insert("zanry".into(), vec![z.clone()]);
+    }
+    if let Some(b) = params.bez.as_ref()
+        && !b.trim().is_empty()
+    {
+        map.insert("bez".into(), vec![b.clone()]);
+    }
+    if let Some(q) = params.q.as_ref()
+        && !q.trim().is_empty()
+    {
+        map.insert("q".into(), vec![q.clone()]);
+    }
+    if let Some(r) = params.rok.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("rok".into(), vec![r.clone()]);
+    }
+    if let Some(r) = params.razeni.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("razeni".into(), vec![r.clone()]);
+    }
+    if let Some(s) = params.smer.as_ref()
+        && !s.trim().is_empty()
+    {
+        map.insert("smer".into(), vec![s.clone()]);
+    }
+    if let Some(rz) = params.rezim.as_ref()
+        && !rz.trim().is_empty()
+    {
+        map.insert("rezim".into(), vec![rz.clone()]);
+    }
+    if let Some(a) = params.audio.as_ref()
+        && !a.trim().is_empty()
+    {
+        map.insert("audio".into(), vec![a.clone()]);
+    }
+    if let Some(m) = params.audio_mode.as_ref()
+        && !m.trim().is_empty()
+    {
+        map.insert("audio_mode".into(), vec![m.clone()]);
+    }
+    map
+}
+
+fn build_series_filter_url(params: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut parts = Vec::new();
+    for (key, values) in params {
+        for v in values {
+            parts.push(format!("{}={}", key, urlencoding::encode(v)));
+        }
+    }
+    if parts.is_empty() {
+        "/serialy-online/".to_string()
+    } else {
+        format!("/serialy-online/?{}", parts.join("&"))
+    }
+}
+
 fn build_series_query_string(params: &SeriesQuery) -> String {
     let mut parts: Vec<(&str, String)> = Vec::new();
     if params.razeni.is_some() {
