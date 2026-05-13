@@ -27,6 +27,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.video_sources_helper import (
     dual_write_sktorrent,
     get_provider_ids,
@@ -89,7 +90,6 @@ def process_tv_show_episode(
     # Prefer Czech localisation — /tv-porady/ is a cs-CZ catalog, fall back
     # only when TMDB has no CZ entry for this show.
     title = (tv.name_cs or tv.name_en or tv.original_name or "").strip()
-    description = tv.overview_cs or tv.overview_en
 
     qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else None
 
@@ -106,6 +106,23 @@ def process_tv_show_episode(
     if row:
         tv_show_id, _slug = row
     else:
+        # Gemma rewrite is deferred to here (Copilot review on PR #711):
+        # building `sources` and calling `generate_unique_cs` up-front meant
+        # every "add new episode to existing show" path was burning Gemma
+        # quota for a `description` that would never be used. Now it only
+        # runs on the actual INSERT path.
+        sources: list[tuple[str, str]] = []
+        if tv.overview_cs:
+            sources.append(("TMDB CS", tv.overview_cs))
+        if tv.overview_en:
+            sources.append(("TMDB EN", tv.overview_en))
+        # Gemma may return None on quota / failure; falling back to the raw
+        # overview keeps the row populated rather than NULL.
+        generated = generate_unique_cs(
+            title, tv.first_air_year, sources, is_series=True
+        )
+        description = generated or tv.overview_cs or tv.overview_en
+
         base_slug = _slugify(title) or f"tv-porad-{tv.tmdb_id}"
         slug = _unique_slug(cur, base_slug)
         try:
