@@ -196,6 +196,16 @@ impl TvShowQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    /// Credibility threshold for rating-sort listings (#704). Mirrors
+    /// FilmsQuery::votes_threshold_predicate — see comment there.
+    fn votes_threshold_predicate(&self) -> Option<&'static str> {
+        match self.razeni.as_deref() {
+            Some("imdb") => Some("s.imdb_votes >= 500"),
+            Some("tmdb") => Some("s.tmdb_vote_count >= 50"),
+            _ => None,
+        }
+    }
+
     /// Whether the user picked a non-default sort that the latest-episode
     /// listing can't honour (it's hard-ordered by `created_at`). When true,
     /// the handler switches to a shows-by-`order_clause` query instead so
@@ -274,14 +284,22 @@ pub async fn tv_porady_list(
     // parity with films/series). Diacritic-exact hits rank first via
     // the leading CASE in ORDER BY.
     let (total_count, shows, episodes) = if let Some(ref pattern) = search_q {
-        let count_row = sqlx::query_as::<_, CountRow>(
-            "SELECT count(*) as count FROM tv_shows \
-             WHERE unaccent(title) ILIKE unaccent($1) \
-                OR unaccent(original_title) ILIKE unaccent($1)",
-        )
-        .bind(pattern)
-        .fetch_one(&state.db)
-        .await?;
+        // Same vote-count gating as the shows-mode branch — surfaced by
+        // Copilot review on PR #710. Otherwise a `?q=…&razeni=imdb` search
+        // would re-introduce low-vote outliers at the top.
+        let votes_clause = params
+            .votes_threshold_predicate()
+            .map(|p| format!(" AND {p}"))
+            .unwrap_or_default();
+        let count_query = format!(
+            "SELECT count(*) as count FROM tv_shows s \
+             WHERE (unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause}"
+        );
+        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
+            .bind(pattern)
+            .fetch_one(&state.db)
+            .await?;
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
@@ -289,8 +307,8 @@ pub async fn tv_porady_list(
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s \
-             WHERE unaccent(s.title) ILIKE unaccent($1) \
-                OR unaccent(s.original_title) ILIKE unaccent($1) \
+             WHERE (unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause} \
              ORDER BY \
                (CASE WHEN s.title ILIKE $1 OR s.original_title ILIKE $1 THEN 0 ELSE 1 END), \
                {order} LIMIT $2 OFFSET $3"
@@ -309,7 +327,12 @@ pub async fn tv_porady_list(
         // home view. When the user explicitly asks for a different order,
         // switch to a shows-by-`order_clause` query so the page actually
         // reorders instead of silently ignoring `razeni=` (#702 review).
-        let count_row = sqlx::query_as::<_, CountRow>("SELECT count(*) as count FROM tv_shows")
+        let votes_filter = params
+            .votes_threshold_predicate()
+            .map(|p| format!("WHERE {p}"))
+            .unwrap_or_default();
+        let count_query = format!("SELECT count(*) as count FROM tv_shows s {votes_filter}");
+        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
             .fetch_one(&state.db)
             .await?;
         let query = format!(
@@ -317,7 +340,7 @@ pub async fn tv_porady_list(
              s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
-             FROM tv_shows s \
+             FROM tv_shows s {votes_filter} \
              ORDER BY {order} LIMIT $1 OFFSET $2"
         );
         let rows = sqlx::query_as::<_, TvShowRow>(&query)
