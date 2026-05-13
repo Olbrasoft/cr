@@ -93,6 +93,21 @@
                     <option value="asc">↑ Vzestupně</option>
                 </select>
             </label>
+            {# Quick audio-language selector (#716). Five options cover the
+               common cases at a glance; cross-language combinations are
+               still available through the detailed filter panel. The
+               value encodes both language and coverage mode so a single
+               onchange call can rewrite both URL params at once. #}
+            <label class="toolbar-group">
+                <span class="toolbar-label">Jazyk:</span>
+                <select id="quick-audio" onchange="applyQuickAudio(this.value)" title="Zvuková verze epizod" class="quick-audio-select">
+                    <option value="vse">Vše</option>
+                    <option value="cs:all">Česky kompletně</option>
+                    <option value="cs:any">Česky alespoň částečně</option>
+                    <option value="sk:all">Slovensky kompletně</option>
+                    <option value="sk:any">Slovensky alespoň částečně</option>
+                </select>
+            </label>
             <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout na zobrazení seznamem" aria-label="Zobrazení">
                 <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
                 <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
@@ -620,6 +635,44 @@ function applyFilters() {
 function resetFilters() {
     window.location = '/serialy-online/';
 }
+
+/* --- Quick audio selector in the toolbar (#716) ---
+   Value encodes "lang:mode" so one onchange call rewrites both params.
+   "vse" clears both. Cross-lang combinations (e.g. CZ+SK) still need
+   the detailed filter panel; this is the one-click shortcut for the
+   90 % case. */
+function applyQuickAudio(value) {
+    var u = new URL(window.location.href);
+    u.searchParams.delete('strana');
+    if (!value || value === 'vse') {
+        u.searchParams.delete('audio');
+        u.searchParams.delete('audio_mode');
+    } else {
+        var parts = value.split(':');
+        u.searchParams.set('audio', parts[0]);
+        if (parts[1] === 'all') u.searchParams.set('audio_mode', 'all');
+        else u.searchParams.delete('audio_mode');
+    }
+    window.location = u.toString();
+}
+
+/* Prefill the quick audio selector from URL on page load so the
+   selected option survives reload / back-button navigation. */
+(function() {
+    var qa = document.getElementById('quick-audio');
+    if (!qa) return;
+    var urlP = new URLSearchParams(window.location.search);
+    var lang = urlP.get('audio');
+    var mode = urlP.get('audio_mode') === 'all' ? 'all' : 'any';
+    // Only reflect a single-language selection — multi-lang stays on
+    // "Vše" so the dropdown doesn't lie about the active filter.
+    if (lang && !lang.includes(',')) {
+        var v = lang + ':' + mode;
+        if (Array.from(qa.options).some(function(o){ return o.value === v; })) {
+            qa.value = v;
+        }
+    }
+})();
 
 /* --- Filter: prefill + mutual exclusion + badge counter --- */
 (function() {
