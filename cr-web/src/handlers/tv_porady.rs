@@ -356,7 +356,9 @@ pub async fn tv_porady_list(
         .fetch_one(&state.db)
         .await?;
 
-        let episodes = fetch_latest_episode_cards(&state, TV_SHOWS_PER_PAGE, offset).await?;
+        let episodes =
+            fetch_latest_episode_cards(&state, !params.sort_asc(), TV_SHOWS_PER_PAGE, offset)
+                .await?;
         (count_row.count.unwrap_or(0), Vec::new(), episodes)
     };
 
@@ -407,33 +409,40 @@ fn is_active_search(q: Option<&str>) -> bool {
 
 async fn fetch_latest_episode_cards(
     state: &AppState,
+    desc: bool,
     limit: i64,
     offset: i64,
 ) -> WebResult<Vec<TvEpisodeCardRow>> {
-    let sql = "WITH per_show AS ( \
-        SELECT DISTINCT ON (e.tv_show_id) \
-            e.id, e.tv_show_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
-        FROM tv_episodes e \
-        ORDER BY e.tv_show_id, e.created_at DESC \
-     ) \
-     SELECT ps.id, \
-        s.slug AS tv_show_slug, \
-        s.title AS tv_show_title, \
-        s.original_title AS tv_show_original_title, \
-        s.first_air_year AS tv_show_first_air_year, \
-        s.tmdb_rating AS tv_show_tmdb_rating, \
-        s.imdb_rating AS tv_show_imdb_rating, \
-        s.csfd_rating AS tv_show_csfd_rating, \
-        s.description AS tv_show_description, \
-        ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
-        (SELECT e2.slug FROM tv_episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
-        (SELECT e2.episode_name FROM tv_episodes e2 WHERE e2.id = ps.id) AS episode_name \
-     FROM per_show ps \
-     JOIN tv_shows s ON s.id = ps.tv_show_id \
-     ORDER BY ps.created_at DESC NULLS LAST \
-     LIMIT $1 OFFSET $2";
+    // razeni=pridano honors smer (#serialy-razeni fix). The outer ORDER BY
+    // was hardcoded DESC, so `?smer=asc` toggled the chip but the grid
+    // stayed the same.
+    let direction = if desc { "DESC" } else { "ASC" };
+    let sql = format!(
+        "WITH per_show AS ( \
+            SELECT DISTINCT ON (e.tv_show_id) \
+                e.id, e.tv_show_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
+            FROM tv_episodes e \
+            ORDER BY e.tv_show_id, e.created_at DESC \
+         ) \
+         SELECT ps.id, \
+            s.slug AS tv_show_slug, \
+            s.title AS tv_show_title, \
+            s.original_title AS tv_show_original_title, \
+            s.first_air_year AS tv_show_first_air_year, \
+            s.tmdb_rating AS tv_show_tmdb_rating, \
+            s.imdb_rating AS tv_show_imdb_rating, \
+            s.csfd_rating AS tv_show_csfd_rating, \
+            s.description AS tv_show_description, \
+            ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
+            (SELECT e2.slug FROM tv_episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
+            (SELECT e2.episode_name FROM tv_episodes e2 WHERE e2.id = ps.id) AS episode_name \
+         FROM per_show ps \
+         JOIN tv_shows s ON s.id = ps.tv_show_id \
+         ORDER BY ps.created_at {direction} NULLS LAST \
+         LIMIT $1 OFFSET $2"
+    );
 
-    let rows = sqlx::query_as::<_, TvEpisodeCardRow>(sql)
+    let rows = sqlx::query_as::<_, TvEpisodeCardRow>(&sql)
         .bind(limit)
         .bind(offset)
         .fetch_all(&state.db)
