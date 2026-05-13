@@ -254,6 +254,16 @@ impl SeriesQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    /// Credibility threshold for rating-sort listings (#704). Mirrors
+    /// FilmsQuery::votes_threshold_predicate — see comment there.
+    fn votes_threshold_predicate(&self) -> Option<&'static str> {
+        match self.razeni.as_deref() {
+            Some("imdb") => Some("s.imdb_votes >= 500"),
+            Some("tmdb") => Some("s.tmdb_vote_count >= 50"),
+            _ => None,
+        }
+    }
+
     /// Whether the user picked a non-default sort that the latest-episode
     /// listing can't honour (it's hard-ordered by `created_at`). When true
     /// and no genre/year filters are active, the handler switches to a
@@ -449,7 +459,12 @@ pub async fn series_list(
         // silently ignore `razeni=`, so switch to a series-by-`order_clause`
         // query (parity with tv_porady, originally surfaced by Copilot review
         // on #702).
-        let count_row = sqlx::query_as::<_, CountRow>("SELECT count(*) as count FROM series")
+        let votes_filter = params
+            .votes_threshold_predicate()
+            .map(|p| format!("WHERE {p}"))
+            .unwrap_or_default();
+        let count_query = format!("SELECT count(*) as count FROM series s {votes_filter}");
+        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
             .fetch_one(&state.db)
             .await?;
         let query = format!(
@@ -457,7 +472,7 @@ pub async fn series_list(
              s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
-             FROM series s \
+             FROM series s {votes_filter} \
              ORDER BY {order} LIMIT $1 OFFSET $2"
         );
         let rows = sqlx::query_as::<_, SeriesRow>(&query)

@@ -412,6 +412,19 @@ impl FilmsQuery {
         self.razeni.as_deref().unwrap_or("pridano")
     }
 
+    /// Credibility threshold for rating-sort listings (#704). 10/10 with 5
+    /// voters used to outrank Shawshank's 3M voters at the top of
+    /// `?razeni=imdb` / `?razeni=tmdb`; the thresholds keep low-sample
+    /// outliers off the leaderboard. NULL votes evaluate to false in the
+    /// inequality, so no explicit `IS NOT NULL` is needed.
+    fn votes_threshold_predicate(&self) -> Option<&'static str> {
+        match self.razeni.as_deref() {
+            Some("imdb") => Some("f.imdb_votes >= 500"),
+            Some("tmdb") => Some("f.tmdb_vote_count >= 50"),
+            _ => None,
+        }
+    }
+
     fn parse_genre_slugs(input: Option<&String>) -> Vec<String> {
         // Dedup to keep AND-mode `HAVING COUNT(DISTINCT g.slug) = slugs.len()` correct.
         let mut slugs: Vec<String> = Vec::new();
@@ -1091,6 +1104,9 @@ async fn films_by_genre(
     if let Some(af) = params.audio_filter() {
         where_parts.push(af.to_string());
     }
+    if let Some(p) = params.votes_threshold_predicate() {
+        where_parts.push(p.to_string());
+    }
     let where_clause = where_parts.join(" AND ");
 
     // Count
@@ -1417,6 +1433,9 @@ async fn run_films_query(
                  WHERE vs.film_id = f.id AND vs.is_alive)"
             .to_string(),
     );
+    if let Some(p) = params.votes_threshold_predicate() {
+        where_parts.push(p.to_string());
+    }
 
     let where_clause = if where_parts.is_empty() {
         String::new()
