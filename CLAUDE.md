@@ -368,25 +368,43 @@ cargo run -p cr-web    # Listens on port 3000
 
 **CRITICAL: Deploy is ALWAYS done from the LOCAL machine. NEVER run `docker compose build` on the server.**
 
-The deploy process is: cross-compile locally → scp binary → docker cp → restart. This takes ~20 seconds for incremental builds and keeps the server minimal (no Rust toolchain, no build tools).
+The deploy process is: cross-compile locally → scp binary → rsync scripts/ → restart. This takes ~20 seconds for incremental builds and keeps the server minimal (no Rust toolchain, no build tools).
 
 **Standard deploy (after merge to main):**
 ```bash
 # 1. Pull latest main
 git checkout main && git pull
 
-# 2. Cross-compile locally (~10s incremental, ~90s clean build)
-#    IMPORTANT: If migration files changed, do `cargo clean` first to force recompile!
-SQLX_OFFLINE=true cargo zigbuild --release --target aarch64-unknown-linux-musl -p cr-web
+# 2. If THIS pull introduced migration changes, `cargo clean` first to force
+#    re-embedding of checksums. `@{1}..HEAD` reads the reflog so it catches
+#    multi-commit fast-forwards (HEAD~1 would only see the topmost commit).
+[ -n "$(git diff '@{1}..HEAD' --name-only -- 'cr-infra/migrations/*.sql')" ] && cargo clean
 
-# 3. Upload binary to VPS + replace in container + restart (~10s)
-scp -P 2222 target/aarch64-unknown-linux-musl/release/cr-web root@46.225.101.253:/tmp/cr-web-new
-ssh -p 2222 root@46.225.101.253 "docker cp /tmp/cr-web-new cr-web-1:/app/cr-web && docker compose -f /opt/cr/docker-compose.yml restart web"
+# 3. One-shot deploy: drift check → cross-compile → scp binary → rsync scripts/
+#    → restart container → curl /health. Takes ~20s on a warm cache.
+./scripts/deploy.sh
 
-# 4. Health check (MUST return 200)
-curl -s -o /dev/null -w "%{http_code}" https://ceskarepublika.wiki/health
+# 4. Playwright verify (from local PC) — see "Playwright Testing Rules" above
+```
 
-# 5. Playwright verify (from local PC)
+`scripts/deploy.sh` is the single source of truth for the deploy sequence. Read it before running if you want to understand each step; the script is heavily commented. Always rsyncs `scripts/` alongside the binary — Python importers and the Rust binary share schema assumptions (column names, table layout), so they must move together. Skipping the script sync caused a real incident on 2026-05-13: 12 films imported with TMDB rating in the wrong column because `enricher.py` on prod was 2 days stale relative to the post-migration-069 schema (see #707).
+
+If you must run the steps manually (e.g. partial deploy of just the binary or just the scripts), the canonical commands are:
+
+```bash
+# Just the binary. /opt/cr/cr-web-bin is bind-mounted into /app/cr-web in
+# the running container, so we can't overwrite it in place — plain scp
+# fails with ETXTBSY (running executable) and `docker cp` fails with
+# "device or resource busy" against the bind mount. Stop the container,
+# replace the file on the host, start the container. ~5s downtime.
+ssh -p 2222 root@46.225.101.253 "docker compose -f /opt/cr/docker-compose.yml stop web"
+scp -P 2222 target/aarch64-unknown-linux-musl/release/cr-web \
+    root@46.225.101.253:/opt/cr/cr-web-bin
+ssh -p 2222 root@46.225.101.253 "docker compose -f /opt/cr/docker-compose.yml start web"
+
+# Just the scripts (e.g. fixing a Python-only bug between Rust deploys):
+rsync -avz --delete --exclude '__pycache__/' --exclude '*.pyc' \
+    -e "ssh -p 2222" scripts/ root@46.225.101.253:/opt/cr/scripts/
 ```
 
 **For template/static file changes** (no Rust recompilation needed):
