@@ -457,38 +457,27 @@ pub async fn series_list(
             .fetch_all(&state.db)
             .await?;
         (count_row.count.unwrap_or(0), rows, Vec::new())
-    } else if include.is_empty()
-        && exclude.is_empty()
-        && year_f.is_none()
-        && params.wants_shows_mode()
-    {
-        // Non-default sort (rok / imdb / tmdb / nazev) without filters: the
-        // latest-episode listing is hard-ordered by `created_at` and would
-        // silently ignore `razeni=`, so switch to a series-by-`order_clause`
-        // query (parity with tv_porady, originally surfaced by Copilot review
-        // on #702).
-        let votes_filter = params
-            .votes_threshold_predicate()
-            .map(|p| format!("WHERE {p}"))
-            .unwrap_or_default();
-        let count_query = format!("SELECT count(*) as count FROM series s {votes_filter}");
-        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
-            .fetch_one(&state.db)
-            .await?;
-        let query = format!(
-            "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
-             s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
-             s.season_count, s.episode_count, s.added_at, \
-             s.tmdb_poster_path \
-             FROM series s {votes_filter} \
-             ORDER BY {order} LIMIT $1 OFFSET $2"
-        );
-        let rows = sqlx::query_as::<_, SeriesRow>(&query)
-            .bind(SERIES_PER_PAGE)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await?;
-        (count_row.count.unwrap_or(0), rows, Vec::new())
+    } else if params.wants_shows_mode() {
+        // Non-default sort (rok / imdb / tmdb / nazev): drop the latest-
+        // episode listing (which is hard-ordered by `created_at` and would
+        // silently ignore razeni) and run a series-by-`order_clause` query
+        // instead. Pre-fix this only kicked in when no genre/year filters
+        // were active; filters used to fall through to the latest-episode
+        // branch which also ignored razeni. Now filters are pushed down
+        // into the shows query so /serialy-online/sci-fi/?razeni=tmdb
+        // actually reorders.
+        let (rows, total) = run_shows_mode_query(
+            &state.db,
+            order,
+            &include,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+            params.votes_threshold_predicate(),
+            offset,
+        )
+        .await?;
+        (total, rows, Vec::new())
     } else if include.is_empty() && exclude.is_empty() && year_f.is_none() {
         // Default home listing (no filters): latest episode per series
         let count_row = sqlx::query_as::<_, CountRow>(
@@ -497,9 +486,17 @@ pub async fn series_list(
         .fetch_one(&state.db)
         .await?;
 
-        let episodes =
-            fetch_latest_episode_cards(&state, &[], false, &[], None, SERIES_PER_PAGE, offset)
-                .await?;
+        let episodes = fetch_latest_episode_cards(
+            &state,
+            &[],
+            false,
+            &[],
+            None,
+            params.sort_desc(),
+            SERIES_PER_PAGE,
+            offset,
+        )
+        .await?;
         (count_row.count.unwrap_or(0), Vec::new(), episodes)
     } else {
         // Filters active on the all-series page
@@ -512,6 +509,7 @@ pub async fn series_list(
             params.genre_mode_and(),
             &exclude,
             year_f,
+            params.sort_desc(),
             SERIES_PER_PAGE,
             offset,
         )
@@ -582,15 +580,112 @@ fn is_active_search(q: Option<&str>) -> bool {
     q.map(str::trim).is_some_and(|t| t.len() >= 2)
 }
 
+/// Series-by-`order_clause` query with optional include/exclude/year
+/// filters plus the #704 vote-count gate. Runs whenever
+/// `params.wants_shows_mode()` is true so /serialy-online/sci-fi/
+/// ?razeni=tmdb actually reorders by rating rather than silently falling
+/// back to the latest-episode listing's `created_at DESC`.
+#[allow(clippy::too_many_arguments)]
+async fn run_shows_mode_query(
+    db: &sqlx::PgPool,
+    order: &str,
+    include_slugs: &[String],
+    include_mode_and: bool,
+    exclude_slugs: &[String],
+    year_f: Option<i16>,
+    votes_predicate: Option<&str>,
+    offset: i64,
+) -> WebResult<(Vec<SeriesRow>, i64)> {
+    let mut where_parts: Vec<String> = Vec::new();
+    let mut bind_idx: i32 = 1;
+    if !include_slugs.is_empty() {
+        if include_mode_and {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}) \
+                 GROUP BY sg.series_id HAVING COUNT(DISTINCT g.slug) = {})",
+                include_slugs.len()
+            ));
+        } else {
+            where_parts.push(format!(
+                "s.id IN (SELECT sg.series_id FROM series_genres sg \
+                 JOIN genres g ON g.id = sg.genre_id \
+                 WHERE g.slug = ANY(${bind_idx}))"
+            ));
+        }
+        bind_idx += 1;
+    }
+    if !exclude_slugs.is_empty() {
+        where_parts.push(format!(
+            "s.id NOT IN (SELECT sg2.series_id FROM series_genres sg2 \
+             JOIN genres g2 ON g2.id = sg2.genre_id \
+             WHERE g2.slug = ANY(${bind_idx}))"
+        ));
+        bind_idx += 1;
+    }
+    if year_f.is_some() {
+        where_parts.push(format!("s.first_air_year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if let Some(p) = votes_predicate {
+        where_parts.push(p.to_string());
+    }
+
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
+
+    let count_sql = format!("SELECT count(*) as count FROM series s {where_clause}");
+    let mut cq = sqlx::query_as::<_, CountRow>(&count_sql);
+    if !include_slugs.is_empty() {
+        cq = cq.bind(include_slugs.to_vec());
+    }
+    if !exclude_slugs.is_empty() {
+        cq = cq.bind(exclude_slugs.to_vec());
+    }
+    if let Some(yr) = year_f {
+        cq = cq.bind(yr);
+    }
+    let count_row = cq.fetch_one(db).await?;
+
+    let rows_sql = format!(
+        "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
+         s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
+         s.season_count, s.episode_count, s.added_at, \
+         s.tmdb_poster_path \
+         FROM series s {where_clause} \
+         ORDER BY {order} LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        limit_idx = bind_idx,
+        offset_idx = bind_idx + 1,
+    );
+    let mut rq = sqlx::query_as::<_, SeriesRow>(&rows_sql);
+    if !include_slugs.is_empty() {
+        rq = rq.bind(include_slugs.to_vec());
+    }
+    if !exclude_slugs.is_empty() {
+        rq = rq.bind(exclude_slugs.to_vec());
+    }
+    if let Some(yr) = year_f {
+        rq = rq.bind(yr);
+    }
+    let rows = rq.bind(SERIES_PER_PAGE).bind(offset).fetch_all(db).await?;
+    Ok((rows, count_row.count.unwrap_or(0)))
+}
+
 /// Latest-episode-per-series query. Supports include/exclude genre slug lists
 /// (OR / AND mode) + optional year filter. `series.id` is carried through so
 /// list-view can look up genre chips per series.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_latest_episode_cards(
     state: &AppState,
     include_slugs: &[String],
     include_mode_and: bool,
     exclude_slugs: &[String],
     year_f: Option<i16>,
+    desc: bool,
     limit: i64,
     offset: i64,
 ) -> WebResult<Vec<EpisodeCardRow>> {
@@ -631,6 +726,10 @@ async fn fetch_latest_episode_cards(
         format!("AND {}", where_parts.join(" AND "))
     };
 
+    // razeni=pridano honors smer (#serialy-razeni fix). Pre-fix the outer
+    // ORDER BY was hardcoded DESC, so `?smer=asc` toggled the chip but the
+    // grid stayed the same.
+    let direction = if desc { "DESC" } else { "ASC" };
     let sql = format!(
         "WITH per_series AS ( \
             SELECT DISTINCT ON (e.series_id) \
@@ -655,7 +754,7 @@ async fn fetch_latest_episode_cards(
             (SELECT e2.episode_name FROM episodes e2 WHERE e2.id = ps.id) AS episode_name \
          FROM per_series ps \
          JOIN series s ON s.id = ps.series_id \
-         ORDER BY ps.created_at DESC NULLS LAST \
+         ORDER BY ps.created_at {direction} NULLS LAST \
          LIMIT $1 OFFSET $2"
     );
 
@@ -1152,26 +1251,46 @@ async fn series_by_genre(
         }
     }
 
-    let total_count = count_filtered_series(
-        &state,
-        &include_slugs,
-        params.genre_mode_and(),
-        &exclude,
-        year_f,
-    )
-    .await?;
+    // razeni=imdb/tmdb/nazev/rok on a /serialy-online/{genre}/ page now
+    // honors the requested order — pre-fix this branch always rendered
+    // the latest-episode grid which is hard-coded `created_at DESC`, so
+    // the user's "Podle hodnocení TMDB" pick was silently ignored.
+    let (series_rows, episodes, total_count) = if params.wants_shows_mode() {
+        let (rows, total) = run_shows_mode_query(
+            &state.db,
+            params.order_clause(),
+            &include_slugs,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+            params.votes_threshold_predicate(),
+            offset,
+        )
+        .await?;
+        (rows, Vec::new(), total)
+    } else {
+        let total = count_filtered_series(
+            &state,
+            &include_slugs,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+        )
+        .await?;
+        let eps = fetch_latest_episode_cards(
+            &state,
+            &include_slugs,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+            params.sort_desc(),
+            SERIES_PER_PAGE,
+            offset,
+        )
+        .await?;
+        (Vec::new(), eps, total)
+    };
     let total_pages = (total_count as f64 / SERIES_PER_PAGE as f64).ceil() as i64;
-
-    let episodes = fetch_latest_episode_cards(
-        &state,
-        &include_slugs,
-        params.genre_mode_and(),
-        &exclude,
-        year_f,
-        SERIES_PER_PAGE,
-        offset,
-    )
-    .await?;
 
     let all_genres = sqlx::query_as::<_, GenreRow>(
         "SELECT g.id, g.slug, g.name_cs FROM genres g \
@@ -1182,12 +1301,12 @@ async fn series_by_genre(
     .await?;
 
     let query_string = build_series_query_string(&params);
-    let series_genres_map = load_series_genres_map(&state.db, &[], &episodes).await?;
+    let series_genres_map = load_series_genres_map(&state.db, &series_rows, &episodes).await?;
 
     let tmpl = SeriesListTemplate {
         img: state.image_base_url.clone(),
         episodes,
-        series: Vec::new(),
+        series: series_rows,
         genres: all_genres,
         page,
         total_pages,
