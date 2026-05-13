@@ -27,6 +27,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.video_sources_helper import (
     dual_write_sktorrent,
     get_provider_ids,
@@ -89,7 +90,22 @@ def process_tv_show_episode(
     # Prefer Czech localisation — /tv-porady/ is a cs-CZ catalog, fall back
     # only when TMDB has no CZ entry for this show.
     title = (tv.name_cs or tv.name_en or tv.original_name or "").strip()
-    description = tv.overview_cs or tv.overview_en
+
+    # Gemma rewrite for tv_shows.description (#565). Previously this column
+    # was a byte-for-byte copy of TMDB's cs-CZ / en-US overview, which
+    # Google flags as duplicate content vs every other Czech site fed from
+    # the same TMDB row. Same prompt path as series_enricher (is_series=True
+    # — TMDB rates TV shows and "tv pořady" identically in tone, so reusing
+    # the 4-7 sentences / 300-600 chars series prompt is intentional).
+    # Gemma may return None on quota / failure; falling back to the raw
+    # overview keeps the row populated rather than NULL.
+    sources: list[tuple[str, str]] = []
+    if tv.overview_cs:
+        sources.append(("TMDB CS", tv.overview_cs))
+    if tv.overview_en:
+        sources.append(("TMDB EN", tv.overview_en))
+    generated = generate_unique_cs(title, tv.first_air_year, sources, is_series=True)
+    description = generated or tv.overview_cs or tv.overview_en
 
     qualities_str = ",".join(sktorrent_qualities) if sktorrent_qualities else None
 
