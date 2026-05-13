@@ -216,6 +216,15 @@ pub struct SeriesQuery {
     rok: Option<String>,   // year filter
     rezim: Option<String>, // "and" / "or"
     smer: Option<String>,  // "asc" / "desc"
+    // #716 — audio-language filter. Same `audio=cs,sk,en` shape as
+    // FilmsQuery, but with a coverage-mode switch unique to series:
+    // language is a property of the video source on each episode, not
+    // of the series itself, so a series can be partially or fully in a
+    // language. `audio_mode=any` (default) means "at least one episode
+    // has a source in every selected language"; `audio_mode=all` means
+    // "every episode has a source in every selected language".
+    audio: Option<String>,
+    audio_mode: Option<String>,
 }
 
 impl SeriesQuery {
@@ -301,6 +310,40 @@ impl SeriesQuery {
     fn year_filter(&self) -> Option<i16> {
         self.rok.as_ref().and_then(|s| s.trim().parse().ok())
     }
+
+    /// Parse `audio=cs,sk,en` into validated ISO-639 codes. Mirrors
+    /// FilmsQuery::audio_langs_filter — the regex-shape guard avoids
+    /// dirty values in the GIN-array binding even though the binding
+    /// itself is parameterised.
+    pub(crate) fn audio_langs_filter(&self) -> Option<Vec<String>> {
+        let raw = self.audio.as_deref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let langs: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s.len() <= 3 && s.chars().all(|c| c.is_ascii_lowercase()))
+            .collect();
+        if langs.is_empty() { None } else { Some(langs) }
+    }
+
+    /// `true` when the user picked the strict "every episode has it"
+    /// mode. Default (None or anything else) is the permissive `any`
+    /// mode that hits `series.audio_langs_any`.
+    pub(crate) fn audio_mode_is_all(&self) -> bool {
+        self.audio_mode.as_deref() == Some("all")
+    }
+
+    /// Column name on `series` to apply `@>` against. Centralised so
+    /// every WHERE-clause builder picks the same one.
+    pub(crate) fn audio_rollup_column(&self) -> &'static str {
+        if self.audio_mode_is_all() {
+            "s.audio_langs_all"
+        } else {
+            "s.audio_langs_any"
+        }
+    }
 }
 
 #[derive(Template)]
@@ -325,6 +368,15 @@ struct SeriesListTemplate {
     selected_genre_slugs: Vec<String>,
     /// Genres per series, keyed by series id — rendered as chips in desktop list view.
     series_genres_map: std::collections::HashMap<i32, Vec<SeriesGenreNameRow>>,
+    /// Audio-language filter (#716). Comma-separated ISO codes selected by user.
+    selected_audio_langs: Vec<String>,
+    /// `true` when `audio_mode=all` is active (strict "every episode has it").
+    /// `false` is the permissive "any episode" default.
+    audio_mode_all: bool,
+    /// Full set of query params currently on the URL, keyed by param name.
+    /// Used by chip-removal links so a click rebuilds the URL minus one
+    /// param while preserving everything else (Copilot review on PR #717).
+    full_query: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl SeriesListTemplate {
@@ -336,6 +388,47 @@ impl SeriesListTemplate {
     }
     fn is_current_genre(&self, g: &GenreRow) -> bool {
         self.current_genre.as_ref().is_some_and(|cg| cg.id == g.id)
+    }
+    fn is_audio_selected(&self, lang: &str) -> bool {
+        self.selected_audio_langs.iter().any(|l| l == lang)
+    }
+    fn has_audio_filter(&self) -> bool {
+        !self.selected_audio_langs.is_empty()
+    }
+
+    /// Build a URL back to /serialy-online/ with the current filters
+    /// minus one audio language. Mirrors films `remove_audio_url`. If
+    /// the removed language was the last one, `audio_mode` is dropped
+    /// too so the URL doesn't carry a dangling coverage flag with no
+    /// languages to apply it to. `strana` is reset so removing a filter
+    /// returns the user to page 1 of the new result set.
+    fn remove_audio_url(&self, lang: &str) -> String {
+        let mut params = self.full_query.clone();
+        if let Some(vs) = params.get_mut("audio") {
+            let rebuilt: Vec<String> = vs
+                .iter()
+                .filter_map(|existing_csv| {
+                    let filtered: Vec<&str> = existing_csv
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| *s != lang)
+                        .collect();
+                    if filtered.is_empty() {
+                        None
+                    } else {
+                        Some(filtered.join(","))
+                    }
+                })
+                .collect();
+            if rebuilt.is_empty() {
+                params.remove("audio");
+                params.remove("audio_mode");
+            } else {
+                *vs = rebuilt;
+            }
+        }
+        params.remove("strana");
+        build_series_filter_url(&params)
     }
     // NOTE: Askama auto-refs arguments in template method calls — `{{ self.series_genres(s.id) }}`
     // generates a call with `&s.id`. Keep the signature as `&i32` to match; Copilot's
@@ -413,6 +506,8 @@ pub async fn series_list(
     let include = params.include_genres();
     let exclude = params.exclude_genres();
     let year_f = params.year_filter();
+    let audio_langs = params.audio_langs_filter();
+    let audio_col = params.audio_rollup_column();
 
     // Search mode: show series results (by title). No search: show latest-
     // episode-per-series grid (bombuj.si style).
@@ -429,15 +524,25 @@ pub async fn series_list(
             .votes_threshold_predicate()
             .map(|p| format!(" AND {p}"))
             .unwrap_or_default();
+        // #716 audio filter. $1 is the search pattern, $2 the audio array
+        // (when present), then LIMIT/OFFSET trail. We thread the audio
+        // bind index dynamically so the same SQL string serves both
+        // "filter present" and "no filter" cases.
+        let (audio_clause, limit_idx, offset_idx) = if audio_langs.is_some() {
+            (format!(" AND {audio_col} @> $2::TEXT[]"), 3, 4)
+        } else {
+            (String::new(), 2, 3)
+        };
         let count_query = format!(
             "SELECT count(*) as count FROM series s \
              WHERE (unaccent(s.title) ILIKE unaccent($1) \
-                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause}"
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause}{audio_clause}"
         );
-        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
-            .bind(pattern)
-            .fetch_one(&state.db)
-            .await?;
+        let mut cq = sqlx::query_as::<_, CountRow>(&count_query).bind(pattern);
+        if let Some(ref langs) = audio_langs {
+            cq = cq.bind(langs.clone());
+        }
+        let count_row = cq.fetch_one(&state.db).await?;
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
@@ -446,13 +551,16 @@ pub async fn series_list(
              s.tmdb_poster_path \
              FROM series s \
              WHERE (unaccent(s.title) ILIKE unaccent($1) \
-                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause} \
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause}{audio_clause} \
              ORDER BY \
                (CASE WHEN s.title ILIKE $1 OR s.original_title ILIKE $1 THEN 0 ELSE 1 END), \
-               {order} LIMIT $2 OFFSET $3"
+               {order} LIMIT ${limit_idx} OFFSET ${offset_idx}"
         );
-        let rows = sqlx::query_as::<_, SeriesRow>(&query)
-            .bind(pattern)
+        let mut rq = sqlx::query_as::<_, SeriesRow>(&query).bind(pattern);
+        if let Some(ref langs) = audio_langs {
+            rq = rq.bind(langs.clone());
+        }
+        let rows = rq
             .bind(SERIES_PER_PAGE)
             .bind(offset)
             .fetch_all(&state.db)
@@ -474,12 +582,15 @@ pub async fn series_list(
             params.genre_mode_and(),
             &exclude,
             year_f,
+            audio_langs.as_deref(),
+            audio_col,
             params.votes_threshold_predicate(),
             offset,
         )
         .await?;
         (total, rows, Vec::new())
-    } else if include.is_empty() && exclude.is_empty() && year_f.is_none() {
+    } else if include.is_empty() && exclude.is_empty() && year_f.is_none() && audio_langs.is_none()
+    {
         // Default home listing (no filters): latest episode per series
         let count_row = sqlx::query_as::<_, CountRow>(
             "SELECT count(DISTINCT e.series_id) as count FROM episodes e",
@@ -493,6 +604,8 @@ pub async fn series_list(
             false,
             &[],
             None,
+            None,
+            audio_col,
             params.sort_desc(),
             SERIES_PER_PAGE,
             offset,
@@ -501,15 +614,24 @@ pub async fn series_list(
         (count_row.count.unwrap_or(0), Vec::new(), episodes)
     } else {
         // Filters active on the all-series page
-        let count_row =
-            count_filtered_series(&state, &include, params.genre_mode_and(), &exclude, year_f)
-                .await?;
+        let count_row = count_filtered_series(
+            &state,
+            &include,
+            params.genre_mode_and(),
+            &exclude,
+            year_f,
+            audio_langs.as_deref(),
+            audio_col,
+        )
+        .await?;
         let episodes = fetch_latest_episode_cards(
             &state,
             &include,
             params.genre_mode_and(),
             &exclude,
             year_f,
+            audio_langs.as_deref(),
+            audio_col,
             params.sort_desc(),
             SERIES_PER_PAGE,
             offset,
@@ -540,7 +662,8 @@ pub async fn series_list(
     });
 
     let selected_genre_slugs: Vec<String> = include.clone();
-    let open_filter = !selected_genre_slugs.is_empty();
+    let selected_audio_langs: Vec<String> = audio_langs.clone().unwrap_or_default();
+    let open_filter = !selected_genre_slugs.is_empty() || !selected_audio_langs.is_empty();
     let series_genres_map = load_series_genres_map(&state.db, &series, &episodes).await?;
 
     let tmpl = SeriesListTemplate {
@@ -558,6 +681,9 @@ pub async fn series_list(
         open_filter,
         selected_genre_slugs,
         series_genres_map,
+        selected_audio_langs,
+        audio_mode_all: params.audio_mode_is_all(),
+        full_query: build_series_query_map(&params),
     };
     let html = tmpl.render()?;
     // Search-result HTML is `?q=`-derived: tag it `private,
@@ -594,6 +720,8 @@ async fn run_shows_mode_query(
     include_mode_and: bool,
     exclude_slugs: &[String],
     year_f: Option<i16>,
+    audio_langs: Option<&[String]>,
+    audio_col: &str,
     votes_predicate: Option<&str>,
     offset: i64,
 ) -> WebResult<(Vec<SeriesRow>, i64)> {
@@ -629,6 +757,10 @@ async fn run_shows_mode_query(
         where_parts.push(format!("s.first_air_year = ${bind_idx}"));
         bind_idx += 1;
     }
+    if audio_langs.is_some() {
+        where_parts.push(format!("{audio_col} @> ${bind_idx}::TEXT[]"));
+        bind_idx += 1;
+    }
     if let Some(p) = votes_predicate {
         where_parts.push(p.to_string());
     }
@@ -649,6 +781,9 @@ async fn run_shows_mode_query(
     }
     if let Some(yr) = year_f {
         cq = cq.bind(yr);
+    }
+    if let Some(langs) = audio_langs {
+        cq = cq.bind(langs.to_vec());
     }
     let count_row = cq.fetch_one(db).await?;
 
@@ -672,6 +807,9 @@ async fn run_shows_mode_query(
     if let Some(yr) = year_f {
         rq = rq.bind(yr);
     }
+    if let Some(langs) = audio_langs {
+        rq = rq.bind(langs.to_vec());
+    }
     let rows = rq.bind(SERIES_PER_PAGE).bind(offset).fetch_all(db).await?;
     Ok((rows, count_row.count.unwrap_or(0)))
 }
@@ -686,6 +824,8 @@ async fn fetch_latest_episode_cards(
     include_mode_and: bool,
     exclude_slugs: &[String],
     year_f: Option<i16>,
+    audio_langs: Option<&[String]>,
+    audio_col: &str,
     desc: bool,
     limit: i64,
     offset: i64,
@@ -720,6 +860,10 @@ async fn fetch_latest_episode_cards(
     }
     if year_f.is_some() {
         where_parts.push(format!("s.first_air_year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if audio_langs.is_some() {
+        where_parts.push(format!("{audio_col} @> ${bind_idx}::TEXT[]"));
     }
     let series_filter = if where_parts.is_empty() {
         String::new()
@@ -771,16 +915,22 @@ async fn fetch_latest_episode_cards(
     if let Some(yr) = year_f {
         q = q.bind(yr);
     }
+    if let Some(langs) = audio_langs {
+        q = q.bind(langs.to_vec());
+    }
     Ok(q.fetch_all(&state.db).await?)
 }
 
-/// Count series matching include/exclude/year filters (for pagination).
+/// Count series matching include/exclude/year/audio filters (for pagination).
+#[allow(clippy::too_many_arguments)]
 async fn count_filtered_series(
     state: &AppState,
     include_slugs: &[String],
     include_mode_and: bool,
     exclude_slugs: &[String],
     year_f: Option<i16>,
+    audio_langs: Option<&[String]>,
+    audio_col: &str,
 ) -> WebResult<i64> {
     let mut where_parts: Vec<String> =
         vec!["EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)".to_string()];
@@ -813,6 +963,10 @@ async fn count_filtered_series(
     }
     if year_f.is_some() {
         where_parts.push(format!("s.first_air_year = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if audio_langs.is_some() {
+        where_parts.push(format!("{audio_col} @> ${bind_idx}::TEXT[]"));
     }
     let sql = format!(
         "SELECT count(*) as count FROM series s WHERE {}",
@@ -827,6 +981,9 @@ async fn count_filtered_series(
     }
     if let Some(yr) = year_f {
         q = q.bind(yr);
+    }
+    if let Some(langs) = audio_langs {
+        q = q.bind(langs.to_vec());
     }
     let row = q.fetch_one(&state.db).await?;
     Ok(row.count.unwrap_or(0))
@@ -1256,6 +1413,8 @@ async fn series_by_genre(
     // honors the requested order — pre-fix this branch always rendered
     // the latest-episode grid which is hard-coded `created_at DESC`, so
     // the user's "Podle hodnocení TMDB" pick was silently ignored.
+    let audio_langs = params.audio_langs_filter();
+    let audio_col = params.audio_rollup_column();
     let (series_rows, episodes, total_count) = if params.wants_shows_mode() {
         let (rows, total) = run_shows_mode_query(
             &state.db,
@@ -1264,6 +1423,8 @@ async fn series_by_genre(
             params.genre_mode_and(),
             &exclude,
             year_f,
+            audio_langs.as_deref(),
+            audio_col,
             params.votes_threshold_predicate(),
             offset,
         )
@@ -1276,6 +1437,8 @@ async fn series_by_genre(
             params.genre_mode_and(),
             &exclude,
             year_f,
+            audio_langs.as_deref(),
+            audio_col,
         )
         .await?;
         let eps = fetch_latest_episode_cards(
@@ -1284,6 +1447,8 @@ async fn series_by_genre(
             params.genre_mode_and(),
             &exclude,
             year_f,
+            audio_langs.as_deref(),
+            audio_col,
             params.sort_desc(),
             SERIES_PER_PAGE,
             offset,
@@ -1304,6 +1469,7 @@ async fn series_by_genre(
     let query_string = build_series_query_string(&params);
     let series_genres_map = load_series_genres_map(&state.db, &series_rows, &episodes).await?;
 
+    let selected_audio_langs: Vec<String> = audio_langs.clone().unwrap_or_default();
     let tmpl = SeriesListTemplate {
         img: state.image_base_url.clone(),
         episodes,
@@ -1316,9 +1482,12 @@ async fn series_by_genre(
         sort_key: params.sort_key().to_string(),
         query_string,
         search_query: None,
-        open_filter: open_filter || !zanry_extras.is_empty(),
+        open_filter: open_filter || !zanry_extras.is_empty() || !selected_audio_langs.is_empty(),
         selected_genre_slugs: zanry_extras,
         series_genres_map,
+        selected_audio_langs,
+        audio_mode_all: params.audio_mode_is_all(),
+        full_query: build_series_query_map(&params),
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -1541,6 +1710,75 @@ pub async fn series_cover_large_dynamic(
 }
 
 /// Build pagination query string for series list views.
+/// Snapshot the active query into a BTreeMap that chip-removal links
+/// can mutate without touching the SeriesQuery itself. Keys mirror the
+/// SeriesQuery field names so build_series_filter_url emits the same
+/// shape the handler accepts on the next request.
+fn build_series_query_map(params: &SeriesQuery) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    if let Some(z) = params.zanry.as_ref()
+        && !z.trim().is_empty()
+    {
+        map.insert("zanry".into(), vec![z.clone()]);
+    }
+    if let Some(b) = params.bez.as_ref()
+        && !b.trim().is_empty()
+    {
+        map.insert("bez".into(), vec![b.clone()]);
+    }
+    if let Some(q) = params.q.as_ref()
+        && !q.trim().is_empty()
+    {
+        map.insert("q".into(), vec![q.clone()]);
+    }
+    if let Some(r) = params.rok.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("rok".into(), vec![r.clone()]);
+    }
+    if let Some(r) = params.razeni.as_ref()
+        && !r.trim().is_empty()
+    {
+        map.insert("razeni".into(), vec![r.clone()]);
+    }
+    if let Some(s) = params.smer.as_ref()
+        && !s.trim().is_empty()
+    {
+        map.insert("smer".into(), vec![s.clone()]);
+    }
+    if let Some(rz) = params.rezim.as_ref()
+        && !rz.trim().is_empty()
+    {
+        map.insert("rezim".into(), vec![rz.clone()]);
+    }
+    if let Some(a) = params.audio.as_ref()
+        && !a.trim().is_empty()
+    {
+        map.insert("audio".into(), vec![a.clone()]);
+    }
+    if let Some(m) = params.audio_mode.as_ref()
+        && !m.trim().is_empty()
+    {
+        map.insert("audio_mode".into(), vec![m.clone()]);
+    }
+    map
+}
+
+fn build_series_filter_url(params: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut parts = Vec::new();
+    for (key, values) in params {
+        for v in values {
+            parts.push(format!("{}={}", key, urlencoding::encode(v)));
+        }
+    }
+    if parts.is_empty() {
+        "/serialy-online/".to_string()
+    } else {
+        format!("/serialy-online/?{}", parts.join("&"))
+    }
+}
+
 fn build_series_query_string(params: &SeriesQuery) -> String {
     let mut parts: Vec<(&str, String)> = Vec::new();
     if params.razeni.is_some() {
@@ -1572,6 +1810,14 @@ fn build_series_query_string(params: &SeriesQuery) -> String {
         && !r.is_empty()
     {
         parts.push(("rok", r.clone()));
+    }
+    if let Some(ref a) = params.audio
+        && !a.is_empty()
+    {
+        parts.push(("audio", a.clone()));
+    }
+    if params.audio_mode_is_all() {
+        parts.push(("audio_mode", "all".to_string()));
     }
     super::build_pagination_qs(&parts)
 }
