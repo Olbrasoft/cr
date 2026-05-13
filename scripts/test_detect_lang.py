@@ -21,22 +21,18 @@ Run from repo root: python3 scripts/test_detect_lang.py
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
 
-
-def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-uploads = _load("_uploads", _HERE / "import-prehrajto-uploads.py")
-new_films = _load("_new_films", _HERE / "import-prehrajto-new-films.py")
+# detect_lang() lives in auto_import/lang_detect.py — a dependency-free
+# module that the importer scripts re-export from. Pulling the canonical
+# source directly here avoids triggering the sys.exit-on-ImportError
+# guards at the top of the two importer scripts (psycopg2 / requests),
+# so this suite runs on plain CPython without the prod runtime stack.
+from auto_import.lang_detect import detect_lang  # noqa: E402
 
 
 # Hyphen-separated markers — the gap closed by #537. Each of these
@@ -109,8 +105,8 @@ REGRESSION_CASES: list[tuple[str, str]] = [
 ]
 
 
-def _check(mod, title: str, expected: str) -> str | None:
-    got = mod.detect_lang(title)
+def _check(title: str, expected: str) -> str | None:
+    got = detect_lang(title)
     if expected == "_NOT_DUBSUB":
         if got in ("CZ_DUB", "CZ_SUB", "SK_DUB", "SK_SUB"):
             return f"got {got!r}, expected not-in-DUB/SUB"
@@ -123,21 +119,13 @@ def _check(mod, title: str, expected: str) -> str | None:
 def main() -> int:
     failures: list[str] = []
 
-    for module_name, mod in [("uploads.py", uploads),
-                             ("new-films.py", new_films)]:
-        for title, expected in HYPHEN_CASES + REGRESSION_CASES:
-            err = _check(mod, title, expected)
-            if err:
-                failures.append(f"[{module_name}] {title!r}: {err}")
-
-    # Cross-file consistency: the regex block is duplicated 1:1 in the
-    # two scripts. If they drift, the safer of the two will mask the
-    # bug on the other in production. Catch it here.
-    for attr in ("CZ_DUB_RE", "CZ_SUB_RE", "SK_DUB_RE", "SK_SUB_RE"):
-        u = getattr(uploads, attr).pattern
-        n = getattr(new_films, attr).pattern
-        if u != n:
-            failures.append(f"{attr} drift: uploads={u!r} vs new-films={n!r}")
+    # Single source of truth: both importer scripts re-export
+    # detect_lang from auto_import/lang_detect.py. Drift-check between
+    # them is no longer needed — they're the same import.
+    for title, expected in HYPHEN_CASES + REGRESSION_CASES:
+        err = _check(title, expected)
+        if err:
+            failures.append(f"{title!r}: {err}")
 
     if failures:
         print(f"FAIL ({len(failures)})", file=sys.stderr)
@@ -145,7 +133,7 @@ def main() -> int:
             print(f"  {f}", file=sys.stderr)
         return 1
 
-    total = (len(HYPHEN_CASES) + len(REGRESSION_CASES)) * 2 + 4
+    total = len(HYPHEN_CASES) + len(REGRESSION_CASES)
     print(f"OK — {total} assertions passed")
     return 0
 
