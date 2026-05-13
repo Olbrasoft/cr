@@ -464,10 +464,10 @@ CZ_WORDS = {
     "jsem", "jsi", "jsme", "jste",
 }
 
-CZ_DUB_RE = re.compile(r"(?:\bcz\s*dab(?:ing)?\b|\bczdab\w*|\bczdub\w*|\bcesk[aáyý]\s*dab(?:ing)?\b|\bc[zs]\s*dabing\b|cesky\s*dabing|cz\s*\.dab\b)", re.IGNORECASE)
-CZ_SUB_RE = re.compile(r"(?:\bcz\s*tit(?:ulky)?\b|\bcztit\w*|\bcz\s*subs?\b|\bc[zs]\s*titulky\b|cesk[yé]\s*titulky)", re.IGNORECASE)
-SK_DUB_RE = re.compile(r"(?:\bsk\s*dab(?:ing)?\b|\bskdab\w*|\bskdub\w*|\bsloven(?:sk[yáé]|ina)\s*dab(?:ing)?\b)", re.IGNORECASE)
-SK_SUB_RE = re.compile(r"(?:\bsk\s*tit(?:ulky)?\b|\bsktit\w*)", re.IGNORECASE)
+CZ_DUB_RE = re.compile(r"(?:\bcz[\s\-_]*dab(?:ing)?\b|\bczdab\w*|\bczdub\w*|\bcesk[aáyý][\s\-_]*dab(?:ing)?\b|\bc[zs][\s\-_]*dabing\b|cesky[\s\-_]*dabing|cz[\s\-_]*\.dab\b)", re.IGNORECASE)
+CZ_SUB_RE = re.compile(r"(?:\bcz[\s\-_]*tit(?:ulky)?\b|\bcztit\w*|\bcz[\s\-_]*subs?\b|\bc[zs][\s\-_]*titulky\b|cesk[yé][\s\-_]*titulky)", re.IGNORECASE)
+SK_DUB_RE = re.compile(r"(?:\bsk[\s\-_]*dab(?:ing)?\b|\bskdab\w*|\bskdub\w*|\bsloven(?:sk[yáé]|ina)[\s\-_]*dab(?:ing)?\b)", re.IGNORECASE)
+SK_SUB_RE = re.compile(r"(?:\bsk[\s\-_]*tit(?:ulky)?\b|\bsktit\w*)", re.IGNORECASE)
 EN_ONLY_RE = re.compile(r"(?:\bengsub\b|\beng\s*sub\b|\beng\s*only\b|\bengdub\b)", re.IGNORECASE)
 
 
