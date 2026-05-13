@@ -375,8 +375,10 @@ The deploy process is: cross-compile locally → scp binary → rsync scripts/ �
 # 1. Pull latest main
 git checkout main && git pull
 
-# 2. If migrations changed, `cargo clean` first to force re-embedding of checksums.
-[ -n "$(git diff HEAD~1 --name-only -- 'cr-infra/migrations/*.sql')" ] && cargo clean
+# 2. If THIS pull introduced migration changes, `cargo clean` first to force
+#    re-embedding of checksums. `@{1}..HEAD` reads the reflog so it catches
+#    multi-commit fast-forwards (HEAD~1 would only see the topmost commit).
+[ -n "$(git diff '@{1}..HEAD' --name-only -- 'cr-infra/migrations/*.sql')" ] && cargo clean
 
 # 3. One-shot deploy: drift check → cross-compile → scp binary → rsync scripts/
 #    → restart container → curl /health. Takes ~20s on a warm cache.
