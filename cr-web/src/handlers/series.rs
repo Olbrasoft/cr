@@ -1822,30 +1822,31 @@ fn build_series_query_string(params: &SeriesQuery) -> String {
     super::build_pagination_qs(&parts)
 }
 
-/// GET /serialy-online/person/{filename} — serve person profile image from disk.
+/// GET /serialy-online/person/{filename} — proxy person profile photo from
+/// R2 (`cr-images:people/{tmdb_id}.webp`). `filename` is the synthesized
+/// `p{tmdb_id}.webp` stored in `people.profile_filename`; we strip the
+/// prefix/suffix to get the tmdb_id and delegate to the same R2 fetch path
+/// the cover handlers use, falling back to a transparent placeholder on miss
+/// so a missing photo never becomes a broken image.
 pub async fn series_person_image(
     State(state): State<AppState>,
     Path(filename): Path<String>,
 ) -> WebResult<Response> {
     if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
-        return Ok((StatusCode::NOT_FOUND, "Not found").into_response());
+        return Ok(super::cover_proxy::placeholder_webp());
     }
-    let dir = state.config.series_people_dir.clone();
-    let path = std::path::Path::new(&dir).join(&filename);
-    if path.exists()
-        && let Ok(bytes) = tokio::fs::read(&path).await
-    {
-        return Ok((
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/webp"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            bytes,
-        )
-            .into_response());
+    let stem = &filename[..filename.len() - ".webp".len()];
+    let Some(rest) = stem.strip_prefix('p') else {
+        return Ok(super::cover_proxy::placeholder_webp());
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(super::cover_proxy::placeholder_webp());
     }
-    Ok((StatusCode::NOT_FOUND, "Not found").into_response())
+    let key = format!("people/{rest}.webp");
+    if let Some(bytes) = super::cover_proxy::try_fetch_r2(&state, &key).await {
+        return Ok(super::cover_proxy::immutable_webp(bytes));
+    }
+    Ok(super::cover_proxy::placeholder_webp())
 }
 
 /// GET /serialy-online/still/{filename} — serve episode still from disk.

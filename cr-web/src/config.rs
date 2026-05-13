@@ -36,8 +36,6 @@ pub struct AppConfig {
     pub series_covers_dir: String,
     /// Series episode stills (small variant).
     pub series_stills_dir: String,
-    /// Series people (actor/crew portraits).
-    pub series_people_dir: String,
     /// Repo checkout root — where scripts/auto-import.py lives when the
     /// admin Run-now button spawns it as a subprocess.
     pub cr_repo_root: String,
@@ -125,8 +123,6 @@ impl AppConfig {
             .unwrap_or_else(|_| "data/series/covers-webp".to_string());
         let series_stills_dir = std::env::var("SERIES_STILLS_DIR")
             .unwrap_or_else(|_| "data/series/episode-stills".to_string());
-        let series_people_dir =
-            std::env::var("SERIES_PEOPLE_DIR").unwrap_or_else(|_| "data/series/people".to_string());
         let cr_repo_root = std::env::var("CR_REPO_ROOT").unwrap_or_else(|_| "/opt/cr".to_string());
 
         let admin_import_run_enabled = matches!(
@@ -186,7 +182,6 @@ impl AppConfig {
             film_covers_dir,
             series_covers_dir,
             series_stills_dir,
-            series_people_dir,
             cr_repo_root,
             admin_import_run_enabled,
             admin_cache_purge_enabled,

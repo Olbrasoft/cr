@@ -24,7 +24,7 @@ export default {
     // rather than looping through origin.
     const knownPrefixes = ['municipalities/', 'landmarks/', 'pools/',
                            'regions/', 'videos/', 'films/', 'series/',
-                           'tv-shows/'];
+                           'tv-shows/', 'people/'];
     const isKnownPrefix = knownPrefixes.some(p => key.startsWith(p));
     const segmentCount = key.split('/').length;
     if (!isKnownPrefix && segmentCount === 3) {
