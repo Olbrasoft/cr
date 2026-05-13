@@ -48,8 +48,16 @@ log = logging.getLogger("gen-tv-desc")
 
 
 def fetch_tv_overview(http: requests.Session, key: str, tmdb_id: int,
-                      lang: str) -> str | None:
-    """Fetch TMDB TV overview. Returns None on any transient failure."""
+                      lang: str) -> tuple[str | None, bool]:
+    """Fetch TMDB TV overview. Returns (overview, ok) where:
+      - (text, True)  → TMDB confirmed an overview for this locale
+      - (None, True)  → TMDB confirmed there is no overview for this locale
+      - (None, False) → fetch failed (timeout, HTTP error, JSON decode)
+    Copilot review on PR #711 flagged that the previous single-`None`
+    return conflated "missing" with "failed" — a transient cs-CZ fetch
+    failure would make a raw-cs description look already-unique and skip
+    the row that actually needs backfilling.
+    """
     try:
         r = http.get(
             f"{TMDB_BASE}/tv/{tmdb_id}",
@@ -57,16 +65,16 @@ def fetch_tv_overview(http: requests.Session, key: str, tmdb_id: int,
         )
     except requests.RequestException as e:
         log.warning("TMDB request failed tmdb=%d lang=%s: %s", tmdb_id, lang, e)
-        return None
+        return None, False
     if r.status_code != 200:
         log.warning("TMDB %d for tmdb=%d lang=%s", r.status_code, tmdb_id, lang)
-        return None
+        return None, False
     try:
         body = r.json()
     except ValueError as e:
         log.warning("TMDB JSON decode failed tmdb=%d lang=%s: %s", tmdb_id, lang, e)
-        return None
-    return (body.get("overview") or "").strip() or None
+        return None, False
+    return (body.get("overview") or "").strip() or None, True
 
 
 def main() -> int:
@@ -105,9 +113,14 @@ def main() -> int:
         "WHERE tmdb_id IS NOT NULL "
         "ORDER BY id"
     )
+    # Copilot review on PR #711: bind the limit as a query parameter
+    # instead of f-string interpolation, matching the rest of the script's
+    # parameterized queries.
+    params: tuple = ()
     if args.limit:
-        sql += f" LIMIT {int(args.limit)}"
-    cur.execute(sql)
+        sql += " LIMIT %s"
+        params = (int(args.limit),)
+    cur.execute(sql, params)
     shows = cur.fetchall()
     log.info("processing %d tv_shows", len(shows))
 
@@ -115,15 +128,25 @@ def main() -> int:
     http.headers.update({"User-Agent": "ceskarepublika.wiki tv-desc-backfill"})
 
     stats = {"updated_gemma": 0, "already_unique": 0,
-             "skipped_no_overview": 0, "failed": 0}
+             "skipped_no_overview": 0, "fetch_failed": 0, "failed": 0}
 
     for i, (tv_show_id, title, year, tmdb_id, current_desc) in enumerate(shows, 1):
-        cs = fetch_tv_overview(http, tmdb_key, tmdb_id, "cs-CZ")
+        cs, cs_ok = fetch_tv_overview(http, tmdb_key, tmdb_id, "cs-CZ")
         time.sleep(TMDB_SLEEP)
-        en = fetch_tv_overview(http, tmdb_key, tmdb_id, "en-US")
+        en, en_ok = fetch_tv_overview(http, tmdb_key, tmdb_id, "en-US")
         time.sleep(TMDB_SLEEP)
 
-        if not cs and not en:
+        # If both fetches failed (network/HTTP/parse), we can't safely
+        # judge "already-unique" — skip this run, the next run will
+        # try again. Distinguishing failure from "no overview" is the
+        # whole reason fetch_tv_overview returns (value, ok) now.
+        if not cs_ok and not en_ok:
+            stats["fetch_failed"] += 1
+            log.warning("[%d/%d] id=%d %r — both TMDB fetches failed, skipping this run",
+                        i, len(shows), tv_show_id, title)
+            continue
+
+        if cs is None and en is None:
             stats["skipped_no_overview"] += 1
             log.info("[%d/%d] id=%d %r — TMDB has no overview, skipping",
                      i, len(shows), tv_show_id, title)
@@ -132,8 +155,12 @@ def main() -> int:
         # If the current description isn't byte-identical to either TMDB
         # overview, an admin already curated it (or a previous Gemma run
         # touched it). Leave it alone — the #565 acceptance criterion is
-        # exactly "no row equals TMDB overview verbatim".
-        if current_desc and current_desc != cs and current_desc != en:
+        # exactly "no row equals TMDB overview verbatim". Only apply this
+        # byte-identical skip for locales we actually fetched successfully;
+        # a failed cs fetch musn't make a raw-cs row look "already unique".
+        cs_matches = cs_ok and current_desc is not None and current_desc == cs
+        en_matches = en_ok and current_desc is not None and current_desc == en
+        if current_desc and not cs_matches and not en_matches:
             stats["already_unique"] += 1
             log.info("[%d/%d] id=%d %r — description already unique, skipping",
                      i, len(shows), tv_show_id, title)
