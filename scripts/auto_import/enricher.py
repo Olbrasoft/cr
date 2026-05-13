@@ -164,6 +164,7 @@ def upsert_film(
             "has_subtitles = has_subtitles OR %s, "
             "imdb_id = COALESCE(imdb_id, %s), "
             "tmdb_rating = COALESCE(tmdb_rating, %s), "
+            "tmdb_vote_count = COALESCE(tmdb_vote_count, %s), "
             "tmdb_rating_synced_at = COALESCE(tmdb_rating_synced_at, now()), "
             "csfd_rating = COALESCE(csfd_rating, %s), "
             "tmdb_poster_path = COALESCE(tmdb_poster_path, %s), "
@@ -172,7 +173,7 @@ def upsert_film(
             (sktorrent_video_id, sktorrent_cdn, qualities_str,
              has_dub, has_subtitles,
              movie.imdb_id,
-             movie.vote_average, csfd_rating,
+             movie.vote_average, movie.vote_count, csfd_rating,
              movie.poster_path,
              film_id),
         )
@@ -210,29 +211,33 @@ def upsert_film(
     generated = generate_unique_cs(title_cs, movie.year, sources, is_series=False)
     description = generated or movie.overview_cs or movie.overview_en
 
-    # tmdb_rating is seeded from TMDB's vote_average. csfd_rating comes
-    # straight from the SK Torrent title when present ("= CSFD 82%"). Both
-    # NULL for new-release films and obscure CZ titles; the list page
-    # already handles missing ratings gracefully. The sibling `imdb_rating`
-    # column is populated separately by scripts/sync-imdb-ratings.py
-    # (#690) from the public IMDb datasets TSV.
+    # tmdb_rating + tmdb_vote_count are seeded from TMDB's vote_average /
+    # vote_count. csfd_rating comes straight from the SK Torrent title when
+    # present ("= CSFD 82%"). All three may be NULL for new-release films
+    # and obscure CZ titles; the list page already handles missing ratings
+    # gracefully. The sibling `imdb_rating` column is populated separately
+    # by scripts/sync-imdb-ratings.py (#690) from the public IMDb datasets
+    # TSV. Seeding both rating + vote_count at INSERT closes #590 — before
+    # this the row was NULL until the daily sync-tmdb-ratings.py /changes
+    # poller happened to include the tmdb_id in its window.
     tmdb_rating = movie.vote_average
+    tmdb_vote_count = movie.vote_count
     cur.execute(
         """INSERT INTO films
            (title, original_title, slug, year, description,
             imdb_id, tmdb_id, runtime_min,
-            tmdb_rating, tmdb_rating_synced_at, csfd_rating,
+            tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, sktorrent_qualities,
             has_dub, has_subtitles,
             tmdb_poster_path,
             added_at, sktorrent_added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s, %s, now(), now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s, %s, now(), now())
            RETURNING id""",
         (
             title_cs, title_en if title_en != title_cs else None, slug, movie.year,
             description,
             movie.imdb_id, movie.tmdb_id, movie.runtime_min,
-            tmdb_rating, csfd_rating,
+            tmdb_rating, tmdb_vote_count, csfd_rating,
             sktorrent_video_id, sktorrent_cdn, qualities_str,
             has_dub, has_subtitles,
             movie.poster_path,

@@ -191,12 +191,20 @@ def _build_film_row(merged: dict) -> Optional[dict]:
     # the consolidation migration enforces project-wide.
     _ = (overview_cs, overview_en)  # documented intent; not persisted
 
-    # vote_average=0 means "no votes yet" — store as NULL so the list
-    # page doesn't render a bogus 0/10 rating. Goes into `tmdb_rating`;
-    # the real IMDb rating in `imdb_rating` is filled in separately by
+    # Rating is gated on vote_count > 0 (#590 acceptance criterion):
+    # if TMDB has no votes yet, both tmdb_rating and tmdb_vote_count
+    # land as NULL — even if vote_average happens to be non-zero (which
+    # TMDB occasionally returns right after a vote retraction). The
+    # listing page treats NULL as "no badge" instead of "0/10". The
+    # real IMDb rating in `imdb_rating` is filled in separately by
     # scripts/sync-imdb-ratings.py from the IMDb datasets TSV (#690).
-    va_raw = cs.get("vote_average") or en.get("vote_average")
-    tmdb_rating = float(va_raw) if va_raw else None
+    vc_raw = cs.get("vote_count") or en.get("vote_count")
+    tmdb_vote_count = int(vc_raw) if vc_raw else None
+    if tmdb_vote_count is None:
+        tmdb_rating = None
+    else:
+        va_raw = cs.get("vote_average") or en.get("vote_average")
+        tmdb_rating = float(va_raw) if va_raw else None
 
     poster_path = cs.get("poster_path") or en.get("poster_path")
     imdb_id = cs.get("imdb_id") or en.get("imdb_id")
@@ -214,6 +222,7 @@ def _build_film_row(merged: dict) -> Optional[dict]:
         "year": year,
         "runtime_min": int(runtime) if runtime else None,
         "tmdb_rating": tmdb_rating,
+        "tmdb_vote_count": tmdb_vote_count,
         "tmdb_poster_path": poster_path,
         "genre_ids": genre_ids,
     }
@@ -233,16 +242,16 @@ def _insert_film(cur, row: dict) -> int:
         """INSERT INTO films
                (title, original_title, slug, year,
                 imdb_id, tmdb_id, runtime_min,
-                tmdb_rating, tmdb_rating_synced_at,
+                tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at,
                 tmdb_poster_path,
                 added_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s, now())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, now())
            RETURNING id""",
         (
             row["title"], row.get("original_title"), slug,
             row.get("year"),
             row.get("imdb_id"), row["tmdb_id"], row.get("runtime_min"),
-            row.get("tmdb_rating"),
+            row.get("tmdb_rating"), row.get("tmdb_vote_count"),
             row.get("tmdb_poster_path"),
         ),
     )

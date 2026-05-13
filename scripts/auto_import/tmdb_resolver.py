@@ -116,6 +116,10 @@ class MovieResolution:
     # populated separately by scripts/sync-imdb-ratings.py from the public
     # IMDb datasets TSV (#690).
     vote_average: float | None = None
+    # TMDB's vote_count — paired with vote_average. Persisted into
+    # `films.tmdb_vote_count` so the listing-rating filter (#704) can
+    # apply a credibility threshold ("hide titles with <N votes").
+    vote_count: int | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0  # how confident we are in the match
 
@@ -143,6 +147,9 @@ class TvResolution:
     # as the films resolver: TMDB returns vote_average=0 to mean "no
     # votes," not "zero stars," so we coerce that to None.
     vote_average: float | None = None
+    # Paired vote_count — persisted into `series.tmdb_vote_count` /
+    # `tv_shows.tmdb_vote_count`. None when there are no votes yet.
+    vote_count: int | None = None
     popularity: float = 0.0
     raw_search_score: float = 0.0
 
@@ -299,6 +306,24 @@ def _tv_search_queries(parsed: ParsedTitle) -> list[tuple[str, dict]]:
     return out
 
 
+def _vote_pair(src: dict, src_en: dict) -> dict:
+    """Return {vote_average, vote_count} with the project-wide gating rule:
+    rating is only meaningful when vote_count > 0. Both fields move in
+    lockstep — either both populated or both None. Resolves from `src`
+    first, falls back to `src_en` per field (the CS endpoint occasionally
+    omits one or the other). See #590 acceptance criteria.
+    """
+    vc_raw = src.get("vote_count") or src_en.get("vote_count")
+    vote_count = int(vc_raw) if vc_raw else None
+    if vote_count is None:
+        return {"vote_average": None, "vote_count": None}
+    va_raw = src.get("vote_average") or src_en.get("vote_average")
+    return {
+        "vote_average": float(va_raw) if va_raw else None,
+        "vote_count": vote_count,
+    }
+
+
 def _build_movie_resolution(session: requests.Session, candidate: dict, score: float) -> MovieResolution | None:
     """Fetch full /movie/{id} (CS + EN) and return a complete MovieResolution."""
     tmdb_id = candidate.get("id")
@@ -314,11 +339,9 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
     rd = (cs or src_en).get("release_date") or ""
     year = int(rd[:4]) if len(rd) >= 4 and rd[:4].isdigit() else None
 
-    # TMDB returns vote_average=0 for brand-new films with no votes yet —
-    # treat that as "no rating" to avoid seeding the column with a bogus 0.0
-    # that the list page would then display as a legit rating.
-    va_raw = src.get("vote_average") or src_en.get("vote_average")
-    vote_average = float(va_raw) if va_raw else None
+    # vote_average + vote_count via the project-wide _vote_pair gating
+    # rule: both populated or both None, never a rating without votes.
+    votes = _vote_pair(src, src_en)
 
     raw_cs_title = (cs or {}).get("title")
     en_title = src_en.get("title") or src.get("title")
@@ -337,7 +360,7 @@ def _build_movie_resolution(session: requests.Session, candidate: dict, score: f
         runtime_min=src.get("runtime") or src_en.get("runtime"),
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
-        vote_average=vote_average,
+        **votes,
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )
@@ -380,20 +403,11 @@ def _build_tv_resolution(session: requests.Session, candidate: dict, score: floa
         episode_count=src.get("number_of_episodes"),
         poster_path=src.get("poster_path") or src_en.get("poster_path"),
         genre_ids=[g["id"] for g in (src.get("genres") or src_en.get("genres") or []) if g.get("id")],
-        # TMDB returns vote_average=0 for TV shows with no votes yet —
-        # treat that as None so we don't pollute `series.tmdb_rating`
-        # with a spurious 0.0 (same rule as the films resolver above).
-        # Resolve from src first, fall back to src_en — and crucially
-        # coerce BEFORE the float() call so a None from one side doesn't
-        # crash the other side's lookup. Previously this expression
-        # called `float(src.get("vote_average"))` even when src lacked
-        # the key but src_en had it, raising TypeError, and silently
-        # stored 0.0 when src had 0 but src_en had a real rating.
-        vote_average=(
-            (lambda va: float(va) if va else None)(
-                src.get("vote_average") or src_en.get("vote_average")
-            )
-        ),
+        # Rating gated on vote_count > 0 (same rule as the films resolver):
+        # TMDB occasionally returns a non-zero average with vote_count=0
+        # after a vote retraction. We mirror the films behavior so the
+        # listing page never shows a badge backed by zero votes.
+        **_vote_pair(src, src_en),
         popularity=float(candidate.get("popularity") or 0.0),
         raw_search_score=score,
     )

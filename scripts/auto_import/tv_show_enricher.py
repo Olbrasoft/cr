@@ -109,11 +109,21 @@ def process_tv_show_episode(
         base_slug = _slugify(title) or f"tv-porad-{tv.tmdb_id}"
         slug = _unique_slug(cur, base_slug)
         try:
+            # Seed tmdb_rating + tmdb_vote_count at INSERT (#590). Same
+            # rationale as series_enricher.py: the resolver maps TMDB's
+            # vote_average=0/vote_count=0 ("no votes yet") to None so the
+            # list page doesn't render bogus 0.0 ratings, and synced_at is
+            # stamped unconditionally so the daily sync can distinguish
+            # "we tried, no votes" from "never synced".
             cur.execute(
                 """INSERT INTO tv_shows (title, slug, tmdb_id, imdb_id,
                        first_air_year, description,
-                       tmdb_poster_path, added_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                       tmdb_poster_path,
+                       tmdb_rating, tmdb_vote_count, tmdb_rating_synced_at,
+                       added_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, now(),
+                           now())
                    RETURNING id""",
                 (
                     title[:255],
@@ -123,6 +133,8 @@ def process_tv_show_episode(
                     tv.first_air_year,
                     description,
                     tv.poster_path,
+                    tv.vote_average,
+                    tv.vote_count,
                 ),
             )
             tv_show_id = cur.fetchone()[0]
