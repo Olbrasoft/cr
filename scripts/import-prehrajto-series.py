@@ -224,7 +224,11 @@ def attach_prehrajto_to_episode(cur, *, providers: dict, episode_id: int,
     audio_lang, lang_class, sub_langs = lang_class_to_audio_and_subs(
         lang_class=match.lang_class,
     )
-    url = "https://prehraj.to" + match.hit.href
+    # CZ proxy validates only the canonical `prehraj.to` host; `prehrajto.cz`
+    # mirror gets rejected with "Missing or invalid prehraj.to URL".
+    url = ("https://prehraj.to" + match.hit.href).replace(
+        "https://prehrajto.cz/", "https://prehraj.to/", 1
+    )
     metadata = {"url": url, "phase": "prehrajto-series-enrich"}
     source_id = upsert_video_source(
         cur,
@@ -1048,8 +1052,12 @@ def discover_one_cluster(
                     "WHERE id = %s",
                     (audio_lang is not None, bool(sub_langs), episode_id),
                 )
+            # CZ proxy validates only the canonical `prehraj.to` host; the
+            # `prehrajto.cz` mirror gets rejected with "Missing or invalid
+            # prehraj.to URL". Sitemap entries use `.cz` — canonicalize.
             url = ("https://prehraj.to" + r.url
                    if r.url.startswith("/") else r.url)
+            url = url.replace("https://prehrajto.cz/", "https://prehraj.to/", 1)
             metadata = {"url": url, "phase": "prehrajto-series-discover"}
             source_id = upsert_video_source(
                 cur,
