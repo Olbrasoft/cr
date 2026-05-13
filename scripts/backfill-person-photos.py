@@ -84,14 +84,29 @@ _MIN_ASPECT = 0.4   # w/h — portrait
 _MAX_ASPECT = 1.1   # near-square OK
 
 
+# Sentinel signalling "TMDB explicitly says this person has no photo".
+# Distinct from None (transient error) so the caller doesn't permanently
+# NULL `profile_filename` for what's actually a network blip / 5xx /
+# rate-limit exhaustion.
+_NO_PHOTO = "__no_photo__"
+
+
 def _fetch_tmdb_profile_path(
     session: requests.Session, tmdb_id: int, api_key: str
 ) -> str | None:
-    """GET /person/{tmdb_id} → profile_path or None.
+    """GET /person/{tmdb_id} → one of:
+        - profile path string (e.g. "/abc.jpg") — TMDB has a photo
+        - `_NO_PHOTO`                           — TMDB definitively has no photo
+                                                  (HTTP 200 + profile_path is null/missing,
+                                                  or HTTP 404)
+        - None                                  — transient error; the row should
+                                                  stay marked as "still needs a
+                                                  photo" so a later re-run retries.
 
-    None means "TMDB returned 200 but profile_path is null" (person no
-    longer has a photo on TMDB) OR a non-recoverable error. The caller
-    treats both as "give up on this row and NULL the filename".
+    Distinguishing transient errors from confirmed-missing is what keeps
+    a TMDB outage from permanently wiping `profile_filename` rows the
+    template uses to decide whether to render the WebP or the initials
+    placeholder.
     """
     url = f"{TMDB_API_BASE}/person/{tmdb_id}"
     for attempt in range(3):
@@ -103,7 +118,8 @@ def _fetch_tmdb_profile_path(
             time.sleep(2 ** attempt)
             continue
         if r.status_code == 404:
-            return None
+            # Person id is gone from TMDB — definitively no photo to fetch.
+            return _NO_PHOTO
         if r.status_code == 429:
             wait = int(r.headers.get("Retry-After", 5))
             log.warning("tmdb_id=%d rate-limited; sleeping %ds", tmdb_id, wait)
@@ -111,13 +127,15 @@ def _fetch_tmdb_profile_path(
             continue
         if r.status_code != 200:
             log.warning("tmdb_id=%d /person returned HTTP %d", tmdb_id, r.status_code)
-            return None
+            return None  # transient — caller keeps filename, retry next run
         try:
             data = r.json()
         except ValueError:
-            return None
+            return None  # transient — malformed body
         path = data.get("profile_path")
-        return path if path else None
+        # 200 + null profile_path is TMDB definitively saying "no photo".
+        return path if path else _NO_PHOTO
+    # Out of retries on network failures — leave the row alone.
     return None
 
 
@@ -209,18 +227,28 @@ def _process_person(
     s3,
     api_key: str,
 ) -> tuple[int, str]:
-    """Returns (person_id, status) where status is one of:
-        'ok'                 — R2 upload succeeded (filename kept)
-        'no_tmdb_photo'      — TMDB no longer has a profile photo (NULL filename)
-        'download_failed'    — fetch or decode failed (NULL filename)
-        'upload_failed'      — R2 put_object failed (filename kept, retry later)
+    """Returns (person_id, status). Only `no_tmdb_photo` is treated as a
+    definitive negative result that the caller propagates to NULL the
+    `people.profile_filename` row. Every other failure (transient TMDB,
+    download/decode hiccup, R2 outage) leaves the filename intact so a
+    future re-run can fill it in. The four-way split lets us report
+    cleanly in the summary line.
+
+        'ok'                 — R2 upload succeeded
+        'no_tmdb_photo'      — TMDB confirms no photo (200+null, or 404)
+                               → caller NULLs the row
+        'tmdb_error'         — transient TMDB error (retry next run, keep filename)
+        'download_failed'    — fetch or decode failed (retry next run, keep filename)
+        'upload_failed'      — R2 put_object failed (retry next run, keep filename)
     """
     out_path = out_dir / f"{tmdb_id}.webp"
     session = requests.Session()
 
     if not out_path.exists():
         profile_path = _fetch_tmdb_profile_path(session, tmdb_id, api_key)
-        if not profile_path:
+        if profile_path is None:
+            return person_id, "tmdb_error"
+        if profile_path == _NO_PHOTO:
             return person_id, "no_tmdb_photo"
         if not _download_and_convert(session, profile_path, tmdb_id, out_path):
             return person_id, "download_failed"
@@ -319,7 +347,10 @@ def main() -> int:
     rows = _fetch_candidates(dsn, args.limit)
     log.info("processing %d persons with %d workers", len(rows), args.jobs)
 
-    stats = {"ok": 0, "no_tmdb_photo": 0, "download_failed": 0, "upload_failed": 0}
+    stats = {
+        "ok": 0, "no_tmdb_photo": 0,
+        "tmdb_error": 0, "download_failed": 0, "upload_failed": 0,
+    }
     null_ids: list[int] = []
 
     if args.dry_run:
@@ -333,23 +364,32 @@ def main() -> int:
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             person_id, status = fut.result()
             stats[status] += 1
-            if status in ("no_tmdb_photo", "download_failed"):
+            # Only confirmed-missing-on-TMDB NULLs the row. Transient
+            # statuses (tmdb_error / download_failed / upload_failed) keep
+            # `profile_filename` so the next backfill run retries them; a
+            # TMDB outage that produced thousands of tmdb_error responses
+            # would otherwise permanently wipe valid photo references.
+            if status == "no_tmdb_photo":
                 null_ids.append(person_id)
             if i % 50 == 0 or i == len(rows):
                 log.info(
-                    "progress %d/%d ok=%d no_tmdb=%d dl_fail=%d up_fail=%d",
+                    "progress %d/%d ok=%d no_tmdb=%d tmdb_err=%d dl_fail=%d up_fail=%d",
                     i, len(rows), stats["ok"], stats["no_tmdb_photo"],
-                    stats["download_failed"], stats["upload_failed"],
+                    stats["tmdb_error"], stats["download_failed"],
+                    stats["upload_failed"],
                 )
 
     if not args.dry_run:
         _null_filename(dsn, null_ids)
 
     log.info("DONE: %s", stats)
-    # Failures that warrant attention are upload errors (transient infra)
-    # and download errors (TMDB rate-limit / disk full). 'no_tmdb_photo' is
-    # expected for actors TMDB depublished.
-    return 0 if stats["upload_failed"] == 0 and stats["download_failed"] == 0 else 1
+    # Non-zero exit means something needs attention next run: TMDB
+    # outage, R2 token rotated, disk full. 'no_tmdb_photo' is expected
+    # steady-state for actors TMDB depublished.
+    transient = (
+        stats["tmdb_error"] + stats["download_failed"] + stats["upload_failed"]
+    )
+    return 0 if transient == 0 else 1
 
 
 if __name__ == "__main__":

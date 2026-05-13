@@ -168,7 +168,7 @@
             <div class="person-card">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
-                <img class="person-photo" src="/serialy-online/person/{{ f }}" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
+                <img class="person-photo" src="/serialy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
                 {% when None %}
                 <div class="person-photo placeholder">{{ p.name }}</div>
                 {% endmatch %}
@@ -187,7 +187,7 @@
             <div class="person-card">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
-                <img class="person-photo" src="/serialy-online/person/{{ f }}" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
+                <img class="person-photo" src="/serialy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
                 {% when None %}
                 <div class="person-photo placeholder">{{ p.name }}</div>
                 {% endmatch %}
