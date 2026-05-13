@@ -284,14 +284,22 @@ pub async fn tv_porady_list(
     // parity with films/series). Diacritic-exact hits rank first via
     // the leading CASE in ORDER BY.
     let (total_count, shows, episodes) = if let Some(ref pattern) = search_q {
-        let count_row = sqlx::query_as::<_, CountRow>(
-            "SELECT count(*) as count FROM tv_shows \
-             WHERE unaccent(title) ILIKE unaccent($1) \
-                OR unaccent(original_title) ILIKE unaccent($1)",
-        )
-        .bind(pattern)
-        .fetch_one(&state.db)
-        .await?;
+        // Same vote-count gating as the shows-mode branch — surfaced by
+        // Copilot review on PR #710. Otherwise a `?q=…&razeni=imdb` search
+        // would re-introduce low-vote outliers at the top.
+        let votes_clause = params
+            .votes_threshold_predicate()
+            .map(|p| format!(" AND {p}"))
+            .unwrap_or_default();
+        let count_query = format!(
+            "SELECT count(*) as count FROM tv_shows s \
+             WHERE (unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause}"
+        );
+        let count_row = sqlx::query_as::<_, CountRow>(&count_query)
+            .bind(pattern)
+            .fetch_one(&state.db)
+            .await?;
 
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
@@ -299,8 +307,8 @@ pub async fn tv_porady_list(
              s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s \
-             WHERE unaccent(s.title) ILIKE unaccent($1) \
-                OR unaccent(s.original_title) ILIKE unaccent($1) \
+             WHERE (unaccent(s.title) ILIKE unaccent($1) \
+                OR unaccent(s.original_title) ILIKE unaccent($1)){votes_clause} \
              ORDER BY \
                (CASE WHEN s.title ILIKE $1 OR s.original_title ILIKE $1 THEN 0 ELSE 1 END), \
                {order} LIMIT $2 OFFSET $3"
