@@ -94,6 +94,72 @@
         </div>
     </div>
 
+    <div class="seasons-section">
+        <div class="seasons-header">
+            <h3>Epizody</h3>
+            <div class="films-toolbar">
+                <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleEpView()" alt="Přepnout zobrazení" title="Přepnout zobrazení mřížka / seznam">
+                    <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
+                    <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
+                </button>
+            </div>
+        </div>
+
+        {# Single-season series render flat — no toggle bar / "1. série" header.
+           Multi-season series keep the collapsible block per season. The
+           single-season branch also drops the per-season localStorage state
+           since there's nothing to toggle. #}
+        {% if seasons.len() == 1 %}
+            {% for season in seasons %}
+            <div class="episode-grid" id="season-{{ season.number }}">
+                {% for ep in season.episodes %}
+                <a class="episode-card" href="/serialy-online/{{ series.slug }}/{% match ep.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/"
+                   alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
+                   title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
+                    <div class="ep-head">
+                        <span class="ep-badge">S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
+                        <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }}{% else %}Epizoda {{ ep.episode }}{% endif %}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
+                    </div>
+                    <div class="ep-meta">
+                        {% match ep.air_date %}{% when Some with (d) %}<span>📅 {{ d }}</span>{% when None %}{% endmatch %}
+                        {% match ep.runtime %}{% when Some with (r) %}<span>⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+                    </div>
+                    {% match ep.overview %}{% when Some with (o) %}<p class="ep-overview">{{ o }}</p>{% when None %}{% endmatch %}
+                </a>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        {% else %}
+            {% for season in seasons %}
+            <div class="season-block collapsed" data-season="{{ season.number }}">
+                <button class="season-title season-toggle" type="button" onclick="toggleSeason({{ season.number }})"
+                        alt="Sbalit nebo rozbalit sérii" title="Sbalit nebo rozbalit sérii">
+                    <span class="chev">▾</span>
+                    {% if season.number == 0 %}Speciály{% else %}{{ season.number }}. série{% endif %}
+                    <span class="ep-count">({{ season.episodes.len() }} epizod)</span>
+                </button>
+                <div class="episode-grid" id="season-{{ season.number }}">
+                    {% for ep in season.episodes %}
+                    <a class="episode-card" href="/serialy-online/{{ series.slug }}/{% match ep.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/"
+                       alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
+                       title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
+                        <div class="ep-head">
+                            <span class="ep-badge">S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
+                            <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }}{% else %}Epizoda {{ ep.episode }}{% endif %}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
+                        </div>
+                        <div class="ep-meta">
+                            {% match ep.air_date %}{% when Some with (d) %}<span>📅 {{ d }}</span>{% when None %}{% endmatch %}
+                            {% match ep.runtime %}{% when Some with (r) %}<span>⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+                        </div>
+                        {% match ep.overview %}{% when Some with (o) %}<p class="ep-overview">{{ o }}</p>{% when None %}{% endmatch %}
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+
     {% if !creators.is_empty() %}
     <section class="crew-section">
         <h3>Tvůrci</h3>
@@ -102,7 +168,7 @@
             <div class="person-card">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
-                <img class="person-photo" src="/serialy-online/person/{{ f }}" alt="{{ p.name }}" title="{{ p.name }}">
+                <img class="person-photo" src="/serialy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
                 {% when None %}
                 <div class="person-photo placeholder">{{ p.name }}</div>
                 {% endmatch %}
@@ -121,7 +187,7 @@
             <div class="person-card">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
-                <img class="person-photo" src="/serialy-online/person/{{ f }}" alt="{{ p.name }}" title="{{ p.name }}">
+                <img class="person-photo" src="/serialy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
                 {% when None %}
                 <div class="person-photo placeholder">{{ p.name }}</div>
                 {% endmatch %}
@@ -132,46 +198,6 @@
         </div>
     </section>
     {% endif %}
-
-    <div class="seasons-section">
-        <div class="seasons-header">
-            <h3>Epizody</h3>
-            <div class="films-toolbar">
-                <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleEpView()" alt="Přepnout zobrazení" title="Přepnout zobrazení mřížka / seznam">
-                    <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
-                    <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
-                </button>
-            </div>
-        </div>
-
-        {% for season in seasons %}
-        <div class="season-block collapsed" data-season="{{ season.number }}">
-            <button class="season-title season-toggle" type="button" onclick="toggleSeason({{ season.number }})"
-                    alt="Sbalit nebo rozbalit sérii" title="Sbalit nebo rozbalit sérii">
-                <span class="chev">▾</span>
-                {% if season.number == 0 %}Speciály{% else %}{{ season.number }}. série{% endif %}
-                <span class="ep-count">({{ season.episodes.len() }} epizod)</span>
-            </button>
-            <div class="episode-grid" id="season-{{ season.number }}">
-                {% for ep in season.episodes %}
-                <a class="episode-card" href="/serialy-online/{{ series.slug }}/{% match ep.slug %}{% when Some with (s) %}{{ s }}{% when None %}{{ ep.season }}x{{ ep.episode }}{% endmatch %}/"
-                   alt="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}"
-                   title="S{{ ep.season }}E{{ ep.episode }}{% match ep.episode_name %}{% when Some with (n) %} — {{ n }}{% when None %}{% endmatch %}">
-                    <div class="ep-head">
-                        <span class="ep-badge">S{{ "{:02}"|format(ep.season) }}E{{ "{:02}"|format(ep.episode) }}</span>
-                        <h5 class="ep-title">{% match ep.episode_name %}{% when Some with (n) %}{% if !n.is_empty() && !n.starts_with(char::is_numeric) %}{{ n }}{% else %}Epizoda {{ ep.episode }}{% endif %}{% when None %}Epizoda {{ ep.episode }}{% endmatch %}</h5>
-                    </div>
-                    <div class="ep-meta">
-                        {% match ep.air_date %}{% when Some with (d) %}<span>📅 {{ d }}</span>{% when None %}{% endmatch %}
-                        {% match ep.runtime %}{% when Some with (r) %}<span>⏱ {{ r }} min</span>{% when None %}{% endmatch %}
-                    </div>
-                    {% match ep.overview %}{% when Some with (o) %}<p class="ep-overview">{{ o }}</p>{% when None %}{% endmatch %}
-                </a>
-                {% endfor %}
-            </div>
-        </div>
-        {% endfor %}
-    </div>
 </main>
 
 <style>
