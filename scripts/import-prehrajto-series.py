@@ -224,6 +224,12 @@ def attach_prehrajto_to_episode(cur, *, providers: dict, episode_id: int,
     audio_lang, lang_class, sub_langs = lang_class_to_audio_and_subs(
         lang_class=match.lang_class,
     )
+    # `match.hit.href` is enforced to be a relative path (`/slug/<id>`) by
+    # the parser in scripts/auto_import/prehrajto_search.py, so prefixing
+    # it with `https://prehraj.to` is already canonical. The discover
+    # path below uses the sitemap, which DOES contain `prehrajto.cz`
+    # absolute URLs and needs the canonicalization (Copilot review on
+    # PR #712 confirmed this enrich path doesn't).
     url = "https://prehraj.to" + match.hit.href
     metadata = {"url": url, "phase": "prehrajto-series-enrich"}
     source_id = upsert_video_source(
@@ -1048,8 +1054,12 @@ def discover_one_cluster(
                     "WHERE id = %s",
                     (audio_lang is not None, bool(sub_langs), episode_id),
                 )
+            # CZ proxy validates only the canonical `prehraj.to` host; the
+            # `prehrajto.cz` mirror gets rejected with "Missing or invalid
+            # prehraj.to URL". Sitemap entries use `.cz` — canonicalize.
             url = ("https://prehraj.to" + r.url
                    if r.url.startswith("/") else r.url)
+            url = url.replace("https://prehrajto.cz/", "https://prehraj.to/", 1)
             metadata = {"url": url, "phase": "prehrajto-series-discover"}
             source_id = upsert_video_source(
                 cur,

@@ -41,7 +41,8 @@ const EPISODE_COLUMNS: &str = "e.id, e.season, e.episode, e.title, \
         AND vs.is_primary AND vs.is_alive \
       LIMIT 1) AS sktorrent_qualities, \
     e.episode_name, e.overview, e.air_date, e.runtime, e.still_filename, \
-    (SELECT COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id) \
+    (SELECT REPLACE(COALESCE(vs.metadata->>'url', 'https://prehraj.to/' || vs.external_id), \
+                    'https://prehrajto.cz/', 'https://prehraj.to/') \
        FROM video_sources vs \
        JOIN video_providers p ON p.id = vs.provider_id \
       WHERE vs.episode_id = e.id AND p.slug = 'prehrajto' AND vs.is_alive \
