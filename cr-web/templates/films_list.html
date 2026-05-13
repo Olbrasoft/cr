@@ -102,20 +102,16 @@
                     <option value="asc">↑ Vzestupně</option>
                 </select>
             </label>
-            <label class="toolbar-group">
-                <span class="toolbar-label">Jazyk:</span>
-                <select id="quick-audio" onchange="applyQuickAudio(this.value)" title="Zvuková verze" class="quick-audio-select">
-                    <option value="vse">Vše</option>
-                    <option value="dub">Jen dabované</option>
-                    <option value="sub">Jen s titulky</option>
-                </select>
-            </label>
+            {# Unified toolbar order across films + series (#716): filter
+               toggle precedes the view toggle. The detailed filter panel
+               below carries the language + subtitle multi-select; no
+               quick dropdown duplicates it. #}
+            <button class="view-btn" id="btn-filter-toggle" onclick="toggleFilter()" title="{% match current_genre %}{% when Some with (_g) %}Upřesnit nebo zrušit filtr{% when None %}Filtrování{% endmatch %}">
+                <svg width="18" height="18" viewBox="0 0 18 18"><path d="M1 3h16M4 9h10M7 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+            </button>
             <button class="view-btn view-toggle" id="btn-view-toggle" onclick="toggleView()" title="Přepnout na zobrazení seznamem" aria-label="Zobrazení">
                 <svg class="view-icon-grid" width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="7.5" width="16" height="3" rx="1" fill="currentColor"/><rect x="1" y="13" width="16" height="3" rx="1" fill="currentColor"/></svg>
                 <svg class="view-icon-list" width="18" height="18" viewBox="0 0 18 18" style="display:none;"><rect x="1" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="1" width="7" height="7" rx="1" fill="currentColor"/><rect x="1" y="10" width="7" height="7" rx="1" fill="currentColor"/><rect x="10" y="10" width="7" height="7" rx="1" fill="currentColor"/></svg>
-            </button>
-            <button class="view-btn" id="btn-filter-toggle" onclick="toggleFilter()" title="{% match current_genre %}{% when Some with (_g) %}Upřesnit nebo zrušit filtr{% when None %}Filtrování{% endmatch %}">
-                <svg width="18" height="18" viewBox="0 0 18 18"><path d="M1 3h16M4 9h10M7 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
             </button>
         </div>
     </div>
@@ -342,7 +338,6 @@
     .sort-select-field, .sort-select-dir { min-width: 0; padding-left: 0.4rem; padding-right: 0.4rem; }
     .sort-select-field { max-width: 145px; }
     .sort-select-dir { max-width: 100px; }
-    .quick-audio-select { padding-left: 0.4rem; padding-right: 0.4rem; max-width: 80px; }
 }
 .view-btn { background: #f0f0f0; border: none; padding: 0.4rem; border-radius: 6px; cursor: pointer; color: #666; transition: background 0.2s, color 0.2s; display: flex; align-items: center; }
 .view-btn:hover { background: #e0e0e0; }
@@ -413,9 +408,6 @@ a.filter-chip-link:hover { background: #11457E; color: white; }
 .view-toggle { background: #f1f5f9; color: #555; border: none; border-radius: 6px; padding: 0.4rem 0.7rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; }
 .view-toggle:hover { background: #e2e8f0; }
 
-/* Quick audio version select (next to sort) */
-.quick-audio-select { padding: 0.4rem 0.7rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: white; }
-.quick-audio-select:focus { outline: 1px solid #11457E; }
 .btn-reset { padding: 0.4rem 1rem; background: #f0f0f0; color: #333; border: none; border-radius: 6px; font-size: 0.85rem; cursor: pointer; }
 .btn-reset:hover { background: #e0e0e0; }
 
@@ -557,18 +549,7 @@ function applySortDir(dir) {
     window.location = u.toString();
 }
 
-function applyQuickAudio(v) {
-    var u = new URL(window.location);
-    if (!v || v === 'vse') {
-        u.searchParams.delete('jazyk');
-    } else {
-        u.searchParams.set('jazyk', v);
-    }
-    u.searchParams.delete('strana');
-    window.location = u.toString();
-}
-
-// Prefill sort selects + quick audio from URL
+// Prefill sort selects from URL
 (function() {
     var urlParams = new URLSearchParams(window.location.search);
     var razeni = urlParams.get('razeni') || 'pridano';
@@ -582,15 +563,6 @@ function applyQuickAudio(v) {
     if (fieldSel) fieldSel.value = razeni;
     var dirSel = document.getElementById('sort-dir');
     if (dirSel) dirSel.value = smer;
-    var jazyk = urlParams.get('jazyk');
-    var qa = document.getElementById('quick-audio');
-    if (qa) {
-        if (jazyk === 'dub' || jazyk === 'sub') {
-            qa.value = jazyk;
-        } else {
-            qa.value = 'vse';
-        }
-    }
 })();
 
 /* --- Filter panel toggle --- */
@@ -631,11 +603,8 @@ function applyFilters() {
     var year = document.getElementById('filter-year').value;
     var sortField = document.getElementById('sort-field').value;
     var sortDir = document.getElementById('sort-dir').value;
-    var jazyk = document.getElementById('quick-audio') ? document.getElementById('quick-audio').value : 'vse';
     var rezimEl = document.querySelector('input[name="rezim"]:checked');
     var rezim = rezimEl ? rezimEl.value : 'or';
-
-    var langParam = (jazyk === 'dub' || jazyk === 'sub') ? jazyk : null;
 
     // Decide primary genre (kept in URL path) vs. extras (go to ?zanry=)
     var panel = document.getElementById('filter-panel');
@@ -678,7 +647,10 @@ function applyFilters() {
 
     if (exc.length) u.searchParams.set('bez', exc.join(','));
     if (year) u.searchParams.set('rok', year);
-    if (langParam) u.searchParams.set('jazyk', langParam);
+    // Legacy ?jazyk= param is no longer set from UI (#716 unification —
+    // the toolbar quick selector was removed). Multi-language audio
+    // continues to flow through ?audio= read from #filter-audio below.
+    u.searchParams.delete('jazyk');
     if (audioLangs.length > 0) u.searchParams.set('audio', audioLangs.join(','));
     else u.searchParams.delete('audio');
     if (subsParam) u.searchParams.set('titulky', subsParam);
