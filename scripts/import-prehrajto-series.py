@@ -544,7 +544,9 @@ def _stamp_ratings(cur, series_id: int, tv,
               tmdb_rating           = COALESCE(tmdb_rating, %s),
               tmdb_vote_count       = COALESCE(tmdb_vote_count, %s),
               tmdb_rating_synced_at = CASE
-                  WHEN tmdb_rating IS NULL AND %s IS NOT NULL THEN now()
+                  WHEN (tmdb_rating IS NULL AND %s IS NOT NULL)
+                    OR (tmdb_vote_count IS NULL AND %s IS NOT NULL)
+                      THEN now()
                   ELSE tmdb_rating_synced_at
               END,
               imdb_rating           = COALESCE(imdb_rating, %s),
@@ -554,7 +556,7 @@ def _stamp_ratings(cur, series_id: int, tv,
                   ELSE imdb_rating_synced_at
               END
            WHERE id = %s""",
-        (tmdb_rating, tmdb_vote_count, tmdb_rating,
+        (tmdb_rating, tmdb_vote_count, tmdb_rating, tmdb_vote_count,
          imdb_rating, imdb_votes, imdb_rating,
          series_id),
     )

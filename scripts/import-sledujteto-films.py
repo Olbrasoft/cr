@@ -492,15 +492,19 @@ def build_film_row(
     )
     year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
 
-    # TMDB returns 0.0 for films with no votes; we store NULL in that case
-    # so the listing badge is hidden rather than showing a misleading 0.0.
-    # Same rule for vote_count: 0 → None (#590). The real IMDb rating lives
-    # in `films.imdb_rating` and is populated separately by
-    # scripts/sync-imdb-ratings.py from the IMDb datasets TSV.
-    vote_average = (tmdb_meta or {}).get("vote_average")
-    tmdb_rating = float(vote_average) if vote_average and vote_average > 0 else None
+    # Rating is gated on vote_count > 0 (#590 acceptance criterion):
+    # both tmdb_rating and tmdb_vote_count must land as NULL when TMDB
+    # has no votes yet, even if vote_average is non-zero (TMDB sometimes
+    # returns this after a vote retraction). The listing badge hides
+    # NULL ratings. The real IMDb rating lives in `films.imdb_rating`
+    # and is populated separately by scripts/sync-imdb-ratings.py.
     vote_count = (tmdb_meta or {}).get("vote_count")
     tmdb_vote_count = int(vote_count) if vote_count and vote_count > 0 else None
+    if tmdb_vote_count is None:
+        tmdb_rating = None
+    else:
+        vote_average = (tmdb_meta or {}).get("vote_average")
+        tmdb_rating = float(vote_average) if vote_average and vote_average > 0 else None
 
     return {
         "title": title[:255],

@@ -444,11 +444,18 @@ def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
     src_en = en or {}
     rd = src_cs.get("release_date") or src_en.get("release_date") or ""
     year = int(rd[:4]) if len(rd) >= 4 and rd[:4].isdigit() else None
-    # vote_average=0 / vote_count=0 means "no votes yet" on TMDB — coerce
-    # to None so we don't seed films.tmdb_rating with a bogus 0.0 that the
-    # listing page would render as a legit "zero stars" badge (#590).
-    va_raw = src_cs.get("vote_average") or src_en.get("vote_average")
+    # Rating is gated on vote_count > 0 (#590 acceptance criterion):
+    # TMDB sometimes returns a non-zero average with vote_count=0 (after
+    # a vote retraction) and always vote_average=0 for brand-new films.
+    # Both cases must store tmdb_rating=NULL, so we parse vote_count
+    # first and only keep vote_average when there are actual votes.
     vc_raw = src_cs.get("vote_count") or src_en.get("vote_count")
+    vote_count = int(vc_raw) if vc_raw else None
+    if vote_count is None:
+        vote_average = None
+    else:
+        va_raw = src_cs.get("vote_average") or src_en.get("vote_average")
+        vote_average = float(va_raw) if va_raw else None
     return {
         "tmdb_id": tmdb_id,
         "imdb_id": src_cs.get("imdb_id") or src_en.get("imdb_id") or None,
@@ -461,8 +468,8 @@ def fetch_tmdb_movie(tmdb_id: int, api_key: str) -> dict | None:
         "runtime_min": src_cs.get("runtime") or src_en.get("runtime") or None,
         "poster_path": src_cs.get("poster_path") or src_en.get("poster_path") or None,
         "genre_ids": [g["id"] for g in (src_cs.get("genres") or src_en.get("genres") or []) if g.get("id")],
-        "vote_average": float(va_raw) if va_raw else None,
-        "vote_count": int(vc_raw) if vc_raw else None,
+        "vote_average": vote_average,
+        "vote_count": vote_count,
     }
 
 
