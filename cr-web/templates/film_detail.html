@@ -246,6 +246,45 @@
         </div>
     </div>
     {% endif %}
+
+    {% if !creators.is_empty() %}
+    <section class="crew-section">
+        <h3>Tvůrci</h3>
+        <div class="people-row">
+            {% for p in creators %}
+            <div class="person-card">
+                {% match p.profile_filename %}
+                {% when Some with (f) %}
+                <img class="person-photo" src="/filmy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
+                {% when None %}
+                <div class="person-photo placeholder">{{ p.name }}</div>
+                {% endmatch %}
+                <span class="person-name">{{ p.name }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if !actors.is_empty() %}
+    <section class="crew-section">
+        <h3>Herci</h3>
+        <div class="people-row">
+            {% for p in actors %}
+            <div class="person-card">
+                {% match p.profile_filename %}
+                {% when Some with (f) %}
+                <img class="person-photo" src="/filmy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
+                {% when None %}
+                <div class="person-photo placeholder">{{ p.name }}</div>
+                {% endmatch %}
+                <span class="person-name" title="{{ p.name }}">{{ p.name }}</span>
+                {% match p.character_name %}{% when Some with (c) %}<span class="person-char" title="{{ c }}">{{ c }}</span>{% when None %}{% endmatch %}
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
 </main>
 
 <style>
@@ -307,6 +346,9 @@
 
 /* Subtitle cue styling */
 video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif; }
+
+/* Crew section (Tvůrci / Herci) classes live in static/css/index.css —
+   shared with series_detail.html. */
 
 /* Film hero */
 .film-hero { display: flex; gap: 1.5rem; }

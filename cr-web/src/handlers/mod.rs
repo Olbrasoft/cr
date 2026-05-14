@@ -37,7 +37,9 @@ mod voices;
 pub use admin_test_sledujteto::admin_test_sledujteto;
 pub use audiobooks::audiobooks;
 pub use download_video::download_video;
-pub use films::{SktorrentSource, films_detail, films_list, films_search, sktorrent_resolve};
+pub use films::{
+    SktorrentSource, films_detail, films_list, films_person_image, films_search, sktorrent_resolve,
+};
 pub use filmy_serialy::filmy_serialy;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};

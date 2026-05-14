@@ -669,6 +669,17 @@ struct FilmDetailTemplate {
     has_source_sktorrent: bool,
     has_source_prehrajto: bool,
     has_source_sledujteto: bool,
+    /// Top-10 cast members (joined from `film_actors`). Empty for films
+    /// without TMDB credits backfilled or with no cast on TMDB. Mirrors
+    /// the series detail page's `actors` field — same `PersonRow` shape
+    /// lets us reuse the same Askama template fragment.
+    actors: Vec<super::series::PersonRow>,
+    /// Directors only (TMDB `crew[].job == "Director"` from
+    /// `/movie/{id}/credits`). Field is named `creators` to keep the
+    /// template parallel with series_detail's `creators` (which there
+    /// is series creators + directors). Empty when no directors are
+    /// linked.
+    creators: Vec<super::series::PersonRow>,
 }
 
 // --- Search API types ---
@@ -1028,6 +1039,36 @@ pub async fn films_detail(
         .iter()
         .any(|r| r.provider_slug == "sledujteto");
 
+    // Top-10 cast + directors. Both queries fall back to an empty list
+    // on error so the detail page still renders (table missing in dev,
+    // transient DB issue) — but we log the error first so a real
+    // regression doesn't look identical to "this film has no crew".
+    let actors = sqlx::query_as::<_, super::series::PersonRow>(
+        "SELECT p.id, p.name, p.profile_filename, fa.character_name \
+         FROM people p JOIN film_actors fa ON fa.person_id = p.id \
+         WHERE fa.film_id = $1 ORDER BY fa.order_index LIMIT 10",
+    )
+    .bind(film.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(film_id = film.id, error = ?e, "film_actors query failed");
+        Vec::new()
+    });
+
+    let creators = sqlx::query_as::<_, super::series::PersonRow>(
+        "SELECT p.id, p.name, p.profile_filename, NULL::varchar AS character_name \
+         FROM people p JOIN film_directors fd ON fd.person_id = p.id \
+         WHERE fd.film_id = $1 ORDER BY p.name",
+    )
+    .bind(film.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(film_id = film.id, error = ?e, "film_directors query failed");
+        Vec::new()
+    });
+
     let tmpl = FilmDetailTemplate {
         img: state.image_base_url.clone(),
         film,
@@ -1037,8 +1078,21 @@ pub async fn films_detail(
         has_source_sktorrent,
         has_source_prehrajto,
         has_source_sledujteto,
+        actors,
+        creators,
     };
     Ok(Html(tmpl.render()?).into_response())
+}
+
+/// GET /filmy-online/person/{filename} — proxy person profile photo from R2,
+/// same shape as the series handler. Photos are keyed by `tmdb_id`, so the
+/// underlying R2 keys are shared with series — the path prefix is just URL
+/// convention so each section has its own routing namespace.
+pub async fn films_person_image(
+    State(state): State<AppState>,
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> WebResult<Response> {
+    Ok(super::cover_proxy::fetch_person_image(&state, &filename).await)
 }
 
 /// Genre sub-listing: /filmy-online/{genre-slug}/
