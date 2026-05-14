@@ -727,7 +727,7 @@ pub async fn films_list(
     let year_f = params.year_filter();
 
     let (total_count, films) = run_films_query(
-        &state.db,
+        &state,
         FilmsSearchMode::Primary,
         raw_pattern.as_deref(),
         &params,
@@ -750,7 +750,7 @@ pub async fn films_list(
             } else {
                 let fb_pattern = format!("%{normalized}%");
                 run_films_query(
-                    &state.db,
+                    &state,
                     FilmsSearchMode::TitleYear,
                     Some(&fb_pattern),
                     &params,
@@ -1396,7 +1396,7 @@ impl FilmsSearchMode {
 /// search predicate shape (or no search filter when `search_pattern` is None).
 #[allow(clippy::too_many_arguments)]
 async fn run_films_query(
-    db: &sqlx::PgPool,
+    state: &AppState,
     mode: FilmsSearchMode,
     search_pattern: Option<&str>,
     params: &FilmsQuery,
@@ -1406,6 +1406,7 @@ async fn run_films_query(
     order: &str,
     offset: i64,
 ) -> Result<(i64, Vec<FilmRow>), sqlx::Error> {
+    let db = &state.db;
     let mut where_parts: Vec<String> = vec![];
     let mut bind_idx = 1;
 
@@ -1498,26 +1499,64 @@ async fn run_films_query(
     };
 
     let count_query = format!("SELECT count(*) as count FROM films f {where_clause}");
-    let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
+    // Cache key encodes the count SQL plus the bound parameter values
+    // so filtered variants stay separate (the SQL alone has only `$N`
+    // placeholders). 60 s TTL — see `listing_count_cache` doc on
+    // `AppState`.
+    let mut cache_key = String::with_capacity(count_query.len() + 64);
+    cache_key.push_str(&count_query);
     if let Some(p) = search_pattern {
-        cq = cq.bind(p.to_string());
+        cache_key.push_str("|q=");
+        cache_key.push_str(p);
     }
     if !include.is_empty() {
-        cq = cq.bind(include.to_vec());
+        cache_key.push_str("|inc=");
+        cache_key.push_str(&include.join(","));
     }
     if !exclude.is_empty() {
-        cq = cq.bind(exclude.to_vec());
+        cache_key.push_str("|exc=");
+        cache_key.push_str(&exclude.join(","));
     }
     if let Some(yr) = year_f {
-        cq = cq.bind(yr);
+        cache_key.push_str("|yr=");
+        cache_key.push_str(&yr.to_string());
     }
     if let Some(langs) = audio_langs_param.as_ref() {
-        cq = cq.bind(langs.clone());
+        cache_key.push_str("|aud=");
+        cache_key.push_str(&langs.join(","));
     }
     if let Some(Some(langs)) = subs_param.as_ref() {
-        cq = cq.bind(langs.clone());
+        cache_key.push_str("|sub=");
+        cache_key.push_str(&langs.join(","));
     }
-    let count_row = cq.fetch_one(db).await?;
+
+    let count: i64 = if let Some(hit) = state.listing_count_cache.get(&cache_key).await {
+        hit
+    } else {
+        let mut cq = sqlx::query_as::<_, CountRow>(&count_query);
+        if let Some(p) = search_pattern {
+            cq = cq.bind(p.to_string());
+        }
+        if !include.is_empty() {
+            cq = cq.bind(include.to_vec());
+        }
+        if !exclude.is_empty() {
+            cq = cq.bind(exclude.to_vec());
+        }
+        if let Some(yr) = year_f {
+            cq = cq.bind(yr);
+        }
+        if let Some(langs) = audio_langs_param.as_ref() {
+            cq = cq.bind(langs.clone());
+        }
+        if let Some(Some(langs)) = subs_param.as_ref() {
+            cq = cq.bind(langs.clone());
+        }
+        let count_row = cq.fetch_one(db).await?;
+        let c = count_row.count.unwrap_or(0);
+        state.listing_count_cache.insert(cache_key, c).await;
+        c
+    };
 
     // When a search is active, push rows whose title literally contains
     // the user's query (with diacritics) ahead of rows that match only
@@ -1560,7 +1599,7 @@ async fn run_films_query(
     }
     let films = fq.bind(FILMS_PER_PAGE).bind(offset).fetch_all(db).await?;
 
-    Ok((count_row.count.unwrap_or(0), films))
+    Ok((count, films))
 }
 
 /// GET /filmy-online/{slug}.webp — serve WebP cover image

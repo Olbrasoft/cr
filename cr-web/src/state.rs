@@ -74,6 +74,14 @@ pub struct AppState {
     /// then scrapes once — concurrent requests for the same upload block
     /// on the lock and pick up the cached URL after release.
     pub prehrajto_in_flight: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// 60 s TTL cache of expensive listing-page counts (`/filmy-online/`,
+    /// `/serialy-online/`). The unfiltered count of films with a live
+    /// video source costs ~60 ms (28 k film_pkey rows × video_sources
+    /// EXISTS probe) and dominates the request budget once the SELECT
+    /// itself dropped to ~2 ms via `idx_films_added_at_id`. The cache
+    /// key is the full SQL count query plus its bound parameters, so
+    /// filtered variants are cached independently without ever colliding.
+    pub listing_count_cache: BoundedTtlCache<String, i64>,
 }
 
 /// Cached resolved CDN URL for a single prehraj.to upload.

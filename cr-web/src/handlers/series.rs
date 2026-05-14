@@ -602,14 +602,26 @@ pub async fn series_list(
         // all ~104 k episodes (~1.6 s on prod vs ~200 ms). Reuses the
         // shared `EPISODE_HAS_SOURCE_PREDICATE` so this count can't
         // drift apart from the listing predicate.
-        let count_row = sqlx::query_as::<_, CountRow>(&format!(
-            "SELECT count(*) as count FROM series s WHERE \
-                 (SELECT 1 FROM episodes e \
-                    WHERE e.series_id = s.id AND {EPISODE_HAS_SOURCE_PREDICATE} \
-                  LIMIT 1) = 1"
-        ))
-        .fetch_one(&state.db)
-        .await?;
+        const CACHE_KEY: &str = "series_default_home_count";
+        let total = if let Some(hit) = state.listing_count_cache.get(&CACHE_KEY.to_string()).await {
+            hit
+        } else {
+            let count_row = sqlx::query_as::<_, CountRow>(&format!(
+                "SELECT count(*) as count FROM series s WHERE \
+                     (SELECT 1 FROM episodes e \
+                        WHERE e.series_id = s.id AND {EPISODE_HAS_SOURCE_PREDICATE} \
+                      LIMIT 1) = 1"
+            ))
+            .fetch_one(&state.db)
+            .await?;
+            let c = count_row.count.unwrap_or(0);
+            state
+                .listing_count_cache
+                .insert(CACHE_KEY.to_string(), c)
+                .await;
+            c
+        };
+        let count_row = CountRow { count: Some(total) };
 
         let episodes = fetch_latest_episode_cards(
             &state,
