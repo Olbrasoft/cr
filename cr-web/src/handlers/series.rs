@@ -599,15 +599,15 @@ pub async fn series_list(
         // Scalar-subquery (LIMIT 1) form so the planner uses
         // `idx_episodes_series_created` for an index range read per
         // series instead of falling back to a Parallel Seq Scan over
-        // all ~104 k episodes (~1.6 s on prod vs ~200 ms).
-        let count_row = sqlx::query_as::<_, CountRow>(
+        // all ~104 k episodes (~1.6 s on prod vs ~200 ms). Reuses the
+        // shared `EPISODE_HAS_SOURCE_PREDICATE` so this count can't
+        // drift apart from the listing predicate.
+        let count_row = sqlx::query_as::<_, CountRow>(&format!(
             "SELECT count(*) as count FROM series s WHERE \
                  (SELECT 1 FROM episodes e \
-                    WHERE e.series_id = s.id \
-                      AND EXISTS (SELECT 1 FROM video_sources vs \
-                                  WHERE vs.episode_id = e.id AND vs.is_alive) \
-                  LIMIT 1) = 1",
-        )
+                    WHERE e.series_id = s.id AND {EPISODE_HAS_SOURCE_PREDICATE} \
+                  LIMIT 1) = 1"
+        ))
         .fetch_one(&state.db)
         .await?;
 
