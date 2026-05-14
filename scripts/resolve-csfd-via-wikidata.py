@@ -307,12 +307,16 @@ def _resolve_batch_imdb(
 def _resolve_batch_tmdb(
     session: requests.Session,
     table: str,
-    rows: list[tuple[int, int, str | None, int | None]],
+    rows: list[tuple],
 ) -> dict[int, dict]:
-    """Resolve a batch of cr rows that have a `tmdb_id`. Returns a map
-    of tmdb_id → {qid, csfd_id, labels, duplicates}."""
+    """Resolve a batch of cr rows that have a `tmdb_id`. Callers pass
+    the full source-row tuple (id, imdb_id, tmdb_id, title, year[, …]);
+    the helper reads the tmdb_id at index 2. The original signature
+    declared a 4-tuple and indexed `r[1]`, which silently fed IMDb IDs
+    into the TMDB-property SPARQL query — every call returned zero hits
+    (PR #741, Copilot review). Returns a map of tmdb_id → info."""
     prop = TMDB_WIKIDATA_PROP[table]
-    tmdb_ids = [r[1] for r in rows]
+    tmdb_ids = [r[2] for r in rows]
     query = _build_tmdb_query(tmdb_ids, prop)
     payload = _sparql_query(session, query)
     grouped = _index_results(payload["results"]["bindings"], "tmdb")
@@ -668,6 +672,13 @@ def _log_reconcile(
             qid, label_cs, cr_title)
     try:
         with conn.cursor() as cur:
+            # ON CONFLICT keys off the partial-unique index added in
+            # migration 078: (source_table, source_row_id) WHERE
+            # action_taken = 'pending_review'. Re-running --reconcile
+            # before --apply-safe-rewrites consumes the queue is now
+            # idempotent — a duplicate proposal silently skips instead
+            # of stacking up extra pending rows that would skew the
+            # apply pass (PR #741, Copilot review).
             cur.execute(
                 """
                 INSERT INTO csfd_id_reconcile_review
@@ -676,6 +687,9 @@ def _log_reconcile(
                      cr_csfd_id, wikidata_qid, wikidata_csfd_id,
                      wikidata_label_cs, reason)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_table, source_row_id)
+                    WHERE action_taken = 'pending_review'
+                    DO NOTHING
                 """,
                 (run_id, table, row_id, cr_imdb_id, cr_tmdb_id, cr_title,
                  cr_year, cr_csfd_id, qid, wikidata_csfd_id, label_cs,
@@ -754,10 +768,27 @@ def _process_table_reconcile(
         else:
             counts["resolved_via_tmdb"] += 1
         label_cs = info_labels[0] if info_labels else None
-        # Wikidata says "I know the item but ČSFD link is missing" —
-        # this is itself a signal worth surfacing (a cr.csfd_id with no
-        # Wikidata cross-reference may still be right, but we can't
-        # auto-confirm it).
+        # Check duplicates FIRST. _resolve_batch_*_ only returns the
+        # first binding's csfd_id (`first.get("csfd", …)`), so if there
+        # are multiple Wikidata items for one external ID and the
+        # first happens to have no P2529 while another duplicate does,
+        # falling through to the missing-P2529 branch would silently
+        # drop a real ambiguity that deserves manual triage. Ordering
+        # duplicate-check before the missing-csfd check fixes that
+        # (PR #741, Copilot review).
+        if info_duplicates:
+            counts["sanity_rejected"] += 1
+            wikidata_csfd_id: int | None = None
+            if wikidata_csfd_raw:
+                try:
+                    wikidata_csfd_id = int(wikidata_csfd_raw)
+                except ValueError:
+                    wikidata_csfd_id = None
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, wikidata_csfd_id,
+                label_cs, "duplicate_wikidata_entity")
+            return
         if not wikidata_csfd_raw:
             counts["sanity_rejected"] += 1
             _log_reconcile(
@@ -773,15 +804,6 @@ def _process_table_reconcile(
                 conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
                 title, year, cr_csfd_id, info_qid, None, label_cs,
                 "non_numeric_csfd")
-            return
-        if info_duplicates:
-            # Multiple Wikidata items for the same external ID — too
-            # ambiguous to either confirm or refute; manual triage.
-            counts["sanity_rejected"] += 1
-            _log_reconcile(
-                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
-                title, year, cr_csfd_id, info_qid, wikidata_csfd_id,
-                label_cs, "duplicate_wikidata_entity")
             return
         if wikidata_csfd_id == cr_csfd_id:
             # Match — Wikidata confirms cr's existing value. No action.
@@ -845,6 +867,8 @@ def _apply_safe_rewrites(
     run_id: int | None,
     *,
     dry_run: bool,
+    tables: list[str] | None = None,
+    limit: int = 0,
 ) -> dict[str, int]:
     """Walk csfd_id_reconcile_review pending_review rows and apply the
     auto-rewrite policy from #740: when labelCs (already normalised
@@ -881,19 +905,31 @@ def _apply_safe_rewrites(
     counts: dict[str, int] = collections.Counter()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT id, source_table, source_row_id,
-               cr_csfd_id, wikidata_csfd_id, reason,
-               wikidata_label_cs, cr_title
-        FROM csfd_id_reconcile_review
-        WHERE action_taken = 'pending_review'
-        ORDER BY id
-        """
+    # Honour --table and --limit even in apply mode. The fill-NULL pass
+    # and reconcile pass both filter on these flags; silently applying
+    # to every table when a maintainer typed `--table films --limit 5`
+    # would be a data-changing surprise (PR #741, Copilot review).
+    where_clauses = ["action_taken = 'pending_review'"]
+    params: list = []
+    if tables:
+        where_clauses.append("source_table = ANY(%s)")
+        params.append(tables)
+    sql = (
+        "SELECT id, source_table, source_row_id, "
+        "       cr_csfd_id, wikidata_csfd_id, reason, "
+        "       wikidata_label_cs, cr_title "
+        "FROM csfd_id_reconcile_review "
+        f"WHERE {' AND '.join(where_clauses)} "
+        "ORDER BY id"
     )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    cur.execute(sql, params)
     review_rows = cur.fetchall()
-    logging.info("apply-safe-rewrites: %d pending_review rows%s",
-                 len(review_rows), " (DRY RUN)" if dry_run else "")
+    logging.info("apply-safe-rewrites: %d pending_review rows%s%s",
+                 len(review_rows),
+                 f" (tables={tables})" if tables else "",
+                 " (DRY RUN)" if dry_run else "")
 
     for (rev_id, src_table, src_row_id, cr_csfd_id, wd_csfd_id,
          reason, wd_label_cs, cr_title) in review_rows:
@@ -910,34 +946,36 @@ def _apply_safe_rewrites(
         if cr_title and not _one_match(wd_label_cs, _normalise(cr_title)):
             counts["skipped_unsafe"] += 1
             continue
-        # Sibling-collision check: refuse if some other row in the same
-        # table already carries the proposed csfd_id. Without this guard
-        # the UPDATE would either violate a unique constraint or quietly
-        # leave the database with a duplicate.
-        cur.execute(
-            f"SELECT 1 FROM {src_table} "
-            "WHERE csfd_id = %s AND id <> %s LIMIT 1",
-            (wd_csfd_id, src_row_id),
+        # Atomic UPDATE: the row is rewritten only if (a) csfd_id is
+        # still the same value we proposed against (no race with a
+        # manual fix or another reconcile pass), AND (b) no sibling
+        # in the same table already holds the proposed csfd_id. The
+        # NOT EXISTS predicate runs INSIDE the same UPDATE so a
+        # concurrent writer can't slip a colliding row between a
+        # separate SELECT and the UPDATE (PR #741, Copilot review).
+        update_sql = (
+            f"UPDATE {src_table} "
+            "SET csfd_id = %s "
+            "WHERE id = %s AND csfd_id = %s "
+            f"  AND NOT EXISTS (SELECT 1 FROM {src_table} t2 "
+            "      WHERE t2.csfd_id = %s AND t2.id <> %s)"
         )
-        if cur.fetchone():
-            counts["collision"] += 1
-            if not dry_run:
-                cur.execute(
-                    "UPDATE csfd_id_reconcile_review "
-                    "SET action_taken = 'kept_original' "
-                    "WHERE id = %s",
-                    (rev_id,),
-                )
-            continue
-        # The csfd_id = <original> guard makes the rewrite safe against
-        # manual fixes that happened between dry-run and apply.
         if dry_run:
+            # Dry-run still needs to distinguish would-rewrite vs.
+            # would-collide vs. stale, but it CANNOT execute the
+            # UPDATE. Mirror the same predicate as a SELECT so the
+            # counters line up with what the real pass would do.
             cur.execute(
-                f"SELECT 1 FROM {src_table} "
-                "WHERE id = %s AND csfd_id = %s",
-                (src_row_id, cr_csfd_id),
+                f"SELECT EXISTS(SELECT 1 FROM {src_table} "
+                "  WHERE id = %s AND csfd_id = %s) AS still_matches, "
+                f"  EXISTS(SELECT 1 FROM {src_table} "
+                "  WHERE csfd_id = %s AND id <> %s) AS collides",
+                (src_row_id, cr_csfd_id, wd_csfd_id, src_row_id),
             )
-            if cur.fetchone():
+            still_matches, collides = cur.fetchone()
+            if collides:
+                counts["collision"] += 1
+            elif still_matches:
                 counts["rewrote"] += 1
                 logging.info(
                     "DRY: %s.id=%s csfd %s → %s",
@@ -945,12 +983,9 @@ def _apply_safe_rewrites(
             else:
                 counts["stale_no_op"] += 1
             continue
-        cur.execute(
-            f"UPDATE {src_table} "
-            "SET csfd_id = %s "
-            "WHERE id = %s AND csfd_id = %s",
-            (wd_csfd_id, src_row_id, cr_csfd_id),
-        )
+        cur.execute(update_sql,
+                    (wd_csfd_id, src_row_id, cr_csfd_id,
+                     wd_csfd_id, src_row_id))
         if cur.rowcount == 1:
             counts["rewrote"] += 1
             cur.execute(
@@ -961,13 +996,32 @@ def _apply_safe_rewrites(
                 (rev_id,),
             )
         else:
-            counts["stale_no_op"] += 1
+            # 0 rows updated: either csfd_id changed (manual fix /
+            # newer reconcile pass) OR a sibling now holds the
+            # proposed csfd_id. Disambiguate so the audit log is
+            # honest about which case happened.
             cur.execute(
-                "UPDATE csfd_id_reconcile_review "
-                "SET action_taken = 'manual_resolved' "
-                "WHERE id = %s",
-                (rev_id,),
+                f"SELECT EXISTS(SELECT 1 FROM {src_table} "
+                "  WHERE csfd_id = %s AND id <> %s)",
+                (wd_csfd_id, src_row_id),
             )
+            (collides,) = cur.fetchone()
+            if collides:
+                counts["collision"] += 1
+                cur.execute(
+                    "UPDATE csfd_id_reconcile_review "
+                    "SET action_taken = 'kept_original' "
+                    "WHERE id = %s",
+                    (rev_id,),
+                )
+            else:
+                counts["stale_no_op"] += 1
+                cur.execute(
+                    "UPDATE csfd_id_reconcile_review "
+                    "SET action_taken = 'manual_resolved' "
+                    "WHERE id = %s",
+                    (rev_id,),
+                )
         conn.commit()
 
     if dry_run:
@@ -1019,7 +1073,12 @@ def main() -> int:
         status = "ok"
         error_message: str | None = None
         try:
-            counts = _apply_safe_rewrites(conn, run_id, dry_run=args.dry_run)
+            counts = _apply_safe_rewrites(
+                conn, run_id,
+                dry_run=args.dry_run,
+                tables=tables if args.table != "all" else None,
+                limit=args.limit,
+            )
         except Exception as exc:  # noqa: BLE001
             status = "error"
             error_message = repr(exc)

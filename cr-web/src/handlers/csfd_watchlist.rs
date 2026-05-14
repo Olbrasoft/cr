@@ -65,6 +65,19 @@ pub async fn csfd_watchlist(State(state): State<AppState>) -> WebResult<Response
     .fetch_all(&state.db)
     .await?;
 
+    // Pull the current size of the manual-review queue at request
+    // time. Hardcoding the production snapshot (623 at deploy) would
+    // go stale as maintainers clear rows and as new reconcile passes
+    // queue more (PR #741, Copilot review). The query is a single
+    // partial-index scan, cheap enough to run on every uncached
+    // request — the 1-hour Cloudflare cache absorbs most reads anyway.
+    let pending_review: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM csfd_id_reconcile_review \
+         WHERE action_taken = 'pending_review'",
+    )
+    .fetch_one(&state.db)
+    .await?;
+
     let items: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
@@ -100,7 +113,7 @@ pub async fn csfd_watchlist(State(state): State<AppState>) -> WebResult<Response
             "sample_size": 200,
             "measured_at": "2026-05-14",
             "auto_rewrites_applied": 725,
-            "pending_manual_review": 623,
+            "pending_manual_review": pending_review,
             "issue": "https://github.com/Olbrasoft/cr/issues/740",
             "note": "Raw rate compares cr.title to ČSFD og:title via \
                      normalised string match; CZ/EN/original-language \
