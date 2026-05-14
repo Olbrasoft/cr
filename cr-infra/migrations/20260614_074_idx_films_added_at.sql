@@ -13,7 +13,16 @@
 -- added_at (which is common after a bulk import). Keeping it in the index
 -- lets the index ordering match `ORDER BY` exactly so no extra sort is
 -- needed.
+--
+-- `films.added_at` was historically a prod-only manual ALTER (no committed
+-- migration created it). The `ADD COLUMN IF NOT EXISTS` here is a no-op on
+-- prod (column already exists) but lets CI/staging/fresh dev DBs apply
+-- this migration cleanly. After this edit lands, prod's `_sqlx_migrations`
+-- row for version 20260614 needs its SHA-384 checksum updated to the new
+-- file content (see CLAUDE.md "SQLx Migration Checksum Rules").
 -- =============================================================================
+
+ALTER TABLE films ADD COLUMN IF NOT EXISTS added_at TIMESTAMP WITH TIME ZONE;
 
 CREATE INDEX IF NOT EXISTS idx_films_added_at_id
     ON films (added_at DESC NULLS LAST, id DESC);
