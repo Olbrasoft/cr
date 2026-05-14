@@ -133,6 +133,11 @@ async fn main() -> Result<()> {
             std::time::Duration::from_secs(2 * 3600),
         ),
         prehrajto_in_flight: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        // Listing-page counts: 60 s TTL is well below the ~10 min cadence
+        // of auto-import (one new film per cycle), so staleness is bounded
+        // to a single import worth. 64 entries is enough for the realistic
+        // filter cohort (default + genre + year combos seen in CF logs).
+        listing_count_cache: cache::BoundedTtlCache::new(64, std::time::Duration::from_secs(60)),
     };
 
     // API routes with CORS
