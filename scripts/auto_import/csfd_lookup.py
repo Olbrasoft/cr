@@ -104,7 +104,7 @@ def _build_query(*, imdb_id: str | None, tmdb_id: int | None,
                  tmdb_prop: str | None) -> str | None:
     if imdb_id:
         return f"""
-SELECT ?csfd ?labelCs ?labelEn ?p1476
+SELECT ?item ?csfd ?labelCs ?labelEn ?p1476
        (GROUP_CONCAT(DISTINCT ?altCs; separator="|") AS ?altCsList)
        (GROUP_CONCAT(DISTINCT ?altEn; separator="|") AS ?altEnList)
 WHERE {{
@@ -116,11 +116,11 @@ WHERE {{
   OPTIONAL {{ ?item skos:altLabel ?altCs . FILTER(LANG(?altCs) = "cs") }}
   OPTIONAL {{ ?item skos:altLabel ?altEn . FILTER(LANG(?altEn) = "en") }}
 }}
-GROUP BY ?csfd ?labelCs ?labelEn ?p1476
+GROUP BY ?item ?csfd ?labelCs ?labelEn ?p1476
 """
     if tmdb_id and tmdb_prop:
         return f"""
-SELECT ?csfd ?labelCs ?labelEn ?p1476
+SELECT ?item ?csfd ?labelCs ?labelEn ?p1476
        (GROUP_CONCAT(DISTINCT ?altCs; separator="|") AS ?altCsList)
        (GROUP_CONCAT(DISTINCT ?altEn; separator="|") AS ?altEnList)
 WHERE {{
@@ -132,18 +132,29 @@ WHERE {{
   OPTIONAL {{ ?item skos:altLabel ?altCs . FILTER(LANG(?altCs) = "cs") }}
   OPTIONAL {{ ?item skos:altLabel ?altEn . FILTER(LANG(?altEn) = "en") }}
 }}
-GROUP BY ?csfd ?labelCs ?labelEn ?p1476
+GROUP BY ?item ?csfd ?labelCs ?labelEn ?p1476
 """
     return None
 
 
+# Tri-state outcome of a single Wikidata lookup. The caller distinguishes
+# `miss` (no Wikidata mapping → try fallback path) from `vetoed` (Wikidata
+# returned a candidate that failed sanity / duplicate checks → do NOT try
+# the fallback, the bulk resolver owns this row). Conflating the two would
+# let the TMDB fallback overwrite a row that the IMDb pass explicitly
+# rejected on label mismatch.
+_MISS = "miss"
+_VETOED = "vetoed"
+
+
 def _query_csfd(*, imdb_id: str | None, tmdb_id: int | None,
-                tmdb_prop: str | None, title: str | None) -> int | None:
-    """Run one SPARQL query and return a sane csfd_id, or None on miss /
-    sanity rejection / any error."""
+                tmdb_prop: str | None, title: str | None) -> int | str:
+    """Run one SPARQL query. Returns a csfd_id (int) on success, or one
+    of the sentinels `_MISS` / `_VETOED`. The caller decides whether to
+    fall through to a second path based on which sentinel comes back."""
     query = _build_query(imdb_id=imdb_id, tmdb_id=tmdb_id, tmdb_prop=tmdb_prop)
     if not query:
-        return None
+        return _MISS
     try:
         r = _session().post(
             SPARQL_ENDPOINT,
@@ -154,32 +165,41 @@ def _query_csfd(*, imdb_id: str | None, tmdb_id: int | None,
     except requests.RequestException as e:
         log.debug("csfd lookup network error for imdb=%s tmdb=%s: %s",
                   imdb_id, tmdb_id, e)
-        return None
+        return _MISS
     if r.status_code != 200:
         log.debug("csfd lookup HTTP %s for imdb=%s tmdb=%s",
                   r.status_code, imdb_id, tmdb_id)
-        return None
+        return _MISS
     try:
         bindings = r.json().get("results", {}).get("bindings", [])
     except ValueError:
-        return None
+        return _MISS
     if not bindings:
-        return None
-    if len(bindings) > 1:
-        # Duplicate Wikidata entities for the same external ID — skip
-        # silently; the bulk resolver will log this to the review queue
-        # on its next sweep.
+        return _MISS
+    # Detect duplicate Wikidata entities by counting distinct `?item` URIs.
+    # GROUP_CONCAT on labels can otherwise collapse two entities into one
+    # binding row when their selected scalar fields happen to match — same
+    # pre-#732 bug the bulk resolver had.
+    distinct_items = {b.get("item", {}).get("value") for b in bindings
+                      if b.get("item", {}).get("value")}
+    if len(distinct_items) > 1 or len(bindings) > 1:
+        # Skip silently and VETO — the bulk resolver logs this to the
+        # review queue on its next sweep and the fallback path must not
+        # paper over the ambiguity by writing a different ID.
         log.info("csfd lookup ambiguous (%d Wikidata entities) for "
-                 "imdb=%s tmdb=%s", len(bindings), imdb_id, tmdb_id)
-        return None
+                 "imdb=%s tmdb=%s", len(distinct_items) or len(bindings),
+                 imdb_id, tmdb_id)
+        return _VETOED
     row = bindings[0]
     csfd_raw = row.get("csfd", {}).get("value")
     if not csfd_raw:
-        return None
+        # Wikidata knows the item but it has no P2529 yet — that's a
+        # plain miss, the fallback path is still legitimate.
+        return _MISS
     try:
         csfd_id = int(csfd_raw)
     except ValueError:
-        return None
+        return _VETOED
     if not _labels_agree(
         row.get("labelCs", {}).get("value"),
         row.get("labelEn", {}).get("value"),
@@ -192,7 +212,7 @@ def _query_csfd(*, imdb_id: str | None, tmdb_id: int | None,
                  "labelCs=%r — skipping, will be flagged on weekly resolver",
                  imdb_id, tmdb_id, title,
                  row.get("labelCs", {}).get("value"))
-        return None
+        return _VETOED
     return csfd_id
 
 
@@ -218,21 +238,47 @@ def lookup_and_write_csfd(
     if not (imdb_id or tmdb_id):
         return None
     try:
-        csfd_id = _query_csfd(
+        # Cheap DB-side guard BEFORE the network call. The existing-row
+        # callers (enricher's "updated_film", ensure_series's lookup
+        # branches) rely on this helper to no-op when csfd_id is already
+        # populated. After the bulk backfill that's the common case, so
+        # skipping the SPARQL request when the column is non-NULL saves
+        # ~150 ms per row AND avoids burning Wikidata quota on rows that
+        # cannot be updated.
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT csfd_id FROM {table} WHERE id = %s", (row_id,))
+            row = cur.fetchone()
+            if row is None or row[0] is not None:
+                return None
+
+        # IMDb path is the strict authority — a `_VETOED` here (label
+        # mismatch / duplicate Wikidata entity) means we must NOT fall
+        # back to TMDB, because the bulk resolver would mark the row as
+        # resolved/rejected and the TMDB path could otherwise paper over
+        # a real disagreement by writing a different ID.
+        result = _query_csfd(
             imdb_id=imdb_id,
             tmdb_id=tmdb_id,
             tmdb_prop=_TMDB_PROP[table],
             title=title,
         )
-        # Fall back to TMDB path only if IMDb path missed AND the table
-        # / id permits it. The bulk resolver does the same two-pass.
-        if csfd_id is None and imdb_id and tmdb_id:
-            csfd_id = _query_csfd(
+        if result == _VETOED:
+            return None
+        csfd_id: int | None = None
+        if isinstance(result, int):
+            csfd_id = result
+        elif result == _MISS and imdb_id and tmdb_id:
+            # Plain miss → try TMDB path. Same two-pass as the bulk
+            # resolver (`scripts/resolve-csfd-via-wikidata.py`).
+            result = _query_csfd(
                 imdb_id=None,
                 tmdb_id=tmdb_id,
                 tmdb_prop=_TMDB_PROP[table],
                 title=title,
             )
+            if isinstance(result, int):
+                csfd_id = result
         if csfd_id is None:
             return None
         with conn.cursor() as cur:
