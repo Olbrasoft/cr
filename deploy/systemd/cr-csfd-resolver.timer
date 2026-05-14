@@ -1,0 +1,16 @@
+[Unit]
+Description=CR — Weekly csfd_id resolver (Wikidata SPARQL, Mon 06:00 UTC)
+Documentation=https://github.com/Olbrasoft/cr/issues/732
+
+[Timer]
+# Weekly cadence — Wikidata's data doesn't change fast and cr only adds
+# a few new films/series per day. The 06:00 UTC slot is well after the
+# 04:00 prehraj.to import, 04:30 IMDb sync, and 04:45 TMDB sync so the
+# resolver never contends with same-day writes to its own target columns.
+OnCalendar=Mon *-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=30min
+Unit=cr-csfd-resolver.service
+
+[Install]
+WantedBy=timers.target

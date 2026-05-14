@@ -1,0 +1,32 @@
+[Unit]
+Description=CR — Resolve csfd_id via Wikidata SPARQL (P345/P4947/P4983 → P2529)
+Documentation=https://github.com/Olbrasoft/cr/issues/732
+# Ordering: csfd resolution is read-only against TMDB + writes only
+# `csfd_id` on films/series/tv_shows. It doesn't contend with the
+# rating sync jobs which write `tmdb_rating` / `imdb_rating`, but we
+# still want them serialised behind the daily rating refresh — running
+# them concurrently doubles DB row-lock contention on the same rows.
+After=docker.service network-online.target cr-prehrajto-sync.service cr-imdb-rating-sync.service cr-tmdb-rating-sync.service
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr
+EnvironmentFile=/opt/cr/.env
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-prehrajto-sync.service; then echo "cr-prehrajto-sync.service still active — refusing to start" >&2; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-imdb-rating-sync.service; then echo "cr-imdb-rating-sync.service still active — refusing to start" >&2; exit 1; fi'
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-tmdb-rating-sync.service; then echo "cr-tmdb-rating-sync.service still active — refusing to start" >&2; exit 1; fi'
+# DATABASE_URL points at `db` (the docker hostname) inside compose but
+# the host can only reach Postgres via 127.0.0.1:5432 — same swap used
+# by cr-tmdb-rating-sync.service.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/resolve-csfd-via-wikidata.py --table all'
+StandardOutput=append:/var/log/cr-csfd-resolver.log
+StandardError=append:/var/log/cr-csfd-resolver.log
+Restart=on-failure
+RestartSec=300
+
+[Install]
+WantedBy=multi-user.target
