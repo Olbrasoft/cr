@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """Resolve `csfd_id` for cr.{films,series,tv_shows} via Wikidata SPARQL
-(epic #730, sub-issue #732).
+(epic #730, sub-issue #732, reconcile pass #740).
+
+Three modes:
+
+  * default                  — fill NULL csfd_id from Wikidata (#732).
+  * --reconcile              — walk rows that ALREADY have a csfd_id
+                                and queue every disagreement with
+                                Wikidata into csfd_id_reconcile_review
+                                (#740). No source-table writes.
+  * --apply-safe-rewrites    — pure DB pass: walk pending_review rows
+                                in csfd_id_reconcile_review, UPDATE
+                                source rows where labelCs ≈ cr.title
+                                after normalisation. Reversible from
+                                the audit log alone.
 
 Background: ČSFD has no public API, no IMDb-search, and TMDB does not
 expose ČSFD in its external_ids payload. Wikidata is the only public
@@ -46,7 +59,8 @@ Usage:
             [--table films|series|tv_shows|all] \\
             [--limit N] \\
             [--batch-size 200] \\
-            [--dry-run]
+            [--dry-run] \\
+            [--reconcile | --apply-safe-rewrites]
 """
 
 from __future__ import annotations
@@ -315,14 +329,14 @@ def _resolve_batch_tmdb(
     return out
 
 
-def _open_run(conn, dry_run: bool) -> int | None:
+def _open_run(conn, dry_run: bool, mode: str = "resolve") -> int | None:
     """Insert a run row at status=running. Returns the row id."""
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO csfd_id_resolution_runs (status, dry_run) "
-                "VALUES ('running', %s) RETURNING id",
-                (dry_run,),
+                "INSERT INTO csfd_id_resolution_runs (status, dry_run, mode) "
+                "VALUES ('running', %s, %s) RETURNING id",
+                (dry_run, mode),
             )
             run_id = cur.fetchone()[0]
         conn.commit()
@@ -330,7 +344,7 @@ def _open_run(conn, dry_run: bool) -> int | None:
     except psycopg2.Error as e:
         conn.rollback()
         logging.warning(
-            "csfd_id_resolution_runs INSERT failed (migration 075?): %s", e)
+            "csfd_id_resolution_runs INSERT failed (migration 075/077?): %s", e)
         return None
 
 
@@ -624,6 +638,344 @@ def _process_table(
     return counts
 
 
+def _log_reconcile(
+    conn,
+    run_id: int | None,
+    dry_run: bool,
+    table: str,
+    row_id: int,
+    cr_imdb_id: str | None,
+    cr_tmdb_id: int | None,
+    cr_title: str | None,
+    cr_year: int | None,
+    cr_csfd_id: int,
+    qid: str,
+    wikidata_csfd_id: int | None,
+    label_cs: str | None,
+    reason: str,
+) -> None:
+    """Insert a disagreement row into csfd_id_reconcile_review. The
+    write happens for both dry-run and real-run mode — the table is
+    a record-of-disagreement, not a write queue. --apply-safe-rewrites
+    later consumes pending_review rows to perform the actual UPDATE."""
+    if run_id is None:
+        return
+    if dry_run:
+        logging.info(
+            "DRY-RECONCILE: %s.id=%s cr_csfd=%s ↔ wd_csfd=%s reason=%s "
+            "qid=%s label_cs=%r ~ title=%r",
+            table, row_id, cr_csfd_id, wikidata_csfd_id, reason,
+            qid, label_cs, cr_title)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO csfd_id_reconcile_review
+                    (run_id, source_table, source_row_id,
+                     cr_imdb_id, cr_tmdb_id, cr_title, cr_year,
+                     cr_csfd_id, wikidata_qid, wikidata_csfd_id,
+                     wikidata_label_cs, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (run_id, table, row_id, cr_imdb_id, cr_tmdb_id, cr_title,
+                 cr_year, cr_csfd_id, qid, wikidata_csfd_id, label_cs,
+                 reason),
+            )
+        conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        logging.warning("csfd_id_reconcile_review INSERT failed: %s", e)
+
+
+def _process_table_reconcile(
+    conn,
+    session: requests.Session,
+    table: str,
+    run_id: int | None,
+    *,
+    limit: int,
+    batch_size: int,
+    dry_run: bool,
+) -> dict[str, int]:
+    """Reconcile pass: walk csfd_id IS NOT NULL rows, compare cr.csfd_id
+    vs Wikidata P2529, queue disagreements into csfd_id_reconcile_review.
+
+    Never writes to the source table — the actual rewrite is gated on
+    --apply-safe-rewrites. Counters used:
+      processed             — rows scanned
+      resolved_via_imdb     — rows where Wikidata had a P345 hit
+      resolved_via_tmdb     — rows where Wikidata had a P4947/P4983 hit
+                              (after IMDb pass found no match)
+      sanity_rejected       — rows queued into reconcile_review
+                              (this includes both auto-rewriteable and
+                              human-triage cases — the split happens
+                              later in --apply-safe-rewrites)
+      unresolved            — rows scanned but Wikidata had no match
+                              at all (cr.csfd_id stays untouched)
+    """
+    counts: dict[str, int] = collections.Counter()
+    cur = conn.cursor()
+
+    year_col = YEAR_COL[table]
+    sql = (
+        f"SELECT id, imdb_id, tmdb_id, title, {year_col}, csfd_id FROM {table} "
+        "WHERE csfd_id IS NOT NULL "
+        "  AND (imdb_id IS NOT NULL OR tmdb_id IS NOT NULL) "
+        "ORDER BY id"
+    )
+    if limit:
+        sql += f" LIMIT {limit}"
+    cur.execute(sql)
+    all_rows = cur.fetchall()
+    counts["processed"] = len(all_rows)
+    logging.info("[%s] reconcile: %d rows to check%s",
+                 table, len(all_rows), " (DRY RUN)" if dry_run else "")
+    if not all_rows:
+        return counts
+
+    # Track rows for which the IMDb pass already returned a verdict
+    # (matched-and-agreed, matched-and-disagreed, or matched-but-no-P2529).
+    # Anything left uncovered after IMDb falls through to the TMDB pass.
+    handled: set[int] = set()
+
+    def _classify(
+        row,
+        wikidata_csfd_raw,
+        info_qid,
+        info_labels,
+        info_duplicates,
+        match_path: str,
+    ) -> None:
+        """Compare wd.csfd vs cr.csfd_id, write to review if disagreeing.
+        `match_path` is 'imdb' or 'tmdb' — only used to pick the counter."""
+        row_id, imdb_id, tmdb_id, title, year, cr_csfd_id = row
+        if match_path == "imdb":
+            counts["resolved_via_imdb"] += 1
+        else:
+            counts["resolved_via_tmdb"] += 1
+        label_cs = info_labels[0] if info_labels else None
+        # Wikidata says "I know the item but ČSFD link is missing" —
+        # this is itself a signal worth surfacing (a cr.csfd_id with no
+        # Wikidata cross-reference may still be right, but we can't
+        # auto-confirm it).
+        if not wikidata_csfd_raw:
+            counts["sanity_rejected"] += 1
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, None, label_cs,
+                "wikidata_missing_p2529")
+            return
+        try:
+            wikidata_csfd_id = int(wikidata_csfd_raw)
+        except ValueError:
+            counts["sanity_rejected"] += 1
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, None, label_cs,
+                "non_numeric_csfd")
+            return
+        if info_duplicates:
+            # Multiple Wikidata items for the same external ID — too
+            # ambiguous to either confirm or refute; manual triage.
+            counts["sanity_rejected"] += 1
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, wikidata_csfd_id,
+                label_cs, "duplicate_wikidata_entity")
+            return
+        if wikidata_csfd_id == cr_csfd_id:
+            # Match — Wikidata confirms cr's existing value. No action.
+            return
+        # Disagreement. Decide whether the labelCs sanity check would
+        # later let --apply-safe-rewrites auto-fix this. The check is
+        # the SAME function used by the fill-NULL pass, so a rewrite
+        # has at least as much evidence as a fresh write.
+        if _label_matches(info_labels, title):
+            counts["sanity_rejected"] += 1
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, wikidata_csfd_id,
+                label_cs, "wikidata_disagrees")
+        else:
+            # Wikidata disagrees AND labelCs doesn't match cr.title —
+            # too risky to auto-rewrite. Queue for human triage with a
+            # different reason so --apply-safe-rewrites skips it.
+            counts["sanity_rejected"] += 1
+            _log_reconcile(
+                conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                title, year, cr_csfd_id, info_qid, wikidata_csfd_id,
+                label_cs, "label_mismatch_blocked_rewrite")
+
+    # ---- Pass 1: IMDb → ČSFD via P345 ----
+    imdb_rows = [r for r in all_rows if r[1]]
+    for chunk in _chunked(imdb_rows, batch_size):
+        results = _resolve_batch_imdb(session, chunk)
+        for row in chunk:
+            row_id, imdb_id = row[0], row[1]
+            info = results.get(imdb_id)
+            if not info:
+                continue
+            handled.add(row_id)
+            _classify(row, info["csfd_id"], info["qid"], info["labels"],
+                      info["duplicates"], "imdb")
+        time.sleep(BASE_SLEEP_SECONDS)
+
+    # ---- Pass 2: TMDB → ČSFD fallback ----
+    tmdb_rows = [r for r in all_rows
+                 if r[2] is not None and r[0] not in handled]
+    for chunk in _chunked(tmdb_rows, batch_size):
+        results = _resolve_batch_tmdb(session, table, chunk)
+        for row in chunk:
+            row_id, _imdb_id, tmdb_id = row[0], row[1], row[2]
+            info = results.get(tmdb_id)
+            if not info:
+                continue
+            handled.add(row_id)
+            _classify(row, info["csfd_id"], info["qid"], info["labels"],
+                      info["duplicates"], "tmdb")
+        time.sleep(BASE_SLEEP_SECONDS)
+
+    counts["unresolved"] = counts["processed"] - len(handled)
+    logging.info("[%s] reconcile done — %s", table, dict(counts))
+    return counts
+
+
+def _apply_safe_rewrites(
+    conn,
+    run_id: int | None,
+    *,
+    dry_run: bool,
+) -> dict[str, int]:
+    """Walk csfd_id_reconcile_review pending_review rows and apply the
+    auto-rewrite policy from #740: when labelCs (already normalised
+    against cr.title at queue time, so a 'wikidata_disagrees' tag is
+    sufficient evidence) matches, UPDATE source row.
+
+    The UPDATE is guarded by `csfd_id = <original cr_csfd_id>` so a
+    manual fix between the dry-run queue and the apply pass is not
+    clobbered — in that case the rewrite is silently dropped and the
+    review row is marked 'manual_resolved' on a separate clean-up pass.
+
+    Counters:
+      reviewed            — pending_review rows looked at
+      rewrote             — UPDATE actually changed a row
+      stale_no_op         — the row's csfd_id changed since the dry-run
+                             (manual fix or another reconcile pass)
+      skipped_unsafe      — review row failed the strict-rewrite gate
+                             (reason != wikidata_disagrees, OR labelCs
+                             absent, OR labelCs doesn't match cr.title)
+      collision           — proposed csfd_id is already used by a sibling
+                             row in the same table (would violate uniqueness)
+
+    Strict-rewrite gate (#740): the reconcile classification logs
+    `wikidata_disagrees` whenever Wikidata returned a different P2529
+    and the existing fill-NULL labels-pass accepted it — which for
+    backwards-compat purposes ALSO accepts `labelCs IS NULL` (the
+    bulk resolver trusts a bare IMDb match as evidence). That permissive
+    behaviour is fine when writing into a NULL, but overwriting a
+    pre-existing (possibly human-curated) value needs harder evidence.
+    Apply therefore re-checks at write time: labelCs MUST be present and
+    match cr.title after normalisation. Everything else stays
+    pending_review for human triage.
+    """
+    counts: dict[str, int] = collections.Counter()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, source_table, source_row_id,
+               cr_csfd_id, wikidata_csfd_id, reason,
+               wikidata_label_cs, cr_title
+        FROM csfd_id_reconcile_review
+        WHERE action_taken = 'pending_review'
+        ORDER BY id
+        """
+    )
+    review_rows = cur.fetchall()
+    logging.info("apply-safe-rewrites: %d pending_review rows%s",
+                 len(review_rows), " (DRY RUN)" if dry_run else "")
+
+    for (rev_id, src_table, src_row_id, cr_csfd_id, wd_csfd_id,
+         reason, wd_label_cs, cr_title) in review_rows:
+        counts["reviewed"] += 1
+        if reason != "wikidata_disagrees" or wd_csfd_id is None:
+            counts["skipped_unsafe"] += 1
+            continue
+        # Strict gate: labelCs must be present AND match cr.title after
+        # normalisation. Bypassed only when cr.title itself is missing /
+        # too short to compare meaningfully (rare).
+        if wd_label_cs is None:
+            counts["skipped_unsafe"] += 1
+            continue
+        if cr_title and not _one_match(wd_label_cs, _normalise(cr_title)):
+            counts["skipped_unsafe"] += 1
+            continue
+        # Sibling-collision check: refuse if some other row in the same
+        # table already carries the proposed csfd_id. Without this guard
+        # the UPDATE would either violate a unique constraint or quietly
+        # leave the database with a duplicate.
+        cur.execute(
+            f"SELECT 1 FROM {src_table} "
+            "WHERE csfd_id = %s AND id <> %s LIMIT 1",
+            (wd_csfd_id, src_row_id),
+        )
+        if cur.fetchone():
+            counts["collision"] += 1
+            if not dry_run:
+                cur.execute(
+                    "UPDATE csfd_id_reconcile_review "
+                    "SET action_taken = 'kept_original' "
+                    "WHERE id = %s",
+                    (rev_id,),
+                )
+            continue
+        # The csfd_id = <original> guard makes the rewrite safe against
+        # manual fixes that happened between dry-run and apply.
+        if dry_run:
+            cur.execute(
+                f"SELECT 1 FROM {src_table} "
+                "WHERE id = %s AND csfd_id = %s",
+                (src_row_id, cr_csfd_id),
+            )
+            if cur.fetchone():
+                counts["rewrote"] += 1
+                logging.info(
+                    "DRY: %s.id=%s csfd %s → %s",
+                    src_table, src_row_id, cr_csfd_id, wd_csfd_id)
+            else:
+                counts["stale_no_op"] += 1
+            continue
+        cur.execute(
+            f"UPDATE {src_table} "
+            "SET csfd_id = %s "
+            "WHERE id = %s AND csfd_id = %s",
+            (wd_csfd_id, src_row_id, cr_csfd_id),
+        )
+        if cur.rowcount == 1:
+            counts["rewrote"] += 1
+            cur.execute(
+                "UPDATE csfd_id_reconcile_review "
+                "SET action_taken = 'auto_rewritten', "
+                "    rewritten_at = clock_timestamp() "
+                "WHERE id = %s",
+                (rev_id,),
+            )
+        else:
+            counts["stale_no_op"] += 1
+            cur.execute(
+                "UPDATE csfd_id_reconcile_review "
+                "SET action_taken = 'manual_resolved' "
+                "WHERE id = %s",
+                (rev_id,),
+            )
+        conn.commit()
+
+    if dry_run:
+        conn.rollback()
+    logging.info("apply-safe-rewrites done — %s", dict(counts))
+    return counts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--table", default="all",
@@ -631,6 +983,17 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="0 = all")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--dry-run", action="store_true")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--reconcile", action="store_true",
+        help="Walk csfd_id IS NOT NULL rows, queue disagreements with "
+             "Wikidata into csfd_id_reconcile_review (#740). No source "
+             "writes — apply happens via --apply-safe-rewrites.")
+    mode_group.add_argument(
+        "--apply-safe-rewrites", action="store_true",
+        help="Apply auto-rewrite policy: UPDATE source rows where the "
+             "review queue has a wikidata_disagrees row whose labelCs "
+             "matches cr.title. Reversible from the audit log.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -649,15 +1012,49 @@ def main() -> int:
     tables = (["films", "series", "tv_shows"]
               if args.table == "all" else [args.table])
 
-    run_id = _open_run(conn, dry_run=args.dry_run)
+    # --apply-safe-rewrites is a pure DB pass — no SPARQL, no per-table
+    # iteration. The review queue already carries Wikidata's verdict.
+    if args.apply_safe_rewrites:
+        run_id = _open_run(conn, dry_run=args.dry_run, mode="reconcile")
+        status = "ok"
+        error_message: str | None = None
+        try:
+            counts = _apply_safe_rewrites(conn, run_id, dry_run=args.dry_run)
+        except Exception as exc:  # noqa: BLE001
+            status = "error"
+            error_message = repr(exc)
+            logging.exception("apply-safe-rewrites aborted")
+            counts = collections.Counter()
+        # Re-map apply-pass counters onto the runs-table column layout
+        # so the existing dashboard query keeps working. `processed` is
+        # the queue size, `resolved_via_imdb` records actual rewrites,
+        # `sanity_rejected` aggregates collision + stale + skipped.
+        totals_for_run = {
+            "processed": counts.get("reviewed", 0),
+            "resolved_via_imdb": counts.get("rewrote", 0),
+            "resolved_via_tmdb": 0,
+            "sanity_rejected": (counts.get("collision", 0)
+                                + counts.get("skipped_unsafe", 0)
+                                + counts.get("stale_no_op", 0)),
+            "unresolved": 0,
+        }
+        _close_run(conn, run_id, status, totals_for_run,
+                   {"__apply__": dict(counts)}, error_message)
+        logging.info("apply-safe-rewrites totals — %s", dict(counts))
+        return 0 if status != "error" else 1
+
+    mode = "reconcile" if args.reconcile else "resolve"
+    run_id = _open_run(conn, dry_run=args.dry_run, mode=mode)
     totals: dict[str, int] = collections.Counter()
     per_table: dict[str, dict] = {}
     status = "ok"
-    error_message: str | None = None
+    error_message = None
+
+    processor = _process_table_reconcile if args.reconcile else _process_table
 
     try:
         for t in tables:
-            c = _process_table(
+            c = processor(
                 conn, session, t, run_id,
                 limit=args.limit,
                 batch_size=args.batch_size,

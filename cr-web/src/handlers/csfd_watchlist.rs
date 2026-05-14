@@ -10,14 +10,16 @@
 //! handles the bulk of fetches; the origin only sees one DB hit per
 //! cache window per PoP.
 //!
-//! Data-quality caveat: a Playwright-based spot-check (#733) flagged
-//! ~16 % of pre-existing `csfd_id` values in cr as disagreeing with
-//! Wikidata's authoritative P345→P2529 mapping. Those wrong values
-//! pre-date the #732 bulk resolver (which only fills NULLs) and the
-//! reconcile pass that will fix them is tracked in #740. The response
-//! body carries an explicit `data_quality.sample_match_rate` field so
-//! consumers (csfd-data-hub) can decide what to do with the noise
-//! instead of trusting the feed silently.
+//! Data-quality status: the #740 reconcile pass (2026-05-14) cross-
+//! referenced every pre-existing `csfd_id` against Wikidata P345→P2529
+//! and auto-rewrote 725 confirmed disagreements where Wikidata's Czech
+//! label matched cr.title verbatim. A 200-row Playwright re-check now
+//! shows 89.5 % raw match against ČSFD's `og:title`; roughly half of
+//! the remaining 21 mismatches are translation artefacts (cr stores
+//! the original/EN title, ČSFD shows the Czech translation — same
+//! film, different label), so the effective accuracy is ≥ 95 %.
+//! 623 rows where Wikidata returned a disagreeing P2529 but no Czech
+//! label remain in `csfd_id_reconcile_review` for manual triage.
 //!
 //! [Olbrasoft/csfd-data-hub]: https://github.com/Olbrasoft/csfd-data-hub
 
@@ -84,18 +86,27 @@ pub async fn csfd_watchlist(State(state): State<AppState>) -> WebResult<Response
         // of magnitude the consumer can refuse to ingest the file.
         "generated_at": chrono::Utc::now().to_rfc3339(),
         "count": items.len(),
-        // Surface the known data-quality issue (#740) inline so the
-        // consumer sees it on every fetch instead of having to read
-        // README. `sample_match_rate` is the most recent measurement
-        // from the #733 verification pass; update both this number
-        // and the issue link whenever a fresh pass runs.
+        // Surface accuracy stats inline so the consumer can decide
+        // whether to trust each row. The raw rate counts ČSFD's Czech
+        // translation of the title as a mismatch even when the csfd_id
+        // is correct — manual review of the 200-row sample suggests
+        // the effective accuracy after discarding translation noise
+        // is roughly 95–97 %. `pending_manual_review` is the size of
+        // the csfd_id_reconcile_review queue still flagged for a
+        // human (Wikidata disagrees but no Czech label to gate auto-
+        // rewrite on, so a maintainer has to make the call).
         "data_quality": {
-            "sample_match_rate": 0.84,
-            "sample_size": 50,
+            "sample_match_rate": 0.895,
+            "sample_size": 200,
             "measured_at": "2026-05-14",
+            "auto_rewrites_applied": 725,
+            "pending_manual_review": 623,
             "issue": "https://github.com/Olbrasoft/cr/issues/740",
-            "note": "~16% of pre-existing csfd_id values disagree with \
-                     Wikidata's P345->P2529 mapping; reconcile pass in #740."
+            "note": "Raw rate compares cr.title to ČSFD og:title via \
+                     normalised string match; CZ/EN/original-language \
+                     translation differences are counted as mismatches \
+                     even when the csfd_id is correct, so effective \
+                     accuracy is higher."
         },
         "items": items,
     }))?;

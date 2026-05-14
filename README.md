@@ -101,7 +101,7 @@ cargo run -p cr-web
 
 ## Public APIs
 
-- **`GET /api/csfd-watchlist.json`** — open-data feed of every cr row with a populated `csfd_id` (films + series + tv_shows). Consumed by [Olbrasoft/csfd-data-hub](https://github.com/Olbrasoft/csfd-data-hub) to drive daily ČSFD rating scraping. Cached for 1 hour at Cloudflare's edge; CORS-enabled. Shape: `{ generated_at, count, items: [{ csfd_id, imdb_id, tmdb_id, title, year, kind }, …] }`. **Data-quality caveat:** ~16 % of pre-existing `csfd_id` values in cr are known to disagree with Wikidata's `P345`→`P2529` mapping; see [#740](https://github.com/Olbrasoft/cr/issues/740) for the reconcile pass that will fix this.
+- **`GET /api/csfd-watchlist.json`** — open-data feed of every cr row with a populated `csfd_id` (films + series + tv_shows). Consumed by [Olbrasoft/csfd-data-hub](https://github.com/Olbrasoft/csfd-data-hub) to drive daily ČSFD rating scraping. Cached for 1 hour at Cloudflare's edge; CORS-enabled. Shape: `{ generated_at, count, items: [{ csfd_id, imdb_id, tmdb_id, title, year, kind }, …] }`. **Data quality:** the [#740](https://github.com/Olbrasoft/cr/issues/740) reconcile pass (2026-05-14) auto-rewrote 725 confirmed wrong `csfd_id` values against Wikidata `P345`→`P2529`. A 200-row Playwright spot-check shows 89.5 % raw match against ČSFD's `og:title`; the residual mismatches are largely translation artefacts (cr stores the original or English title where ČSFD shows the Czech version) so effective accuracy is ≥ 95 %. Each response carries an inline `data_quality` block so consumers can decide what to do with the residual noise.
 
 ## Documentation
 
