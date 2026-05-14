@@ -335,7 +335,7 @@ def _close_run(
             cur.execute(
                 """
                 UPDATE csfd_id_resolution_runs
-                SET finished_at        = now(),
+                SET finished_at        = clock_timestamp(),
                     status             = %s,
                     processed          = %s,
                     resolved_via_imdb  = %s,
