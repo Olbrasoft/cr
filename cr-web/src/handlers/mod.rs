@@ -17,6 +17,7 @@ pub mod admin_prehrajto;
 mod admin_test_sledujteto;
 mod audiobooks;
 pub mod cover_proxy;
+mod csfd_watchlist;
 mod download_video;
 mod films;
 mod filmy_serialy;
@@ -36,6 +37,7 @@ mod voices;
 // Re-export all public handlers so main.rs doesn't need changes
 pub use admin_test_sledujteto::admin_test_sledujteto;
 pub use audiobooks::audiobooks;
+pub use csfd_watchlist::csfd_watchlist;
 pub use download_video::download_video;
 pub use films::{
     SktorrentSource, films_detail, films_list, films_person_image, films_search, sktorrent_resolve,

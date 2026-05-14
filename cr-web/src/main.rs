@@ -155,6 +155,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::geojson_orp),
         )
         .route("/landmarks", axum::routing::get(handlers::api_landmarks))
+        .route(
+            "/csfd-watchlist.json",
+            axum::routing::get(handlers::csfd_watchlist),
+        )
         .route("/video/info", axum::routing::post(handlers::video_info))
         .route(
             "/video/prepare",
