@@ -1832,21 +1832,7 @@ pub async fn series_person_image(
     State(state): State<AppState>,
     Path(filename): Path<String>,
 ) -> WebResult<Response> {
-    if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
-        return Ok(super::cover_proxy::placeholder_webp());
-    }
-    let stem = &filename[..filename.len() - ".webp".len()];
-    let Some(rest) = stem.strip_prefix('p') else {
-        return Ok(super::cover_proxy::placeholder_webp());
-    };
-    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
-        return Ok(super::cover_proxy::placeholder_webp());
-    }
-    let key = format!("people/{rest}.webp");
-    if let Some(bytes) = super::cover_proxy::try_fetch_r2(&state, &key).await {
-        return Ok(super::cover_proxy::immutable_webp(bytes));
-    }
-    Ok(super::cover_proxy::placeholder_webp())
+    Ok(super::cover_proxy::fetch_person_image(&state, &filename).await)
 }
 
 /// GET /serialy-online/still/{filename} — serve episode still from disk.

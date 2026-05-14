@@ -674,9 +674,11 @@ struct FilmDetailTemplate {
     /// the series detail page's `actors` field — same `PersonRow` shape
     /// lets us reuse the same Askama template fragment.
     actors: Vec<super::series::PersonRow>,
-    /// Directors + writers — for films we only show directors (TMDB
-    /// `job = 'Director'` in `/movie/{id}/credits` crew). No `created_by`
-    /// equivalent for movies. Empty when no directors are known.
+    /// Directors only (TMDB `crew[].job == "Director"` from
+    /// `/movie/{id}/credits`). Field is named `creators` to keep the
+    /// template parallel with series_detail's `creators` (which there
+    /// is series creators + directors). Empty when no directors are
+    /// linked.
     creators: Vec<super::series::PersonRow>,
 }
 
@@ -1037,10 +1039,10 @@ pub async fn films_detail(
         .iter()
         .any(|r| r.provider_slug == "sledujteto");
 
-    // Top-10 cast + directors. We use `unwrap_or_default()` for both
-    // queries because the detail page should still render if these
-    // joins fail (table missing in dev, transient DB issue) — we'd
-    // rather show the film without crew than 500 the whole page.
+    // Top-10 cast + directors. Both queries fall back to an empty list
+    // on error so the detail page still renders (table missing in dev,
+    // transient DB issue) — but we log the error first so a real
+    // regression doesn't look identical to "this film has no crew".
     let actors = sqlx::query_as::<_, super::series::PersonRow>(
         "SELECT p.id, p.name, p.profile_filename, fa.character_name \
          FROM people p JOIN film_actors fa ON fa.person_id = p.id \
@@ -1049,7 +1051,10 @@ pub async fn films_detail(
     .bind(film.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::error!(film_id = film.id, error = ?e, "film_actors query failed");
+        Vec::new()
+    });
 
     let creators = sqlx::query_as::<_, super::series::PersonRow>(
         "SELECT p.id, p.name, p.profile_filename, NULL::varchar AS character_name \
@@ -1059,7 +1064,10 @@ pub async fn films_detail(
     .bind(film.id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::error!(film_id = film.id, error = ?e, "film_directors query failed");
+        Vec::new()
+    });
 
     let tmpl = FilmDetailTemplate {
         img: state.image_base_url.clone(),
@@ -1084,21 +1092,7 @@ pub async fn films_person_image(
     State(state): State<AppState>,
     axum::extract::Path(filename): axum::extract::Path<String>,
 ) -> WebResult<Response> {
-    if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
-        return Ok(super::cover_proxy::placeholder_webp());
-    }
-    let stem = &filename[..filename.len() - ".webp".len()];
-    let Some(rest) = stem.strip_prefix('p') else {
-        return Ok(super::cover_proxy::placeholder_webp());
-    };
-    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
-        return Ok(super::cover_proxy::placeholder_webp());
-    }
-    let key = format!("people/{rest}.webp");
-    if let Some(bytes) = super::cover_proxy::try_fetch_r2(&state, &key).await {
-        return Ok(super::cover_proxy::immutable_webp(bytes));
-    }
-    Ok(super::cover_proxy::placeholder_webp())
+    Ok(super::cover_proxy::fetch_person_image(&state, &filename).await)
 }
 
 /// Genre sub-listing: /filmy-online/{genre-slug}/

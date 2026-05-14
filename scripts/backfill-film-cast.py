@@ -16,9 +16,11 @@ all directors come from `credits.crew` rows with `job == 'Director'`.
 After running, kick off `scripts/backfill-person-photos.py` so newly-
 inserted persons get their WebP uploaded to R2.
 
-Idempotency: a film is processed only when `film_actors` is empty for
-it. Re-runs report `skipped` for already-filled rows. We never DELETE
-existing cast — even partial human curation is preserved.
+Idempotency: a film is processed only when BOTH `film_actors` and
+`film_directors` are empty for it (`_fetch_candidates` filters
+already-populated films out at the SQL level — they never enter the
+worker pool, so there's no `skipped` status to tally). We never
+DELETE existing cast — even partial human curation is preserved.
 
 Usage:
   DATABASE_URL=postgres://...@localhost/cr_dev \\
@@ -63,11 +65,20 @@ DEFAULT_CAST_LIMIT = 10
 # the producers' chair, not creative direction.
 DIRECTOR_JOBS = {"Director"}
 
-# `film_actors.character_name` is VARCHAR(255). A handful of TMDB rows
-# carry character strings well past that — most are slash-joined cast
-# lists from anthology shows. Truncate on the client rather than upsize
-# the column for every row.
+# `film_actors.character_name` is VARCHAR(255) and `people.name` is
+# VARCHAR(255). A handful of TMDB rows carry strings well past that —
+# slash-joined cast lists from anthology shows, joint stage names, etc.
+# Truncate on the client rather than upsize the columns for every row.
 CHAR_NAME_MAX = 255
+PERSON_NAME_MAX = 255
+
+# `film_actors.order_index` is SMALLINT (i.e. signed 16-bit, max 32 767).
+# TMDB `order` is normally 0..200 but a buggy credits row can carry an
+# outlier well past the SMALLINT range; clamp before insert. Missing
+# `order` sorts last (`_UNORDERED_RANK`) and stores as the SMALLINT
+# maximum so it doesn't shadow billed actors during display.
+_SMALLINT_MAX = 32_767
+_UNORDERED_RANK = 9_999
 
 
 @dataclass
@@ -155,6 +166,9 @@ def _fetch_credits(
 
 
 # Per-thread connection (psycopg2 isn't thread-safe across connections).
+# Per-thread `requests.Session` as well — re-creating one per film would
+# tear down/redial HTTPS for every TMDB request and waste ~80% of the
+# wall clock on TLS handshakes against api.themoviedb.org.
 _conn_local = threading.local()
 
 
@@ -166,9 +180,18 @@ def _get_conn(dsn: str):
     return conn
 
 
+def _get_session() -> requests.Session:
+    session = getattr(_conn_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _conn_local.session = session
+    return session
+
+
 def _upsert_person(cur, row: CreditRow) -> int:
     """UPSERT into people by tmdb_id. Returns people.id."""
     filename = f"p{row.tmdb_id}.webp" if row.profile_path else None
+    name = _truncate_person_name(row.name)
     cur.execute(
         "INSERT INTO people (tmdb_id, name, profile_filename) "
         "VALUES (%s, %s, %s) "
@@ -179,7 +202,7 @@ def _upsert_person(cur, row: CreditRow) -> int:
         # after confirming TMDB no longer has them.
         "    profile_filename = COALESCE(EXCLUDED.profile_filename, people.profile_filename) "
         "RETURNING id",
-        (row.tmdb_id, row.name, filename),
+        (row.tmdb_id, name, filename),
     )
     return cur.fetchone()[0]
 
@@ -190,6 +213,21 @@ def _truncate_char_name(name: str | None) -> str | None:
     return name[:CHAR_NAME_MAX] if len(name) > CHAR_NAME_MAX else name
 
 
+def _truncate_person_name(name: str) -> str:
+    return name[:PERSON_NAME_MAX] if len(name) > PERSON_NAME_MAX else name
+
+
+def _order_index(raw_order: int | None) -> int:
+    """Clamp TMDB `order` to the SMALLINT column. None → "sort last"."""
+    if raw_order is None:
+        return _UNORDERED_RANK
+    if raw_order < 0:
+        return 0
+    if raw_order > _SMALLINT_MAX:
+        return _SMALLINT_MAX
+    return raw_order
+
+
 def _process_film(
     film_id: int,
     tmdb_id: int,
@@ -198,7 +236,7 @@ def _process_film(
     cast_limit: int,
     dry_run: bool,
 ) -> tuple[int, str, int, int]:
-    session = requests.Session()
+    session = _get_session()
     result = _fetch_credits(session, tmdb_id, api_key)
     if result is None:
         return film_id, "tmdb_error", 0, 0
@@ -214,7 +252,7 @@ def _process_film(
     directors_inserted = 0
     try:
         cur = conn.cursor()
-        cast_sorted = sorted(cast, key=lambda r: r.order if r.order is not None else 999)
+        cast_sorted = sorted(cast, key=lambda r: _order_index(r.order))
         for c in cast_sorted[:cast_limit]:
             pid = _upsert_person(cur, c)
             # RETURNING + fetchone() is more reliable than rowcount for
@@ -227,7 +265,8 @@ def _process_film(
                 "VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (film_id, person_id) DO NOTHING "
                 "RETURNING person_id",
-                (film_id, pid, _truncate_char_name(c.character), c.order or 0),
+                (film_id, pid, _truncate_char_name(c.character),
+                 _order_index(c.order)),
             )
             if cur.fetchone() is not None:
                 actors_inserted += 1
@@ -254,7 +293,15 @@ def _process_film(
 def _fetch_candidates(
     dsn: str, limit: int | None
 ) -> list[tuple[int, int]]:
-    """[(film_id, tmdb_id), ...] for films with tmdb_id but no cast yet."""
+    """[(film_id, tmdb_id), ...] for films with tmdb_id and no credits yet.
+
+    A film is "done" once it has at least one row in EITHER
+    `film_actors` or `film_directors`. Checking only film_actors would
+    leave director-only films (rare — typically silent shorts or
+    archive footage with credited director but no listed cast)
+    perpetually re-eligible: each re-run would re-fetch TMDB and only
+    hit ON CONFLICT.
+    """
     conn = psycopg2.connect(dsn)
     try:
         cur = conn.cursor()
@@ -263,6 +310,9 @@ def _fetch_candidates(
             "WHERE f.tmdb_id IS NOT NULL "
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM film_actors fa WHERE fa.film_id = f.id"
+            "  ) "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM film_directors fd WHERE fd.film_id = f.id"
             "  ) "
             "ORDER BY f.added_at DESC NULLS LAST, f.id"
         )
@@ -303,7 +353,7 @@ def main() -> int:
 
     stats = {
         "ok": 0, "ok_dry": 0, "empty_credits": 0,
-        "tmdb_error": 0, "db_error": 0,
+        "tmdb_error": 0, "db_error": 0, "worker_exception": 0,
     }
     actor_total = 0
     director_total = 0
@@ -318,21 +368,35 @@ def main() -> int:
             for fid, tmdb_id in rows
         ]
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
-            _fid, status, a, d = fut.result()
+            # A bare `fut.result()` would bubble unexpected worker
+            # exceptions and abort the whole `as_completed` loop —
+            # losing the summary tally for every still-pending future.
+            # Catch broadly so one bad film can't kill the batch.
+            try:
+                _fid, status, a, d = fut.result()
+            except Exception as e:  # noqa: BLE001
+                stats["worker_exception"] += 1
+                log.warning("worker raised: %s: %s",
+                            type(e).__name__, e)
+                continue
             stats[status] += 1
             actor_total += a
             director_total += d
             if i % 100 == 0 or i == len(rows):
                 log.info(
-                    "progress %d/%d ok=%d empty=%d tmdb_err=%d db_err=%d | actors=%d directors=%d",
+                    "progress %d/%d ok=%d empty=%d tmdb_err=%d db_err=%d "
+                    "wrk_exc=%d | actors=%d directors=%d",
                     i, len(rows), stats["ok"] + stats["ok_dry"],
                     stats["empty_credits"], stats["tmdb_error"],
-                    stats["db_error"], actor_total, director_total,
+                    stats["db_error"], stats["worker_exception"],
+                    actor_total, director_total,
                 )
 
     log.info("DONE: %s | actors=%d directors=%d",
              stats, actor_total, director_total)
-    return 0 if stats["tmdb_error"] == 0 and stats["db_error"] == 0 else 1
+    return 0 if (stats["tmdb_error"] == 0
+                 and stats["db_error"] == 0
+                 and stats["worker_exception"] == 0) else 1
 
 
 if __name__ == "__main__":

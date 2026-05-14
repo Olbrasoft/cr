@@ -199,3 +199,27 @@ pub fn new_r2_key(table_prefix: &str, id: i32, is_large: bool) -> String {
     let variant = if is_large { "cover-large" } else { "cover" };
     format!("{table_prefix}/{id}/{variant}.webp")
 }
+
+/// Person profile photo proxy. Takes a `p{tmdb_id}.webp` filename,
+/// strips/validates the `p` prefix and `.webp` suffix, fetches
+/// `cr-images:people/{tmdb_id}.webp` from R2, and returns the bytes
+/// (or the placeholder on any miss). Used by both the films and
+/// series detail routes — keeps validation, cache headers, and the
+/// placeholder fallback in one place.
+pub async fn fetch_person_image(state: &AppState, filename: &str) -> Response {
+    if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
+        return placeholder_webp();
+    }
+    let stem = &filename[..filename.len() - ".webp".len()];
+    let Some(rest) = stem.strip_prefix('p') else {
+        return placeholder_webp();
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return placeholder_webp();
+    }
+    let key = format!("people/{rest}.webp");
+    if let Some(bytes) = try_fetch_r2(state, &key).await {
+        return immutable_webp(bytes);
+    }
+    placeholder_webp()
+}
