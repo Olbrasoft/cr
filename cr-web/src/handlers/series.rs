@@ -595,10 +595,19 @@ pub async fn series_list(
         // The count MUST mirror the predicate used by
         // `fetch_latest_episode_cards` — otherwise the pagination total
         // is inflated by TMDB-only stub series that never produce a card.
-        let count_row = sqlx::query_as::<_, CountRow>(&format!(
-            "SELECT count(DISTINCT e.series_id) as count FROM episodes e \
-             WHERE {EPISODE_HAS_SOURCE_PREDICATE}"
-        ))
+        //
+        // Scalar-subquery (LIMIT 1) form so the planner uses
+        // `idx_episodes_series_created` for an index range read per
+        // series instead of falling back to a Parallel Seq Scan over
+        // all ~104 k episodes (~1.6 s on prod vs ~200 ms).
+        let count_row = sqlx::query_as::<_, CountRow>(
+            "SELECT count(*) as count FROM series s WHERE \
+                 (SELECT 1 FROM episodes e \
+                    WHERE e.series_id = s.id \
+                      AND EXISTS (SELECT 1 FROM video_sources vs \
+                                  WHERE vs.episode_id = e.id AND vs.is_alive) \
+                  LIMIT 1) = 1",
+        )
         .fetch_one(&state.db)
         .await?;
 
@@ -879,16 +888,14 @@ async fn fetch_latest_episode_cards(
     // ORDER BY was hardcoded DESC, so `?smer=asc` toggled the chip but the
     // grid stayed the same.
     let direction = if desc { "DESC" } else { "ASC" };
+    // LATERAL JOIN drives from series (2.7k rows) and uses
+    // `idx_episodes_series_created` to index-scan the latest sourced
+    // episode per series. Replaces a CTE that DISTINCT-ON-ed over the
+    // entire `episodes` table (~104k rows, ~1.8 s on prod) — the new
+    // shape runs in ~300 ms because each per-series lookup walks the
+    // index and stops at the first sourced episode (median = 1 row).
     let sql = format!(
-        "WITH per_series AS ( \
-            SELECT DISTINCT ON (e.series_id) \
-                e.id, e.series_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
-            FROM episodes e \
-            JOIN series s ON s.id = e.series_id \
-            WHERE {EPISODE_HAS_SOURCE_PREDICATE} {series_filter} \
-            ORDER BY e.series_id, e.created_at DESC \
-         ) \
-         SELECT ps.id, \
+        "SELECT latest.id, \
             s.id AS series_id, \
             s.slug AS series_slug, \
             s.title AS series_title, \
@@ -898,12 +905,22 @@ async fn fetch_latest_episode_cards(
             s.imdb_rating AS series_imdb_rating, \
             s.csfd_rating AS series_csfd_rating, \
             s.description AS series_description, \
-            ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
-            (SELECT e2.slug FROM episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
-            (SELECT e2.episode_name FROM episodes e2 WHERE e2.id = ps.id) AS episode_name \
-         FROM per_series ps \
-         JOIN series s ON s.id = ps.series_id \
-         ORDER BY ps.created_at {direction} NULLS LAST \
+            latest.season, latest.episode, latest.has_subtitles, \
+            latest.has_dub, latest.created_at, \
+            latest.slug AS episode_slug, \
+            latest.episode_name \
+         FROM series s \
+         JOIN LATERAL ( \
+            SELECT e.id, e.season, e.episode, e.has_subtitles, e.has_dub, \
+                   e.created_at, e.slug, e.episode_name \
+            FROM episodes e \
+            WHERE e.series_id = s.id \
+              AND {EPISODE_HAS_SOURCE_PREDICATE} \
+            ORDER BY e.created_at DESC \
+            LIMIT 1 \
+         ) latest ON true \
+         WHERE 1=1 {series_filter} \
+         ORDER BY latest.created_at {direction} NULLS LAST \
          LIMIT $1 OFFSET $2"
     );
 
@@ -940,9 +957,15 @@ async fn count_filtered_series(
     // total matches the cards actually rendered — counting series that
     // only have TMDB-only stubs (no live video_sources) used to inflate
     // the count and leave the trailing pages short / empty.
+    //
+    // Wrapped as `(SELECT 1 … LIMIT 1) = 1` so the planner uses
+    // `idx_episodes_series_created` for each per-series probe rather
+    // than promoting the EXISTS to a hash-join + Parallel Seq Scan
+    // across all ~104 k episodes.
     let mut where_parts: Vec<String> = vec![format!(
-        "EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id \
-         AND {EPISODE_HAS_SOURCE_PREDICATE})"
+        "(SELECT 1 FROM episodes e \
+            WHERE e.series_id = s.id AND {EPISODE_HAS_SOURCE_PREDICATE} \
+            LIMIT 1) = 1"
     )];
     let mut bind_idx: i32 = 1;
     if !include_slugs.is_empty() {
