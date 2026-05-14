@@ -669,6 +669,15 @@ struct FilmDetailTemplate {
     has_source_sktorrent: bool,
     has_source_prehrajto: bool,
     has_source_sledujteto: bool,
+    /// Top-10 cast members (joined from `film_actors`). Empty for films
+    /// without TMDB credits backfilled or with no cast on TMDB. Mirrors
+    /// the series detail page's `actors` field — same `PersonRow` shape
+    /// lets us reuse the same Askama template fragment.
+    actors: Vec<super::series::PersonRow>,
+    /// Directors + writers — for films we only show directors (TMDB
+    /// `job = 'Director'` in `/movie/{id}/credits` crew). No `created_by`
+    /// equivalent for movies. Empty when no directors are known.
+    creators: Vec<super::series::PersonRow>,
 }
 
 // --- Search API types ---
@@ -1028,6 +1037,30 @@ pub async fn films_detail(
         .iter()
         .any(|r| r.provider_slug == "sledujteto");
 
+    // Top-10 cast + directors. We use `unwrap_or_default()` for both
+    // queries because the detail page should still render if these
+    // joins fail (table missing in dev, transient DB issue) — we'd
+    // rather show the film without crew than 500 the whole page.
+    let actors = sqlx::query_as::<_, super::series::PersonRow>(
+        "SELECT p.id, p.name, p.profile_filename, fa.character_name \
+         FROM people p JOIN film_actors fa ON fa.person_id = p.id \
+         WHERE fa.film_id = $1 ORDER BY fa.order_index LIMIT 10",
+    )
+    .bind(film.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let creators = sqlx::query_as::<_, super::series::PersonRow>(
+        "SELECT p.id, p.name, p.profile_filename, NULL::varchar AS character_name \
+         FROM people p JOIN film_directors fd ON fd.person_id = p.id \
+         WHERE fd.film_id = $1 ORDER BY p.name",
+    )
+    .bind(film.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
     let tmpl = FilmDetailTemplate {
         img: state.image_base_url.clone(),
         film,
@@ -1037,8 +1070,35 @@ pub async fn films_detail(
         has_source_sktorrent,
         has_source_prehrajto,
         has_source_sledujteto,
+        actors,
+        creators,
     };
     Ok(Html(tmpl.render()?).into_response())
+}
+
+/// GET /filmy-online/person/{filename} — proxy person profile photo from R2,
+/// same shape as the series handler. Photos are keyed by `tmdb_id`, so the
+/// underlying R2 keys are shared with series — the path prefix is just URL
+/// convention so each section has its own routing namespace.
+pub async fn films_person_image(
+    State(state): State<AppState>,
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> WebResult<Response> {
+    if !filename.ends_with(".webp") || filename.contains('/') || filename.contains("..") {
+        return Ok(super::cover_proxy::placeholder_webp());
+    }
+    let stem = &filename[..filename.len() - ".webp".len()];
+    let Some(rest) = stem.strip_prefix('p') else {
+        return Ok(super::cover_proxy::placeholder_webp());
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(super::cover_proxy::placeholder_webp());
+    }
+    let key = format!("people/{rest}.webp");
+    if let Some(bytes) = super::cover_proxy::try_fetch_r2(&state, &key).await {
+        return Ok(super::cover_proxy::immutable_webp(bytes));
+    }
+    Ok(super::cover_proxy::placeholder_webp())
 }
 
 /// Genre sub-listing: /filmy-online/{genre-slug}/

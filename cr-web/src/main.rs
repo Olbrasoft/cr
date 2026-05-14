@@ -393,6 +393,10 @@ async fn main() -> Result<()> {
             axum::routing::get(handlers::series_person_image),
         )
         .route(
+            "/filmy-online/person/{filename}",
+            axum::routing::get(handlers::films_person_image),
+        )
+        .route(
             "/serialy-online/{slug}/{ep}",
             axum::routing::get(handlers::episode_detail),
         )
