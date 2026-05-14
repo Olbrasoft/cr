@@ -4,13 +4,25 @@ Output layout (id-keyed, matches R2 prefix written after sub-issue #576):
     `{out_dir}/{id}/cover.webp`        (200×300)
     `{out_dir}/{id}/cover-large.webp`  (780×1170)
 
-Pure HTTP + Pillow. No DB. Idempotent — skips if both files already exist.
+After conversion, each WebP is also pushed to R2 at
+`cr-images/{prefix}/{id}/{variant}` via `rclone copyto`. Local files are
+written first (they're cheap, and let a future run skip the TMDB fetch);
+the R2 push is what actually makes the Rust handler serve the cover —
+`cr-web/src/handlers/films.rs::films_cover` reads from R2 only, never
+from local disk.
+
+Pure HTTP + Pillow + rclone. No DB. Idempotent — skips disk re-write if
+both files already exist; R2 push runs unconditionally so a previous
+partial deploy (local files present but R2 missing) self-heals on the
+next run.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import shutil
+import subprocess
 from pathlib import Path
 
 import requests
@@ -22,6 +34,14 @@ except ImportError:  # pragma: no cover
 
 TMDB_IMG_BASE = "https://image.tmdb.org/t/p"
 DEFAULT_TIMEOUT = 30
+
+# rclone is the canonical R2 push channel — already configured under the
+# `cr-r2` remote on the VPS (~/.config/rclone/rclone.conf) and used by
+# the series importer (#700). On a dev machine without rclone we just
+# log a warning and skip — local files stay on disk, the cover never
+# becomes visible on prod, but the import doesn't fail.
+_R2_REMOTE = "cr-r2:cr-images"
+_R2_PUSH_TIMEOUT = 60
 
 # Integrity bounds for decoded posters. TMDB w780 is 2:3 portrait: a valid
 # poster is ~780×1170, well above this floor. Anything smaller/weirder is
@@ -41,6 +61,67 @@ def _cover_paths(out_dir: Path, entity_id: int) -> tuple[Path, Path]:
     entity_dir = out_dir / str(entity_id)
     entity_dir.mkdir(parents=True, exist_ok=True)
     return entity_dir / "cover.webp", entity_dir / "cover-large.webp"
+
+
+def _push_cover_to_r2(out_dir: Path, entity_id: int) -> None:
+    """Push both `{id}/cover.webp` + `{id}/cover-large.webp` to R2.
+
+    The R2 prefix (`films`, `series`, `tv-shows`) is derived from
+    `out_dir`'s path components — callers pass `data/movies/covers-webp`
+    for films, `data/series/covers-webp` for series, and
+    `data/tv-shows/covers-webp` for TV shows. Mapping:
+      contains `tv-shows` segment  → prefix `tv-shows`
+      contains `series` segment     → prefix `series`
+      otherwise                     → prefix `films`
+
+    Best-effort: failure logs a warning and returns; the import keeps
+    going. The cover stays on disk and a manual rclone push can
+    self-heal.
+    """
+    if not shutil.which("rclone"):
+        log.warning("rclone not in PATH — id=%d cover stays local-only "
+                    "(import will succeed but the front-end will serve "
+                    "the 1×1 placeholder until manual sync)",
+                    entity_id)
+        return
+
+    parts = Path(out_dir).parts
+    if "tv-shows" in parts:
+        prefix = "tv-shows"
+    elif "series" in parts:
+        prefix = "series"
+    else:
+        prefix = "films"
+
+    small_path, large_path = _cover_paths(out_dir, entity_id)
+    pushed = 0
+    for path, variant in ((small_path, "cover.webp"),
+                          (large_path, "cover-large.webp")):
+        if not path.exists():
+            continue
+        dest = f"{_R2_REMOTE}/{prefix}/{entity_id}/{variant}"
+        try:
+            r = subprocess.run(
+                ["rclone", "copyto", "--s3-no-check-bucket",
+                 str(path), dest],
+                capture_output=True, text=True, timeout=_R2_PUSH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("rclone push timed out for %s", dest)
+            continue
+        except Exception as e:  # noqa: BLE001
+            log.warning("rclone push raised for %s: %s", dest, e)
+            continue
+        if r.returncode != 0:
+            tail = ((r.stderr or r.stdout or "").strip()
+                    .splitlines()[-3:])
+            log.warning("rclone push failed for %s: %s",
+                        dest, " | ".join(tail))
+            continue
+        pushed += 1
+    if pushed > 0:
+        log.info("cover uploaded to R2 id=%d prefix=%s",
+                 entity_id, prefix)
 
 
 def _validate_poster(img: "Image.Image", entity_id: int) -> bool:
@@ -88,6 +169,7 @@ def download_sktorrent_thumb(
         return "failed"
     small_path, large_path = _cover_paths(out_dir, entity_id)
     if not overwrite and small_path.exists() and large_path.exists():
+        _push_cover_to_r2(out_dir, entity_id)
         return "already_present"
 
     url = f"https://online.sktorrent.eu/media/videos/tmb1/{sktorrent_video_id}/1.jpg"
@@ -119,6 +201,7 @@ def download_sktorrent_thumb(
 
     log.info("cover saved id=%d from SK Torrent thumbnail (TMDB had none)",
              entity_id)
+    _push_cover_to_r2(out_dir, entity_id)
     return "written"
 
 
@@ -152,6 +235,7 @@ def download_cover(
     small_path, large_path = _cover_paths(out_dir, entity_id)
     if not overwrite and small_path.exists() and large_path.exists():
         log.debug("cover id=%d already exists — skip", entity_id)
+        _push_cover_to_r2(out_dir, entity_id)
         return "already_present"
 
     # Fetch w780 from TMDB (best quality available without going to original).
@@ -195,6 +279,7 @@ def download_cover(
     small.save(small_path, "WEBP", quality=85, method=6)
 
     log.info("cover saved id=%d", entity_id)
+    _push_cover_to_r2(out_dir, entity_id)
     return "written"
 
 
@@ -225,6 +310,7 @@ def download_cover_from_url(
 
     small_path, large_path = _cover_paths(out_dir, entity_id)
     if not overwrite and small_path.exists() and large_path.exists():
+        _push_cover_to_r2(out_dir, entity_id)
         return "already_present"
 
     try:
@@ -255,4 +341,5 @@ def download_cover_from_url(
     small.save(small_path, "WEBP", quality=85, method=6)
 
     log.info("cover saved id=%d from URL", entity_id)
+    _push_cover_to_r2(out_dir, entity_id)
     return "written"
