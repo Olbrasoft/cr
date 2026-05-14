@@ -19,6 +19,7 @@ from pathlib import Path
 import psycopg2
 
 from scripts.auto_import.cover_downloader import download_cover, download_sktorrent_thumb
+from scripts.auto_import.csfd_lookup import lookup_and_write_csfd
 from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.auto_import.tmdb_resolver import MovieResolution
 from scripts.video_sources_helper import (
@@ -193,6 +194,15 @@ def upsert_film(
             has_dub=has_dub,
             has_subtitles=has_subtitles,
         )
+        # Opportunistic csfd_id fill via Wikidata (#730). Cheap (~150 ms)
+        # single-row lookup; never raises — see scripts/auto_import/csfd_lookup.py.
+        # Skipped silently if the existing row already has csfd_id.
+        lookup_and_write_csfd(
+            conn,
+            table="films", row_id=film_id,
+            imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
+            title=movie.title_cs or movie.title_en or movie.original_title,
+        )
         log.info("upserted SKT into existing film %d (imdb=%s)", film_id, movie.imdb_id)
         return "updated_film", film_id
 
@@ -282,5 +292,14 @@ def upsert_film(
                 (film_id, slug_to_id[slug]),
             )
 
+    # Opportunistic csfd_id fill via Wikidata (#730). Runs after INSERT
+    # so the row exists; never raises. Bulk resolver picks up anything
+    # that misses (Wikidata down, label mismatch, etc.) on the weekly tick.
+    lookup_and_write_csfd(
+        conn,
+        table="films", row_id=film_id,
+        imdb_id=movie.imdb_id, tmdb_id=movie.tmdb_id,
+        title=title_cs,
+    )
     log.info("added film %d (imdb=%s, slug=%s)", film_id, movie.imdb_id, slug)
     return "added_film", film_id

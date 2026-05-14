@@ -25,6 +25,7 @@ from pathlib import Path
 import psycopg2
 
 from scripts.auto_import.cover_downloader import download_cover
+from scripts.auto_import.csfd_lookup import lookup_and_write_csfd
 from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.auto_import.tmdb_resolver import (
     EpisodeResolution,
@@ -111,12 +112,29 @@ def ensure_series(
         cur.execute("SELECT id FROM series WHERE imdb_id = %s", (tv.imdb_id,))
         row = cur.fetchone()
         if row:
-            return False, row[0]
+            series_id = row[0]
+            # Existing series may pre-date the csfd-resolution work (#730);
+            # try to fill csfd_id opportunistically — the helper no-ops if
+            # the column is already populated.
+            lookup_and_write_csfd(
+                conn,
+                table="series", row_id=series_id,
+                imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                title=tv.name_cs or tv.name_en or tv.original_name,
+            )
+            return False, series_id
     if tv.tmdb_id:
         cur.execute("SELECT id FROM series WHERE tmdb_id = %s", (tv.tmdb_id,))
         row = cur.fetchone()
         if row:
-            return False, row[0]
+            series_id = row[0]
+            lookup_and_write_csfd(
+                conn,
+                table="series", row_id=series_id,
+                imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                title=tv.name_cs or tv.name_en or tv.original_name,
+            )
+            return False, series_id
 
     # New series — create row
     name_cs = tv.name_cs or tv.name_en or tv.original_name or "Seriál"
@@ -178,6 +196,16 @@ def ensure_series(
                 "VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (series_id, slug_to_id[slug]),
             )
+
+    # Opportunistic csfd_id fill via Wikidata (#730). Same pattern as
+    # enricher.upsert_film — never raises; weekly bulk resolver mops
+    # up anything that didn't resolve here.
+    lookup_and_write_csfd(
+        conn,
+        table="series", row_id=series_id,
+        imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+        title=name_cs,
+    )
 
     log.info("created series %d (imdb=%s, tmdb=%d, slug=%s)",
              series_id, tv.imdb_id, tv.tmdb_id, slug)

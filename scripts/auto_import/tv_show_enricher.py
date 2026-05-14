@@ -27,6 +27,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from scripts.auto_import.csfd_lookup import lookup_and_write_csfd
 from scripts.auto_import.gemma_writer import generate_unique_cs
 from scripts.video_sources_helper import (
     dual_write_sktorrent,
@@ -156,6 +157,13 @@ def process_tv_show_episode(
             )
             tv_show_id = cur.fetchone()[0]
             created_show = True
+            # Opportunistic csfd_id fill via Wikidata (#730).
+            lookup_and_write_csfd(
+                conn,
+                table="tv_shows", row_id=tv_show_id,
+                imdb_id=tv.imdb_id, tmdb_id=tv.tmdb_id,
+                title=title,
+            )
             log.info("created tv_show id=%d slug='%s' (tmdb=%d)",
                      tv_show_id, slug, tv.tmdb_id)
         except Exception:
