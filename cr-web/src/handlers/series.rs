@@ -591,10 +591,14 @@ pub async fn series_list(
         (total, rows, Vec::new())
     } else if include.is_empty() && exclude.is_empty() && year_f.is_none() && audio_langs.is_none()
     {
-        // Default home listing (no filters): latest episode per series
-        let count_row = sqlx::query_as::<_, CountRow>(
-            "SELECT count(DISTINCT e.series_id) as count FROM episodes e",
-        )
+        // Default home listing (no filters): latest episode per series.
+        // The count MUST mirror the predicate used by
+        // `fetch_latest_episode_cards` — otherwise the pagination total
+        // is inflated by TMDB-only stub series that never produce a card.
+        let count_row = sqlx::query_as::<_, CountRow>(&format!(
+            "SELECT count(DISTINCT e.series_id) as count FROM episodes e \
+             WHERE {EPISODE_HAS_SOURCE_PREDICATE}"
+        ))
         .fetch_one(&state.db)
         .await?;
 
@@ -881,7 +885,7 @@ async fn fetch_latest_episode_cards(
                 e.id, e.series_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
             FROM episodes e \
             JOIN series s ON s.id = e.series_id \
-            WHERE 1=1 {series_filter} \
+            WHERE {EPISODE_HAS_SOURCE_PREDICATE} {series_filter} \
             ORDER BY e.series_id, e.created_at DESC \
          ) \
          SELECT ps.id, \
@@ -932,8 +936,14 @@ async fn count_filtered_series(
     audio_langs: Option<&[String]>,
     audio_col: &str,
 ) -> WebResult<i64> {
-    let mut where_parts: Vec<String> =
-        vec!["EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)".to_string()];
+    // Mirrors the `fetch_latest_episode_cards` predicate so the pagination
+    // total matches the cards actually rendered — counting series that
+    // only have TMDB-only stubs (no live video_sources) used to inflate
+    // the count and leave the trailing pages short / empty.
+    let mut where_parts: Vec<String> = vec![format!(
+        "EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id \
+         AND {EPISODE_HAS_SOURCE_PREDICATE})"
+    )];
     let mut bind_idx: i32 = 1;
     if !include_slugs.is_empty() {
         if include_mode_and {
