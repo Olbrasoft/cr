@@ -881,7 +881,7 @@ async fn fetch_latest_episode_cards(
                 e.id, e.series_id, e.season, e.episode, e.has_subtitles, e.has_dub, e.created_at \
             FROM episodes e \
             JOIN series s ON s.id = e.series_id \
-            WHERE 1=1 {series_filter} \
+            WHERE {EPISODE_HAS_SOURCE_PREDICATE} {series_filter} \
             ORDER BY e.series_id, e.created_at DESC \
          ) \
          SELECT ps.id, \
