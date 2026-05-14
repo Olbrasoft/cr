@@ -32,10 +32,13 @@ positive signal.
 
 Operational: writes a `csfd_id_resolution_runs` row at start (`status=
 running`), updates it at finish with counters + status (`ok`, `error`,
-or `partial`). First prod run MUST use --dry-run; once the maintainer
-has reviewed the proposed updates in csfd_id_resolution_review (and the
-log file), re-run without --dry-run to commit. A weekly systemd timer
-keeps the columns up-to-date as new rows land via auto-import.
+or `partial`). First prod run MUST use --dry-run; the run row is tagged
+`dry_run = TRUE` and review entries that the dry-run produces are
+inserted into `csfd_id_resolution_review` linked back to that run, so
+the maintainer can inspect proposed writes (and the rejection queue) via
+`SELECT … WHERE run_id = <the dry-run id>`. After review, re-run without
+--dry-run to commit. A weekly systemd timer keeps the columns up-to-date
+as new rows land via auto-import.
 
 Usage:
     DATABASE_URL=postgres://... \\
@@ -66,10 +69,14 @@ import requests
 SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
 
 # Wikidata's user-agent policy: identify the operator + a contact URL.
-# Bare `python-requests/2.x` gets aggressive 429s.
-USER_AGENT = (
+# Bare `python-requests/2.x` gets aggressive 429s. Operators can override
+# the contact via `CR_CSFD_RESOLVER_USER_AGENT` in /opt/cr/.env if they
+# want their own e-mail on the trail; the default uses a project mailbox
+# so we don't publish a personal address from this repo.
+USER_AGENT = os.environ.get(
+    "CR_CSFD_RESOLVER_USER_AGENT",
     "cr-csfd-resolver/0.1 (https://ceskarepublika.wiki; "
-    "olbrasoft.claudecode@gmail.com)"
+    "noreply@ceskarepublika.wiki)",
 )
 
 DEFAULT_BATCH_SIZE = 200
@@ -134,13 +141,20 @@ def _label_matches(labels: list[str | None], title: str | None) -> bool:
     n_title = _normalise(title)
     if len(n_title) < 3:
         return True
+    label_cs = labels[0] if labels else None
+    # Veto gate FIRST. A present labelCs that disagrees rejects the
+    # mapping outright — a later positive hit on labelEn / aliases must
+    # not override it, otherwise an English re-use of the same title
+    # (e.g. Czech "Hrdinové" matching the English label of a different
+    # show) silently writes the wrong csfd_id.
+    if label_cs and not _one_match(label_cs, n_title):
+        return False
     # Positive: any label matches → accept.
     for lbl in labels:
         if _one_match(lbl, n_title):
             return True
     # Negative gate: only labelCs vetoes. If absent, accept on faith
     # (the IMDb→item match is itself strong evidence).
-    label_cs = labels[0] if labels else None
     return not label_cs
 
 
@@ -379,14 +393,18 @@ def _log_review(
     label_cs: str | None,
     reason: str,
 ) -> None:
-    if run_id is None or dry_run:
-        if dry_run:
-            logging.info(
-                "DRY-REVIEW: %s.id=%s reason=%s qid=%s proposed=%s "
-                "label=%r ~ title=%r",
-                table, row_id, reason, qid, proposed_csfd_id,
-                label_cs, cr_title)
+    if run_id is None:
         return
+    if dry_run:
+        # Echo to the log too — operators sometimes work from the
+        # journalctl stream rather than psql. The DB row below is still
+        # written so `SELECT … WHERE run_id = <dry_run id>` returns the
+        # full queue.
+        logging.info(
+            "DRY-REVIEW: %s.id=%s reason=%s qid=%s proposed=%s "
+            "label=%r ~ title=%r",
+            table, row_id, reason, qid, proposed_csfd_id,
+            label_cs, cr_title)
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -491,6 +509,22 @@ def _process_table(
                             "label_mismatch")
                 continue
             if dry_run:
+                # Mirror the NOT EXISTS clause from update_sql so dry-run
+                # counters don't overreport "resolved" — proposals that
+                # would collide with a sibling csfd_id are classified as
+                # csfd_collision_in_cr exactly as the real-run UPDATE.
+                cur.execute(
+                    f"SELECT 1 FROM {table} "
+                    "WHERE csfd_id = %s AND id <> %s LIMIT 1",
+                    (csfd_id, row_id),
+                )
+                if cur.fetchone():
+                    counts["sanity_rejected"] += 1
+                    resolved_ids.add(row_id)
+                    _log_review(conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                                title, year, info["qid"], csfd_id,
+                                "; ".join(l for l in info["labels"][:3] if l) or None, "csfd_collision_in_cr")
+                    continue
                 counts["resolved_via_imdb"] += 1
                 resolved_ids.add(row_id)
                 logging.info(
@@ -552,6 +586,18 @@ def _process_table(
                             "label_mismatch")
                 continue
             if dry_run:
+                cur.execute(
+                    f"SELECT 1 FROM {table} "
+                    "WHERE csfd_id = %s AND id <> %s LIMIT 1",
+                    (csfd_id, row_id),
+                )
+                if cur.fetchone():
+                    counts["sanity_rejected"] += 1
+                    resolved_ids.add(row_id)
+                    _log_review(conn, run_id, dry_run, table, row_id, imdb_id, tmdb_id,
+                                title, year, info["qid"], csfd_id,
+                                "; ".join(l for l in info["labels"][:3] if l) or None, "csfd_collision_in_cr")
+                    continue
                 counts["resolved_via_tmdb"] += 1
                 resolved_ids.add(row_id)
                 logging.info(
