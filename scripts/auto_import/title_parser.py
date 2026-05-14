@@ -29,6 +29,15 @@ from dataclasses import dataclass, asdict, field
 _EPISODE_RE = re.compile(r"\bS(\d{1,2})E(\d{1,2})\b", re.IGNORECASE)
 _EPISODE_X_RE = re.compile(r"\b(\d{1,2})x(\d{1,2})\b")
 
+# SK Torrent's CZ-series convention: `Title / E32 / Subtitle / CZ`. No
+# season number — uploads use a single continuous episode count across
+# the whole series (Pat a Mat, Krtek, etc.). We treat these as season 1
+# so `is_episode=True` and the auto-import routes to the series
+# enricher instead of fabricating a film row from a spurious TMDB
+# match. Slash-bounded on BOTH sides so a stray "E32" inside a title
+# like "Final Frontier E32" doesn't accidentally match.
+_SLASH_EPISODE_RE = re.compile(r"/\s*E(\d{1,3})\s*/", re.IGNORECASE)
+
 # Year in parentheses or anywhere as standalone 4-digit
 _YEAR_PAREN_RE = re.compile(r"\((19|20)\d{2}\)")
 _YEAR_BARE_RE = re.compile(r"\b(19|20)\d{2}\b")
@@ -90,6 +99,12 @@ def _detect_episode(title: str) -> tuple[int | None, int | None]:
     m = _EPISODE_X_RE.search(title)
     if m:
         return int(m.group(1)), int(m.group(2))
+    # SK Torrent's `/ E32 /` shorthand — no season annotation. Default
+    # to season 1 so downstream code can treat it as an episode of an
+    # un-seasoned series.
+    m = _SLASH_EPISODE_RE.search(title)
+    if m:
+        return 1, int(m.group(1))
     return None, None
 
 
