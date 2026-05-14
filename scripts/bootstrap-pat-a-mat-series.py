@@ -10,17 +10,26 @@ auto-import that finds a fresh Pat a Mat upload can wire it in
 automatically.
 
 Steps:
-  1. INSERT into `series` from TMDB `/tv/20475`.
+  1. INSERT into `series` from TMDB `/tv/20475` (skipped if a
+     `pat-a-mat` row already exists).
   2. INSERT all 141 episodes (across 9 seasons, ignoring S0 Specials)
      from `/tv/20475/season/{n}`. Each episode gets a Czech name +
-     overview + slug derived from the name.
+     overview + slug derived from the name. Idempotency is keyed on
+     the partial unique `(series_id, slug) WHERE slug IS NOT NULL`
+     index — that one IS NOT NULL-gated, so re-running won't insert
+     duplicates the way the natural-key UNIQUE (which includes the
+     nullable `sktorrent_video_id`) would.
   3. For the 20 currently-known sktorrent video_ids (60923–60942 =
      SK Torrent flat numbering E20..E39) match by EPISODE NAME (after
      diacritic strip + case fold) against the TMDB episode list and
      stamp `episodes.sktorrent_video_id`. Matching by name is more
      reliable than the cumulative number — SK Torrent's E34 "Dveře"
      vs TMDB's S2E6 "Dveře" already disagree with the naive offset.
-  4. Skip step 1 entirely if a `pat-a-mat` series row already exists.
+  4. INSERT a `video_sources` row per attachment — the series detail
+     handler renders only episodes with a live `video_sources` row
+     (see `cr-web/src/handlers/series.rs::EPISODE_HAS_SOURCE_PREDICATE`),
+     so without this step the episodes would stay invisible despite
+     having `sktorrent_video_id` stamped.
 
 Idempotent: re-running is safe — the series INSERT is `ON CONFLICT
 DO NOTHING` keyed on the unique slug, and episodes use the existing
@@ -212,11 +221,18 @@ def main() -> int:
     skipped = 0
     for e in eps:
         slug = f"s{e['season']}e{e['episode']:02d}-{_slugify(e['name'])}"
+        # `episodes_unique` is on `(series_id, season, episode,
+        # sktorrent_video_id)` — and Postgres treats NULLs as distinct,
+        # so a naive `ON CONFLICT … DO NOTHING` with NULL sktorrent_id
+        # would let a re-run insert duplicate stub rows. Key on the
+        # partial UNIQUE index `idx_episodes_series_slug` instead,
+        # which IS NOT NULL-gated and matches a single bootstrap row
+        # per (series_id, slug).
         cur.execute(
             "INSERT INTO episodes (series_id, season, episode, episode_name, "
             "  overview, runtime, slug, sktorrent_video_id) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s, NULL) "
-            "ON CONFLICT (series_id, season, episode, sktorrent_video_id) "
+            "ON CONFLICT (series_id, slug) WHERE slug IS NOT NULL "
             "DO NOTHING RETURNING id",
             (series_id, e["season"], e["episode"], e["name"][:500],
              e["overview"], e["runtime"], slug),
@@ -240,26 +256,19 @@ def main() -> int:
         name_to_ep.setdefault(key, (e["season"], e["episode"]))
 
     attached = 0
+    vsource_inserted = 0
     unmatched: list[tuple[int, str]] = []
     for vid, (raw_name, sk_e_num) in SKTORRENT_VIDEOS.items():
-        norm = _normalize(raw_name)
-        # Direct match
-        loc = name_to_ep.get(norm)
-        # Try one-word variants (e.g. "Generalni uklid" → "Generální úklid")
-        if loc is None:
-            for ep_norm, ep_loc in name_to_ep.items():
-                if norm == ep_norm:
-                    loc = ep_loc
-                    break
+        loc = name_to_ep.get(_normalize(raw_name))
         if loc is None:
             unmatched.append((vid, raw_name))
             continue
         season, ep_num = loc
-        # Update the existing episode row (NULL sktorrent_video_id → vid)
-        # using the natural key. The UNIQUE on (series_id, season, episode,
-        # sktorrent_video_id) lets two rows coexist if a single TMDB episode
-        # got multiple SK Torrent uploads — we attach the new vid to the
-        # NULL-stamped row if present, else INSERT a sibling row.
+        # Attach to the existing NULL-stamped row from step 2. If a sibling
+        # row with the same (season, episode) already carries a different
+        # sktorrent_video_id, INSERT a new row — `episodes_unique` keys on
+        # (series_id, season, episode, sktorrent_video_id) and with both
+        # vids non-NULL the conflict semantics work as expected.
         cur.execute(
             "UPDATE episodes "
             "   SET sktorrent_video_id = %s, sktorrent_added_at = now() "
@@ -268,19 +277,51 @@ def main() -> int:
             "RETURNING id",
             (vid, series_id, season, ep_num),
         )
-        if cur.fetchone() is None:
-            # Already has a SK Torrent id stamped — append a sibling row.
+        row = cur.fetchone()
+        if row is None:
+            # NULL slot was taken — append a sibling row carrying this vid.
             cur.execute(
                 "INSERT INTO episodes (series_id, season, episode, "
                 "  episode_name, sktorrent_video_id, sktorrent_added_at) "
                 "VALUES (%s,%s,%s,(SELECT episode_name FROM episodes WHERE "
                 "  series_id=%s AND season=%s AND episode=%s LIMIT 1), "
                 "  %s, now()) "
-                "ON CONFLICT DO NOTHING",
+                "ON CONFLICT (series_id, season, episode, sktorrent_video_id) "
+                "DO NOTHING RETURNING id",
                 (series_id, season, ep_num,
                  series_id, season, ep_num, vid),
             )
+            row = cur.fetchone()
+        if row is None:
+            # Both branches found the slot already in our desired state —
+            # idempotent re-run, still proceed to ensure video_sources.
+            cur.execute(
+                "SELECT id FROM episodes WHERE series_id = %s AND season = %s "
+                "  AND episode = %s AND sktorrent_video_id = %s LIMIT 1",
+                (series_id, season, ep_num, vid),
+            )
+            row = cur.fetchone()
+        episode_id = row[0]
         attached += 1
+
+        # The series detail handler renders an episode only when a live
+        # `video_sources` row points at it (see
+        # cr-web/src/handlers/series.rs `EPISODE_HAS_SOURCE_PREDICATE`).
+        # `episodes.sktorrent_video_id` alone is invisible. UNIQUE on
+        # `(provider_id, external_id)` keeps the upsert idempotent.
+        cur.execute(
+            "INSERT INTO video_sources (provider_id, episode_id, external_id, "
+            "  lang_class, is_primary, is_alive, last_seen) "
+            "VALUES (1, %s, %s, 'UNKNOWN', true, true, now()) "
+            "ON CONFLICT (provider_id, external_id) DO UPDATE "
+            "  SET episode_id = EXCLUDED.episode_id, "
+            "      is_alive = true, last_seen = now() "
+            "RETURNING id",
+            (episode_id, str(vid)),
+        )
+        if cur.fetchone() is not None:
+            vsource_inserted += 1
+
         log.info("  vid=%d (SK E%d %s) → S%dE%d %s",
                  vid, sk_e_num, raw_name, season, ep_num,
                  next((e["name"] for e in eps if e["season"] == season
@@ -292,8 +333,9 @@ def main() -> int:
             log.warning("  vid=%d name=%r", vid, name)
 
     conn.commit()
-    log.info("DONE — series_id=%d, episodes_inserted=%d, sktorrent_attached=%d",
-             series_id, inserted, attached)
+    log.info("DONE — series_id=%d, episodes_inserted=%d, "
+             "sktorrent_attached=%d, video_sources=%d",
+             series_id, inserted, attached, vsource_inserted)
     return 0
 
 
