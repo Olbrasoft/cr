@@ -99,6 +99,10 @@ cargo run -p cr-web
 
 ---
 
+## Public APIs
+
+- **`GET /api/csfd-watchlist.json`** — open-data feed of every cr row with a populated `csfd_id` (films + series + tv_shows). Consumed by [Olbrasoft/csfd-data-hub](https://github.com/Olbrasoft/csfd-data-hub) to drive daily ČSFD rating scraping. Cached for 1 hour at Cloudflare's edge; CORS-enabled. Shape: `{ generated_at, count, items: [{ csfd_id, imdb_id, tmdb_id, title, year, kind }, …] }`. **Data-quality caveat:** ~16 % of pre-existing `csfd_id` values in cr are known to disagree with Wikidata's `P345`→`P2529` mapping; see [#740](https://github.com/Olbrasoft/cr/issues/740) for the reconcile pass that will fix this.
+
 ## Documentation
 
 - [Development Workflow](docs/DEVELOPMENT.md) — local setup, testing, deployment
