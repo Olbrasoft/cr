@@ -23,7 +23,8 @@ the SELECT, so re-running only touches new gaps.
 Usage:
     DATABASE_URL=postgres://... TMDB_API_KEY=... \\
         python3 scripts/backfill-tmdb-imdb-ids.py \\
-            [--table films|series|tv_shows] [--limit N] [--workers N]
+            [--table films|series|tv_shows|all] [--limit N] [--workers N] \\
+            [--dry-run]
 """
 
 from __future__ import annotations
@@ -72,12 +73,104 @@ def _table_config(table: str) -> str:
     raise SystemExit(f"unsupported table: {table}")
 
 
+def _run_table(
+    table: str,
+    *,
+    api_key: str,
+    conn,
+    limit: int,
+    workers: int,
+    dry_run: bool,
+) -> collections.Counter:
+    endpoint = _table_config(table)
+    cur = conn.cursor()
+
+    select_sql = (
+        f"SELECT id, tmdb_id FROM {table} "
+        "WHERE tmdb_id IS NOT NULL AND imdb_id IS NULL "
+        "ORDER BY id"
+    )
+    if limit:
+        select_sql += f" LIMIT {limit}"
+    cur.execute(select_sql)
+    rows = cur.fetchall()
+    mode = " (DRY RUN)" if dry_run else ""
+    logging.info("Backfilling imdb_id for %d %s rows via TMDB %s/external_ids%s",
+                 len(rows), table, endpoint, mode)
+
+    # Some titles already carry an imdb_id on a sibling row (curated /
+    # legacy data). The films table enforces a partial UNIQUE on imdb_id
+    # so a duplicate INSERT/UPDATE would explode the transaction. Guard
+    # with NOT EXISTS in the UPDATE — collision means we have the same
+    # title twice under different tmdb_ids and the human should review.
+    update_sql = (
+        f"UPDATE {table} SET imdb_id = %s WHERE id = %s "
+        f"AND NOT EXISTS (SELECT 1 FROM {table} t2 "
+        "WHERE t2.imdb_id = %s AND t2.id <> %s)"
+    )
+    dup_check_sql = (
+        f"SELECT 1 FROM {table} WHERE imdb_id = %s AND id <> %s LIMIT 1"
+    )
+    counts = collections.Counter()
+    counts["scanned"] = len(rows)
+
+    def work(row):
+        row_id, tmdb_id = row
+        imdb_id = _fetch_imdb_id(api_key, endpoint, tmdb_id)
+        return row_id, tmdb_id, imdb_id
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(work, r) for r in rows]
+        last_commit = time.monotonic()
+        pending = 0
+        for i, f in enumerate(as_completed(futures), 1):
+            row_id, tmdb_id, imdb_id = f.result()
+            if imdb_id:
+                if dry_run:
+                    cur.execute(dup_check_sql, (imdb_id, row_id))
+                    if cur.fetchone():
+                        counts["duplicate_skipped"] += 1
+                        logging.info("DRY: %s.id=%s tmdb=%s → imdb=%s SKIP (duplicate)",
+                                     table, row_id, tmdb_id, imdb_id)
+                    else:
+                        counts["would_save"] += 1
+                        logging.info("DRY: %s.id=%s tmdb=%s → imdb=%s",
+                                     table, row_id, tmdb_id, imdb_id)
+                else:
+                    cur.execute(update_sql, (imdb_id, row_id, imdb_id, row_id))
+                    if cur.rowcount:
+                        counts["saved"] += 1
+                    else:
+                        counts["duplicate_skipped"] += 1
+                    pending += 1
+            else:
+                counts["no_imdb_id"] += 1
+            if not dry_run and (pending >= 200 or time.monotonic() - last_commit > 5):
+                conn.commit()
+                pending = 0
+                last_commit = time.monotonic()
+            if i % 500 == 0:
+                logging.info("Progress %s: %d/%d — saved=%d would_save=%d no_imdb=%d dup=%d",
+                             table, i, len(rows),
+                             counts["saved"], counts["would_save"],
+                             counts["no_imdb_id"], counts["duplicate_skipped"])
+
+    if dry_run:
+        conn.rollback()
+    else:
+        conn.commit()
+    logging.info("[%s] Done — %s", table, dict(counts))
+    return counts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--table", default="films",
-                        choices=["films", "series", "tv_shows"])
+                        choices=["films", "series", "tv_shows", "all"])
     parser.add_argument("--limit", type=int, default=0, help="0 = all")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Log proposed writes without persisting.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -90,66 +183,24 @@ def main() -> int:
     if not api_key:
         raise SystemExit("TMDB_API_KEY required")
 
-    endpoint = _table_config(args.table)
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
-    cur = conn.cursor()
 
-    select_sql = (
-        f"SELECT id, tmdb_id FROM {args.table} "
-        "WHERE tmdb_id IS NOT NULL AND imdb_id IS NULL "
-        "ORDER BY id"
-    )
-    if args.limit:
-        select_sql += f" LIMIT {args.limit}"
-    cur.execute(select_sql)
-    rows = cur.fetchall()
-    logging.info("Backfilling imdb_id for %d %s rows via TMDB %s/external_ids",
-                 len(rows), args.table, endpoint)
+    tables = ["films", "series", "tv_shows"] if args.table == "all" else [args.table]
+    totals = collections.Counter()
+    for t in tables:
+        c = _run_table(
+            t,
+            api_key=api_key,
+            conn=conn,
+            limit=args.limit,
+            workers=args.workers,
+            dry_run=args.dry_run,
+        )
+        for k, v in c.items():
+            totals[f"{t}:{k}"] += v
 
-    # Some titles already carry an imdb_id on a sibling row (curated /
-    # legacy data). The films table enforces a partial UNIQUE on imdb_id
-    # so a duplicate INSERT/UPDATE would explode the transaction. Guard
-    # with NOT EXISTS in the UPDATE — collision means we have the same
-    # title twice under different tmdb_ids and the human should review.
-    update_sql = (
-        f"UPDATE {args.table} SET imdb_id = %s WHERE id = %s "
-        f"AND NOT EXISTS (SELECT 1 FROM {args.table} t2 "
-        "WHERE t2.imdb_id = %s AND t2.id <> %s)"
-    )
-    counts = collections.Counter()
-
-    def work(row):
-        row_id, tmdb_id = row
-        imdb_id = _fetch_imdb_id(api_key, endpoint, tmdb_id)
-        return row_id, tmdb_id, imdb_id
-
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(work, r) for r in rows]
-        last_commit = time.monotonic()
-        pending = 0
-        for i, f in enumerate(as_completed(futures), 1):
-            row_id, tmdb_id, imdb_id = f.result()
-            if imdb_id:
-                cur.execute(update_sql, (imdb_id, row_id, imdb_id, row_id))
-                if cur.rowcount:
-                    counts["saved"] += 1
-                else:
-                    counts["duplicate_skipped"] += 1
-                pending += 1
-            else:
-                counts["no_imdb_id"] += 1
-            if pending >= 200 or time.monotonic() - last_commit > 5:
-                conn.commit()
-                pending = 0
-                last_commit = time.monotonic()
-            if i % 500 == 0:
-                logging.info("Progress: %d/%d — saved=%d no_imdb=%d dup=%d",
-                             i, len(rows), counts["saved"],
-                             counts["no_imdb_id"], counts["duplicate_skipped"])
-
-    conn.commit()
-    logging.info("Done — %s", dict(counts))
+    logging.info("Grand totals — %s", dict(totals))
     return 0
 
 
