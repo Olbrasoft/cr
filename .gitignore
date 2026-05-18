@@ -57,5 +57,9 @@ data/prototypes/
 data/scripts/
 data/sledujteto/
 data/imdb-cache/
+# csfd_id resolver output — large per-row TSV with embedded JSON candidates.
+# Not source code; regenerable by re-running the scripts. Keep out of git.
+data/csfd-cswiki/
+data/csfd-search/
 scripts/__pycache__/
 scripts/auto_import/__pycache__/
