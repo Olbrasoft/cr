@@ -77,10 +77,22 @@ def _session() -> requests.Session:
     return s
 
 
+# Cyrillic-Latin confusables that show up in some Czech-encoded titles
+# (mostly mid-word substitutions of Latin look-alikes with Cyrillic
+# code points). Same map as scripts/resolve-csfd-via-cswiki.py — shared
+# behaviour so the inline gate doesn't reject titles the bulk resolver
+# would accept.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "А": "a", "Е": "e", "О": "o", "Р": "p", "С": "c", "У": "y", "Х": "x",
+})
+
+
 def _normalise(s: str | None) -> str:
     if not s:
         return ""
-    decomposed = unicodedata.normalize("NFKD", s.lower())
+    s = s.translate(_CONFUSABLES).lower()
+    decomposed = unicodedata.normalize("NFKD", s)
     no_diacritics = "".join(c for c in decomposed if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "", no_diacritics)
 
@@ -215,15 +227,28 @@ def _query_csfd(*, imdb_id: str | None, tmdb_id: int | None,
     # pre-#732 bug the bulk resolver had.
     distinct_items = {b.get("item", {}).get("value") for b in bindings
                       if b.get("item", {}).get("value")}
-    # Adding `?cswikiTitle` to the SELECT can legitimately produce more
-    # than one binding row for a single Wikidata entity (one row per
-    # distinct sitelink/label combo), so we only veto when more than one
-    # distinct ?item URI is returned. Multi-binding for a single item
-    # still needs handling: the cs.wiki sitelink may show up in only one
-    # of the rows, so pick the first row that has it.
     if len(distinct_items) > 1:
         log.info("csfd lookup ambiguous (%d Wikidata entities) for "
                  "imdb=%s tmdb=%s", len(distinct_items), imdb_id, tmdb_id)
+        return _VETOED_RESULT
+    # Adding `?cswikiTitle` to the SELECT can legitimately produce more
+    # than one binding row for a single Wikidata entity (one per
+    # sitelink/label combo). Multi-binding for one item is OK only if
+    # the meaningful scalars agree across rows — distinct non-empty
+    # values of `?csfd` or `?cswikiTitle` would force us to pick one
+    # arbitrarily and could silently write an unrelated csfd_id.
+    distinct_csfd = {b.get("csfd", {}).get("value") for b in bindings
+                     if b.get("csfd", {}).get("value")}
+    if len(distinct_csfd) > 1:
+        log.info("csfd lookup ambiguous (%d csfd_ids in bindings) for "
+                 "imdb=%s tmdb=%s", len(distinct_csfd), imdb_id, tmdb_id)
+        return _VETOED_RESULT
+    distinct_cswiki = {b.get("cswikiTitle", {}).get("value") for b in bindings
+                       if b.get("cswikiTitle", {}).get("value")}
+    if len(distinct_cswiki) > 1:
+        log.info("csfd lookup ambiguous (%d cs.wiki sitelinks in bindings) "
+                 "for imdb=%s tmdb=%s", len(distinct_cswiki),
+                 imdb_id, tmdb_id)
         return _VETOED_RESULT
     row = next(
         (b for b in bindings if b.get("cswikiTitle", {}).get("value")),
@@ -372,11 +397,33 @@ def lookup_and_write_csfd(
             return None
         csfd_id = result.csfd_id
         cswiki_title = result.cswiki_title
-        source = "wikidata"
+        source = "wikidata" if csfd_id else None
+        # If imdb_id wasn't provided, the SPARQL call above already used
+        # TMDB so there's no second pass to try.
+        tmdb_tried = not imdb_id
 
-        if csfd_id is None and not cswiki_title and imdb_id and tmdb_id:
-            # Plain miss on IMDb path → try TMDB. Same two-pass as the
-            # bulk resolver (`scripts/resolve-csfd-via-wikidata.py`).
+        # cs.wiki fallback on the IMDb pass's sitelink. Wikidata knows
+        # the item and labels agreed, but P2529 isn't filled in. The
+        # Czech Wikipedia article often links to ČSFD in its external-
+        # links section even when the property hasn't been mirrored back
+        # to Wikidata. Title gate is cheap insurance against a broken
+        # sitelink mapping the wrong article to this Q-item.
+        if csfd_id is None and cswiki_title:
+            if _cswiki_title_matches_row(cswiki_title, title, original_title):
+                csfd_id = _fetch_cswiki_csfd_id(cswiki_title)
+                if csfd_id is not None:
+                    source = "cswiki"
+            else:
+                log.info("cs-wiki title mismatch for %s.id=%d imdb=%s "
+                         "title=%r cswiki=%r — skipping IMDb-pass fallback",
+                         table, row_id, imdb_id, title, cswiki_title)
+
+        # Still nothing — try TMDB pass (Wikidata via P4947/P4983), then
+        # cs.wiki again if that pass surfaces a different sitelink.
+        # Mirrors the bulk resolver's IMDb-first / TMDB-fallback shape
+        # and prevents IMDb-pass cs.wiki misses from short-circuiting
+        # the TMDB attempt.
+        if csfd_id is None and not tmdb_tried and tmdb_id:
             result = _query_csfd(
                 imdb_id=None,
                 tmdb_id=tmdb_id,
@@ -385,24 +432,20 @@ def lookup_and_write_csfd(
             )
             if result.vetoed:
                 return None
-            csfd_id = result.csfd_id
-            cswiki_title = cswiki_title or result.cswiki_title
-
-        # cs.wiki fallback: Wikidata knows the item and labels agreed,
-        # but P2529 isn't filled in. The Czech Wikipedia article often
-        # links to ČSFD in its external-links section even when the
-        # property hasn't been mirrored back to Wikidata. Title gate is
-        # cheap insurance against a broken sitelink mapping the wrong
-        # article to this Q-item.
-        if csfd_id is None and cswiki_title:
-            if _cswiki_title_matches_row(cswiki_title, title, original_title):
-                csfd_id = _fetch_cswiki_csfd_id(cswiki_title)
-                if csfd_id is not None:
-                    source = "cswiki"
-            else:
-                log.info("cs-wiki title mismatch for %s.id=%d imdb=%s "
-                         "title=%r cswiki=%r — skipping fallback",
-                         table, row_id, imdb_id, title, cswiki_title)
+            if result.csfd_id is not None:
+                csfd_id = result.csfd_id
+                source = "wikidata(tmdb)"
+            elif result.cswiki_title and result.cswiki_title != cswiki_title:
+                if _cswiki_title_matches_row(
+                    result.cswiki_title, title, original_title
+                ):
+                    csfd_id = _fetch_cswiki_csfd_id(result.cswiki_title)
+                    if csfd_id is not None:
+                        source = "cswiki(tmdb)"
+                else:
+                    log.info("cs-wiki title mismatch for %s.id=%d tmdb=%s "
+                             "title=%r cswiki=%r — skipping TMDB-pass fallback",
+                             table, row_id, tmdb_id, title, result.cswiki_title)
 
         if csfd_id is None:
             return None
