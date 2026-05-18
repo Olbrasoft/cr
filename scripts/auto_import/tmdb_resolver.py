@@ -499,7 +499,15 @@ def resolve_tv(parsed: ParsedTitle, session: requests.Session | None = None) -> 
 # Cache file is read on first call and updated in place after every
 # new-id fetch. The dict layout is `{str(tmdb_id): [title, ...]}` —
 # empty list is a valid cache hit (show has no alt titles).
-DEFAULT_ALT_TITLE_CACHE = Path("data/tmdb-cache/alt-titles.json")
+#
+# Anchor the default to the repo root (this file lives at
+# `<repo>/scripts/auto_import/tmdb_resolver.py`, so `parents[2]` is the
+# repo root). Without the anchor the path depends on the process CWD
+# and a script invoked from a different directory would silently
+# create a parallel cache file.
+DEFAULT_ALT_TITLE_CACHE = (
+    Path(__file__).resolve().parents[2] / "data" / "tmdb-cache" / "alt-titles.json"
+)
 _ALT_TITLE_CACHE: dict[str, list[str]] | None = None
 
 
@@ -534,23 +542,27 @@ def _save_alt_title_cache(path: Path = DEFAULT_ALT_TITLE_CACHE) -> None:
 
 def fetch_alternative_titles(tmdb_tv_id: int,
                               session: requests.Session | None = None,
-                              cache_path: Path = DEFAULT_ALT_TITLE_CACHE,
                               ) -> list[str]:
     """Return all `/tv/{id}/alternative_titles` variants for a TV id.
 
     Read-through cache: first hit per id fetches from TMDB and persists
-    the response (empty list inclusive) to `cache_path`. Subsequent
-    calls with the same id return the cached list without a network
-    round-trip. Pass a per-call `session` to amortize TLS across many
-    series in one enrich run.
+    the response (empty list inclusive when TMDB returned a valid
+    "no alt titles" response) to `DEFAULT_ALT_TITLE_CACHE`. Subsequent
+    calls with the same id return a copy of the cached list without a
+    network round-trip. Pass a per-call `session` to amortize TLS
+    across many series in one enrich run.
 
-    Returns an empty list on TMDB error or 404 (caller treats missing
-    alt titles as "no extra aliases to add" — never an error).
+    Transient TMDB errors (network failure, HTTP 5xx, rate-limit
+    exhaustion) cause `_request` to return None — we treat those as
+    UNCACHED and return an empty list so the next run retries. Only
+    successful responses (including a successful "0 results") are
+    persisted to disk.
     """
-    cache = _load_alt_title_cache(cache_path)
+    cache = _load_alt_title_cache()
     key = str(tmdb_tv_id)
     if key in cache:
-        return cache[key]
+        # Return a copy so caller mutation can't poison the cache.
+        return list(cache[key])
     own_session = session is None
     if session is None:
         session = requests.Session()
@@ -559,16 +571,19 @@ def fetch_alternative_titles(tmdb_tv_id: int,
     finally:
         if own_session:
             session.close()
+    if data is None:
+        # Transient TMDB failure — do NOT cache, retry next run.
+        return []
     titles: list[str] = []
     seen: set[str] = set()
-    for r in (data or {}).get("results") or []:
+    for r in data.get("results") or []:
         t = (r.get("title") or "").strip()
         if t and t.lower() not in seen:
             seen.add(t.lower())
             titles.append(t)
     cache[key] = titles
-    _save_alt_title_cache(cache_path)
-    return titles
+    _save_alt_title_cache()
+    return list(titles)
 
 
 def resolve_episode(tmdb_tv_id: int, season: int, episode: int,

@@ -308,19 +308,29 @@ def enrich_one_series(
 
     # Build search-query list: canonical query first, then one per alt
     # title (capped at 3 to bound prehraj.to traffic). De-duplicated by
-    # the normalized query string so "Harry Hole" + "Harry Hole" (US/CZ
-    # both identical) only counts once.
-    queries: list[str] = []
-    seen_queries: set[str] = set()
-    def _push_query(q: str) -> None:
-        norm_q = q.strip().lower()
-        if norm_q and norm_q not in seen_queries:
-            seen_queries.add(norm_q)
+    # `normalize_alias` of the source title so punctuation/diacritic
+    # variants ("Jo Nesbø's Harry Hole" vs "Jo Nesbøs Harry Hole")
+    # collapse to one query instead of eating the 3-query cap. Without
+    # this, the cap admits 3 visually-distinct strings that prehraj.to
+    # ranks identically, wasting the budget.
+    queries: list[str] = [
+        build_query(series.title, series.original_title, series.first_air_year)
+    ]
+    seen_keys: set[str] = {
+        normalize_alias(series.original_title or series.title or "")
+    }
+    remaining = 3
+    for alt in alt_titles:
+        if remaining <= 0:
+            break
+        key = normalize_alias(alt)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        q = build_query(alt, None, series.first_air_year)
+        if q:
             queries.append(q)
-    _push_query(build_query(series.title, series.original_title,
-                            series.first_air_year))
-    for alt in alt_titles[:3]:
-        _push_query(build_query(alt, None, series.first_air_year))
+            remaining -= 1
 
     log.info("  search: %d query/queries %r (aliases=%s)",
               len(queries), queries, sorted(aliases))
