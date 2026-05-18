@@ -458,8 +458,15 @@ def enrich_one_series(
 #
 # Genres skipped (out of scope for the IMDB-backed `series` table —
 # they belong to `tv_shows`/`tv_episodes`):
-#   10764 Reality, 10767 Talk, 10763 News, 10762 Kids
-TV_SHOWS_GENRES: frozenset[int] = frozenset({10764, 10767, 10763, 10762})
+#   10764 Reality, 10767 Talk, 10763 News
+#
+# 10762 Kids USED to be in this set, but #747 found that legitimate
+# IMDB-backed series with full TMDB metadata also carry the Kids tag
+# (Pokémon Horizonty, LEGO Ninjago: Dračí povstání, Jednorožčí
+# akademie, etc.). Excluding them left those shows uncatalogued in
+# either table. Kids stays in `series`; only the genuinely-non-series
+# Reality/Talk/News categories belong in `tv_shows`.
+TV_SHOWS_GENRES: frozenset[int] = frozenset({10764, 10767, 10763})
 
 
 # IMDB ratings index — loaded once per run from the cached TSV that
@@ -895,9 +902,9 @@ def discover_one_cluster(
     stats.tmdb_id = tv.tmdb_id
     stats.tmdb_name = tv.name_cs or tv.name_en or tv.original_name
 
-    # 2. Genre filter — Reality / Talk / News / Kids belong to tv_shows
-    # not series. Skip those clusters here; if the user wants them, a
-    # separate tv_shows importer is the right home.
+    # 2. Genre filter — Reality / Talk / News belong to tv_shows, not
+    # series. Kids was dropped from this filter in #747 (see comment on
+    # TV_SHOWS_GENRES above).
     blocked = TV_SHOWS_GENRES & set(tv.genre_ids or ())
     if blocked:
         stats.status = f"blocked_genre: {sorted(blocked)}"
