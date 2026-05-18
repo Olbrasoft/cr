@@ -6,22 +6,24 @@ from `film_directors` / `film_actors` / `series_*`).
 Title+year alone produces many false positives because common titles
 ("Potopa", "Munich") have several films on ČSFD. The fix is to fetch
 ČSFD's detail page for each candidate and require strong overlap with
-the credits cr already has — director match + cast overlap + country
-match. We do NOT call TMDB at extract time; cr's `people` table covers
-~99 % of films via the existing TMDB ingest.
+the credits cr already has — director match + cast overlap. We do NOT
+call TMDB at extract time; cr's `people` table covers ~99 % of films
+via the existing TMDB ingest.
 
 Pipeline per cr row:
   1. Search ČSFD: csfd.cz/hledat/?q={cr.title or cr.original_title}
   2. Filter candidates by normalised title match against cr.title or
-     cr.original_title AND |year diff| ≤ 1.
+     cr.original_title AND |year diff| ≤ 2.
   3. For each surviving candidate (up to 5), fetch /film/{id}/prehled/
      and pull (directors, actors, origin country, runtime).
   4. Score against cr's local credits:
         +25  director name match (per name)
-        +5   top-cast name match (per name, capped at 25)
-        +3   country match (any overlap)
+        +5   top-cast name match (per first 5 cast names, capped at 25)
         +5   runtime within ±10 min
         +5   year exact, +1 year ±1
+     The ČSFD origin country is parsed and recorded in `breakdown`
+     for audit, but cr doesn't currently store production_countries
+     so it contributes 0 points — a later commit can plumb that.
   5. Accept the highest scorer iff score ≥ 30 AND ≥ 2× runner-up.
   6. Otherwise mark needs_review with all candidate scores in
      `details_json` for human triage.
@@ -365,12 +367,21 @@ class PageHolder:
         return self.page.wait_for_selector(*a, **kw)
 
     def evaluate(self, *a, **kw):
+        # If the page died mid-evaluate, the reopened page has no DOM yet
+        # — we can't just re-run the same JS against it (the caller's
+        # selector wait_for_selector / goto happened on the OLD page).
+        # Returning None to the caller is also broken: search_csfd /
+        # fetch_detail expect a dict and immediately `.get()` on it.
+        # The honest behaviour is to surface the closure as an exception
+        # the existing caller-side try/except already handles, so it
+        # logs a single "eval failed" warning and moves to the next row
+        # — on which goto() will hit the same closed-page path, reopen
+        # the page properly, and resume.
         try:
             return self.page.evaluate(*a, **kw)
         except Exception as e:
             if self._is_closed_error(e):
                 self._reopen()
-                return None
             raise
 
     def close(self) -> None:
@@ -454,9 +465,16 @@ def score_candidate(
     cand_runtime: int | None,
     cand_directors_norm: set[str],
     cand_actors_norm: set[str],
-    cr_iso: list[str] | None,
 ) -> tuple[int, dict]:
-    """Returns (score, breakdown_dict)."""
+    """Returns (score, breakdown_dict).
+
+    cr-side country code is not currently plumbed in — `cr.films` /
+    `series` / `tv_shows` don't carry production_countries (TMDB
+    exposes it, but we don't store it). The ČSFD-side `cand_iso` is
+    still parsed and logged in `breakdown` for the audit trail so a
+    later commit can wire a cr_iso source without changing the data
+    shape.
+    """
     breakdown: dict[str, int | list[str]] = {}
     s = 0
 
@@ -474,15 +492,11 @@ def score_candidate(
     else:
         breakdown["year"] = 0
 
-    # Country (overlap on any ISO code)
-    if cr_iso and cand_iso:
-        if set(cr_iso) & set(cand_iso):
-            s += 3
-            breakdown["country"] = 3
-        else:
-            breakdown["country"] = 0
-    else:
-        breakdown["country"] = 0
+    # Country signal is currently informational only — see docstring.
+    # `cand_iso` is still recorded in the breakdown for audit so the
+    # signal can be enabled later without rewriting TSV consumers.
+    breakdown["country"] = 0
+    breakdown["cand_country"] = list(cand_iso)
 
     # Runtime
     if cr_row.get("runtime_min") and cand_runtime:
@@ -500,10 +514,14 @@ def score_candidate(
     s += 25 * len(matched_dir)
     breakdown["directors"] = matched_dir
 
-    # Actors — moderate signal. Per match +5, capped at 25.
+    # Actors — moderate signal. +5 per name match across the first 5
+    # matched names (so the bonus is at most 25). Capping at 5 keeps
+    # the docstring's "+5 per name × 5 names = 25" promise honest and
+    # makes the breakdown.actors list trivially interpretable in the
+    # TSV — what you see is exactly what was scored.
     cr_act = {normalise_name(n) for n in (cr_row.get("actors") or "").split("|") if n}
-    matched_act = sorted(cr_act & cand_actors_norm)[:8]
-    bonus = min(5 * len(matched_act), 25)
+    matched_act = sorted(cr_act & cand_actors_norm)[:5]
+    bonus = 5 * len(matched_act)
     s += bonus
     breakdown["actors"] = matched_act
     breakdown["actors_bonus"] = bonus
@@ -657,7 +675,7 @@ def extract(args, conn) -> None:
                             act_names = {normalise_name(n) for n in roles.get("Hrají", [])[:15]}
                             sc, bd = score_candidate(
                                 cr_row, cand["year"] or det_year, iso, runtime,
-                                dir_names, act_names, cr_iso=None,
+                                dir_names, act_names,
                             )
                             scored.append({
                                 "csfd_id": cand["csfd_id"],
@@ -705,7 +723,12 @@ def extract(args, conn) -> None:
 
 def apply_(args, conn) -> None:
     tables = TABLES if args.table == "all" else (args.table,)
-    grand = {"applied": 0, "skipped_collision": 0,
+    # Separate `applied` vs `would_apply` so dry-run output is honest:
+    # the summary line printed at the end is the same code path for
+    # both real and dry runs, and an operator copy-pasting "applied:
+    # 2499" should mean rows committed to the DB, not rows that
+    # would have been committed if --dry-run weren't set.
+    grand = {"applied": 0, "would_apply": 0, "skipped_collision": 0,
              "skipped_needs_review": 0, "skipped_already_set": 0,
              "missing_file": 0}
     for table in tables:
@@ -715,7 +738,7 @@ def apply_(args, conn) -> None:
             continue
         with path.open() as f:
             rows = list(csv.DictReader(f, delimiter="\t"))
-        applied = 0
+        table_count = 0
         for r in rows:
             if r["gate"] != "accept":
                 grand["skipped_needs_review"] += 1
@@ -735,14 +758,15 @@ def apply_(args, conn) -> None:
                 if cur.rowcount == 0:
                     grand["skipped_already_set"] += 1
                     continue
-                grand["applied"] += 1
-                applied += 1
+                table_count += 1
         if args.dry_run:
             conn.rollback()
-            logging.info("--dry-run %s would apply %d", table, applied)
+            grand["would_apply"] += table_count
+            logging.info("--dry-run %s would apply %d", table, table_count)
         else:
             conn.commit()
-            logging.info("%s applied %d", table, applied)
+            grand["applied"] += table_count
+            logging.info("%s applied %d", table, table_count)
     logging.info("summary: %s", grand)
 
 
