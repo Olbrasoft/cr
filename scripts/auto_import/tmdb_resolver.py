@@ -16,11 +16,13 @@ None when nothing acceptable is found (caller adds to import_skipped_videos).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
@@ -477,6 +479,111 @@ def resolve_tv(parsed: ParsedTitle, session: requests.Session | None = None) -> 
     finally:
         if own_session:
             session.close()
+
+
+# ---------------------------------------------------------------------------
+# Alternative-titles helper (#748).
+#
+# Prehraj.to and sledujteto uploaders sometimes use a branded name that
+# never appears in our DB's `series.title` / `original_title` columns —
+# e.g. uploads tagged "Jo Nesbo's Detective Hole" for the show whose
+# TMDB original_title is "Harry Hole". The series enricher's
+# alias-match defense then rejects every episode, leaving the existing
+# series row without prehraj.to sources.
+#
+# Fix: pull every cross-country variant from TMDB's
+# `/tv/{id}/alternative_titles` endpoint and feed them into both the
+# search query set and the alias-match set. Cache on disk so subsequent
+# enrich runs don't re-pay the TMDB cost.
+#
+# Cache file is read on first call and updated in place after every
+# new-id fetch. The dict layout is `{str(tmdb_id): [title, ...]}` —
+# empty list is a valid cache hit (show has no alt titles).
+#
+# Anchor the default to the repo root (this file lives at
+# `<repo>/scripts/auto_import/tmdb_resolver.py`, so `parents[2]` is the
+# repo root). Without the anchor the path depends on the process CWD
+# and a script invoked from a different directory would silently
+# create a parallel cache file.
+DEFAULT_ALT_TITLE_CACHE = (
+    Path(__file__).resolve().parents[2] / "data" / "tmdb-cache" / "alt-titles.json"
+)
+_ALT_TITLE_CACHE: dict[str, list[str]] | None = None
+
+
+def _load_alt_title_cache(path: Path = DEFAULT_ALT_TITLE_CACHE
+                           ) -> dict[str, list[str]]:
+    global _ALT_TITLE_CACHE
+    if _ALT_TITLE_CACHE is not None:
+        return _ALT_TITLE_CACHE
+    if path.exists():
+        try:
+            _ALT_TITLE_CACHE = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("alt-titles cache unreadable (%s) — starting empty", e)
+            _ALT_TITLE_CACHE = {}
+    else:
+        _ALT_TITLE_CACHE = {}
+    return _ALT_TITLE_CACHE
+
+
+def _save_alt_title_cache(path: Path = DEFAULT_ALT_TITLE_CACHE) -> None:
+    if _ALT_TITLE_CACHE is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(_ALT_TITLE_CACHE, ensure_ascii=False,
+                   indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def fetch_alternative_titles(tmdb_tv_id: int,
+                              session: requests.Session | None = None,
+                              ) -> list[str]:
+    """Return all `/tv/{id}/alternative_titles` variants for a TV id.
+
+    Read-through cache: first hit per id fetches from TMDB and persists
+    the response (empty list inclusive when TMDB returned a valid
+    "no alt titles" response) to `DEFAULT_ALT_TITLE_CACHE`. Subsequent
+    calls with the same id return a copy of the cached list without a
+    network round-trip. Pass a per-call `session` to amortize TLS
+    across many series in one enrich run.
+
+    Transient TMDB errors (network failure, HTTP 5xx, rate-limit
+    exhaustion) cause `_request` to return None — we treat those as
+    UNCACHED and return an empty list so the next run retries. Only
+    successful responses (including a successful "0 results") are
+    persisted to disk.
+    """
+    cache = _load_alt_title_cache()
+    key = str(tmdb_tv_id)
+    if key in cache:
+        # Return a copy so caller mutation can't poison the cache.
+        return list(cache[key])
+    own_session = session is None
+    if session is None:
+        session = requests.Session()
+    try:
+        data = _request(session, f"/tv/{tmdb_tv_id}/alternative_titles")
+    finally:
+        if own_session:
+            session.close()
+    if data is None:
+        # Transient TMDB failure — do NOT cache, retry next run.
+        return []
+    titles: list[str] = []
+    seen: set[str] = set()
+    for r in data.get("results") or []:
+        t = (r.get("title") or "").strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            titles.append(t)
+    cache[key] = titles
+    _save_alt_title_cache()
+    return list(titles)
 
 
 def resolve_episode(tmdb_tv_id: int, season: int, episode: int,

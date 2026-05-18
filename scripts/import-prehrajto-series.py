@@ -86,7 +86,11 @@ from scripts.auto_import.title_parser import (
     ParsedTitle,
     parse_prehrajto_episode_title,
 )
-from scripts.auto_import.tmdb_resolver import resolve_episode, resolve_tv
+from scripts.auto_import.tmdb_resolver import (
+    fetch_alternative_titles,
+    resolve_episode,
+    resolve_tv,
+)
 from video_sources_helper import (
     get_provider_ids,
     lang_class_to_audio_and_subs,
@@ -277,18 +281,69 @@ def enrich_one_series(
         normalize_alias(a) for a in (series.title, series.original_title)
         if a and normalize_alias(a)
     }
+    # Extend aliases + search-query set with TMDB alternative_titles
+    # (#748). Uploaders sometimes brand a show with a name that doesn't
+    # match either column in our DB (e.g. uploads tagged
+    # "Jo Nesbo's Detective Hole" for the row whose
+    # title/original_title are both "Harry Hole"). Pulling alt titles
+    # both widens the alias-match filter AND adds extra search queries
+    # so prehraj.to actually returns those uploads.
+    alt_titles: list[str] = []
+    if series.tmdb_id:
+        try:
+            alt_titles = fetch_alternative_titles(series.tmdb_id, session=tmdb_sess)
+        except Exception as e:  # noqa: BLE001
+            log.warning("  fetch_alternative_titles failed for tmdb_id=%d: %s",
+                         series.tmdb_id, e)
+        for alt in alt_titles:
+            n = normalize_alias(alt)
+            if n:
+                aliases.add(n)
+
     if not aliases:
         stats.status = "no_aliases"
         log.warning("  series id=%d has no normalizable aliases — skipping",
                     series.id)
         return stats
 
-    query = build_query(series.title, series.original_title,
-                         series.first_air_year)
-    log.info("  search: %r (aliases=%s)", query, sorted(aliases))
+    # Build search-query list: canonical query first, then one per alt
+    # title (capped at 3 to bound prehraj.to traffic). De-duplicated by
+    # `normalize_alias` of the source title so punctuation/diacritic
+    # variants ("Jo Nesbø's Harry Hole" vs "Jo Nesbøs Harry Hole")
+    # collapse to one query instead of eating the 3-query cap. Without
+    # this, the cap admits 3 visually-distinct strings that prehraj.to
+    # ranks identically, wasting the budget.
+    queries: list[str] = [
+        build_query(series.title, series.original_title, series.first_air_year)
+    ]
+    seen_keys: set[str] = {
+        normalize_alias(series.original_title or series.title or "")
+    }
+    remaining = 3
+    for alt in alt_titles:
+        if remaining <= 0:
+            break
+        key = normalize_alias(alt)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        q = build_query(alt, None, series.first_air_year)
+        if q:
+            queries.append(q)
+            remaining -= 1
 
+    log.info("  search: %d query/queries %r (aliases=%s)",
+              len(queries), queries, sorted(aliases))
+
+    hits: list[Hit] = []
+    seen_ext: set[str] = set()
     try:
-        hits = search_episodes(sess, query)
+        for q in queries:
+            for h in search_episodes(sess, q):
+                if h.external_id in seen_ext:
+                    continue
+                seen_ext.add(h.external_id)
+                hits.append(h)
     except BlockedError as e:
         stats.status = f"blocked: {e}"
         raise  # propagate to outer loop — bail on entire run
@@ -299,7 +354,8 @@ def enrich_one_series(
         return stats
 
     stats.found = len(hits)
-    log.info("  prehraj.to returned %d hit(s)", len(hits))
+    log.info("  prehraj.to returned %d hit(s) across %d query/queries",
+              len(hits), len(queries))
 
     matches: list[EpisodeMatch] = []
     for h in hits:
