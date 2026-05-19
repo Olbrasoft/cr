@@ -252,12 +252,26 @@ def _parse_filesize_to_bytes(s: str | None) -> int | None:
 
 
 def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoCluster]:
-    """Stream-parse the scrape, return clusters keyed by (norm, year)."""
+    """Stream-parse the scrape, return clusters keyed by (norm, year).
+
+    Cluster key is the normalized form of the compound candidate
+    ("Chirurgové - Greys Anatomy" → "chirurgovegreysanatomy"). To
+    prevent the same show being split across multiple clusters when
+    different uploaders use different name halves
+    ("Chirurgové S22E01" vs "Greys Anatomy S22E02"), we also maintain
+    a reverse index from EVERY candidate variant's norm back to the
+    cluster's primary key. Uploads B/C above find A's cluster via the
+    half-norm lookup and merge in.
+    """
     log.info("Loading scrape: %s", raw_path)
     raw = json.loads(raw_path.read_text())
     log.info("  %d total uploads", len(raw))
 
     clusters: dict[tuple[str, int | None], SledujtetoCluster] = {}
+    # Maps (norm_of_any_candidate, year) → primary cluster key. Same
+    # year-bound semantics as the cluster key so reboots (e.g.
+    # "Yellowstone" 2018 vs 2005) still get separate clusters.
+    candidate_index: dict[tuple[str, int | None], tuple[str, int | None]] = {}
     parsed = 0
     skipped_no_episode = 0
     for slug_id, u in raw.items():
@@ -271,18 +285,31 @@ def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoClus
         candidates = _split_compound(name)
         if not candidates:
             continue
-        base_norm = normalize_alias(candidates[0])
-        if not base_norm:
-            continue
-        key = (base_norm, pt.year)
+        # Look up existing cluster via ANY candidate's normalized form
+        # before falling back to a fresh key. This merges later uploads
+        # that use just one half of a previously-seen compound title.
+        key: tuple[str, int | None] | None = None
+        for c in candidates:
+            cand_key = (normalize_alias(c), pt.year)
+            if cand_key[0] and cand_key in candidate_index:
+                key = candidate_index[cand_key]
+                break
+        if key is None:
+            base_norm = normalize_alias(candidates[0])
+            if not base_norm:
+                continue
+            key = (base_norm, pt.year)
         cl = clusters.setdefault(key, SledujtetoCluster(
             base_title=candidates[0],
-            candidates=candidates,
+            candidates=[],
             year=pt.year,
         ))
-        # Episode may carry additional candidates we haven't seen yet
-        # (one cluster spans multiple uploads, each with its own split).
+        # Register all candidate variants → this cluster's key so future
+        # uploads with a half-only title find their way home.
         for c in candidates:
+            cand_key = (normalize_alias(c), pt.year)
+            if cand_key[0]:
+                candidate_index.setdefault(cand_key, key)
             if c not in cl.candidates:
                 cl.candidates.append(c)
         cl.episodes.append(SledujtetoEpisode(
@@ -495,8 +522,63 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
 # ---------------------------------------------------------------------------
 
 
+def load_queued_slug_ids(queue_path: Path) -> set[str]:
+    """Read every `slug_id` already present in `queue_path`.
+
+    Used to dedupe before append — re-running the importer on the same
+    day (or after a crash) would otherwise stack duplicate JSONL rows
+    that the downstream prehraj.to upload pipeline has to filter back
+    out. Returns an empty set if the file doesn't exist yet.
+    """
+    if not queue_path.exists():
+        return set()
+    seen: set[str] = set()
+    with queue_path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                slug = json.loads(line).get("slug_id")
+            except json.JSONDecodeError:
+                continue
+            if slug:
+                seen.add(slug)
+    return seen
+
+
+def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
+                                 queue_fh, queued_ext_ids: set[str],
+                                 stats: Stats) -> int:
+    """Append non-playable episodes to the upload queue, skipping
+    `slug_id`s already present (rerun-safe — see `load_queued_slug_ids`).
+    Returns the number of NEW entries written.
+    """
+    today = date.today().isoformat()
+    written = 0
+    for ep in eps:
+        if ep.slug_id in queued_ext_ids:
+            continue
+        queue_fh.write(json.dumps({
+            "sledujteto_url": ep.full_url,
+            "slug_id": ep.slug_id,
+            "raw_title": ep.raw_title,
+            "season": ep.season,
+            "episode": ep.episode,
+            "year": ep.year,
+            "tmdb_tv_id": tv.tmdb_id,
+            "tmdb_name": tv.name_cs or tv.name_en or tv.original_name,
+            "lang_class": ep.lang_class,
+            "found_at": today,
+        }, ensure_ascii=False) + "\n")
+        queued_ext_ids.add(ep.slug_id)
+        stats.queued_for_upload += 1
+        written += 1
+    return written
+
+
 def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
-                       stats: Stats, queue_fh, *,
+                       stats: Stats, queue_fh, queued_ext_ids: set[str], *,
                        covers_dir: Path, tmdb_sess: requests.Session,
                        dry_run: bool) -> None:
     """Phase B: TMDB-resolve unmatched cluster; create or queue."""
@@ -537,29 +619,25 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         return
 
     if not cluster.has_any_playable:
-        # Queue for future prehrajto upload (Phase B, case 4).
-        for ep in cluster.episodes:
-            queue_fh.write(json.dumps({
-                "sledujteto_url": ep.full_url,
-                "slug_id": ep.slug_id,
-                "raw_title": ep.raw_title,
-                "season": ep.season,
-                "episode": ep.episode,
-                "year": ep.year,
-                "tmdb_tv_id": tv.tmdb_id,
-                "tmdb_name": tv.name_cs or tv.name_en or tv.original_name,
-                "lang_class": ep.lang_class,
-                "found_at": date.today().isoformat(),
-            }, ensure_ascii=False) + "\n")
-            stats.queued_for_upload += 1
-        log.info("  queued cluster %r (%d eps, tmdb=%d) — no playable sources",
-                  cluster.base_title, len(cluster.episodes), tv.tmdb_id)
+        # All episodes unplayable → queue every one for re-host.
+        written = _queue_unplayable_episodes(cluster.episodes, tv, queue_fh,
+                                              queued_ext_ids, stats)
+        log.info("  cluster %r (%d eps, tmdb=%d): %d queued for re-host, "
+                  "%d already in queue (skipped)",
+                  cluster.base_title, len(cluster.episodes), tv.tmdb_id,
+                  written, len(cluster.episodes) - written)
         return
 
     # Playable + new: create series + attach all playable sources.
     if dry_run:
         log.info("  [dry-run] WOULD create series tmdb=%d (%s, %d eps to attach)",
                   tv.tmdb_id, tv.name_cs or tv.name_en, len(cluster.episodes))
+        # Still queue the unplayable half so the prehraj.to upload
+        # pipeline has a complete picture even in dry-run.
+        _queue_unplayable_episodes(
+            [e for e in cluster.episodes if not e.playable],
+            tv, queue_fh, queued_ext_ids, stats,
+        )
         stats.clusters_new_tmdb += 1
         return
 
@@ -579,6 +657,12 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         "FROM series WHERE id = %s", (series_id,))
     s_row = SeriesRow(*cur.fetchone())
     enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess)
+    # Mixed cluster: enrich_cluster only attached the playable half.
+    # Queue the unplayable half for re-host so it isn't silently lost.
+    _queue_unplayable_episodes(
+        [e for e in cluster.episodes if not e.playable],
+        tv, queue_fh, queued_ext_ids, stats,
+    )
     stats.clusters_new_tmdb += 1
 
 
@@ -661,8 +745,10 @@ def main() -> int:
         f"{date.today().isoformat()}.jsonl"
     )
     queue_path = UPLOAD_QUEUE_DIR / queue_name
+    queued_ext_ids = load_queued_slug_ids(queue_path)
     queue_fh = queue_path.open("a", encoding="utf-8")
-    log.info("upload queue: %s", queue_path)
+    log.info("upload queue: %s (%d slug_ids already present, will skip)",
+              queue_path, len(queued_ext_ids))
 
     conn = psycopg2.connect(db_url)
     tmdb_sess = requests.Session()
@@ -694,6 +780,7 @@ def main() -> int:
                     stats.clusters_skipped_existing_unplayable += 1
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
+                                  queued_ext_ids,
                                   covers_dir=ns.covers_dir, tmdb_sess=tmdb_sess,
                                   dry_run=ns.dry_run)
             cur.execute("RELEASE SAVEPOINT slt_cluster")
