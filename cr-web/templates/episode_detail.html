@@ -218,6 +218,17 @@ var initialVideoId = {{ episode.sktorrent_video_id.unwrap_or(0) }};
 var prehrajtoUrl = {% match episode.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
 var prehrajtoHasDub  = {{ episode.prehrajto_has_dub }};
 var prehrajtoHasSubs = {{ episode.prehrajto_has_subs }};
+// First alive www-CDN sledujteto source for this episode (#751). Populated
+// by import-sledujteto-series.py. When set, `ensureSledujtetoTab()` adds a
+// "Sledujteto" tab to the player; clicking it resolves the playback URL
+// via /api/sledujteto/resolve and plays the returned MP4 directly via the
+// shared `playUrl()` helper. Note that sledujteto playback does NOT live
+// inside `state.source1` / `state.source2` — it short-circuits straight
+// to the player, since the slug → URL resolution is single-shot (signed
+// URL valid ~24h, no quality picker, no rotation) and adding it to the
+// state shape would only require a third branch in every state reader
+// without giving callers any extra information they could act on.
+var sledujtetoSlug = {% match episode.sledujteto_external_id %}{% when Some with (s) %}"{{ s }}"{% when None %}null{% endmatch %};
 
 // State — same shape as series_detail.html player
 var state = { source1: null, source2: null, activeSource: 1, activeEpisodeBtn: null };
@@ -275,9 +286,19 @@ function initPlayer() {
             .catch(function() {
                 document.getElementById('source-status').textContent = 'Zdroj nedostupný';
             });
+    } else if (sledujtetoSlug) {
+        // Last-resort fallback (#751): episode has no sktorrent and no
+        // prehrajto but does have a www-CDN sledujteto upload. Promote
+        // sledujteto to the primary slot — the tab is added below too,
+        // so the user can re-click it if they reload.
+        switchToSledujteto();
     } else {
         document.getElementById('source-status').textContent = 'Zdroj nedostupný';
     }
+    // Always expose the sledujteto tab when a source exists, even if a
+    // higher-tier provider is currently primary — gives the user a manual
+    // failover when prehraj.to / sktorrent flake.
+    ensureSledujtetoTab();
     loadPrehrajtoForEpisode(initialSeason, initialEpisode);
 }
 
@@ -363,8 +384,10 @@ function switchToSource2() {
 function setActiveTab(n) {
     var t1 = document.getElementById('tab-source-1');
     var t2 = document.getElementById('tab-source-2');
+    var tslt = document.getElementById('tab-sledujteto');
     if (t1) t1.classList.toggle('active', n === 1);
     if (t2) t2.classList.toggle('active', n === 2);
+    if (tslt) tslt.classList.toggle('active', n === 'sledujteto');
 }
 
 function ensureSource2Tab() {
@@ -376,6 +399,52 @@ function ensureSource2Tab() {
     btn.textContent = 'Zdroj 2';
     btn.onclick = switchToSource2;
     tabs.appendChild(btn);
+}
+
+/* #751 — Sledujteto.cz source tab.
+   Rendered server-side only when the episode has at least one alive
+   www-CDN sledujteto upload (cdn=www; data{N}.* are blocked from
+   Hetzner). Clicking calls the existing /api/sledujteto/resolve
+   endpoint which returns a one-shot signed MP4 URL valid for ~24h. */
+function ensureSledujtetoTab() {
+    if (!sledujtetoSlug) return;
+    if (document.getElementById('tab-sledujteto')) return;
+    var tabs = document.getElementById('source-tabs');
+    var btn = document.createElement('button');
+    btn.className = 'source-tab';
+    btn.id = 'tab-sledujteto';
+    btn.textContent = 'Sledujteto';
+    btn.title = 'Přehrát ze sledujteto.cz';
+    btn.onclick = switchToSledujteto;
+    tabs.appendChild(btn);
+}
+
+function switchToSledujteto() {
+    if (!sledujtetoSlug) return;
+    document.getElementById('source-status').textContent = 'Načítání Sledujteto.cz...';
+    fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoSlug))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.video_url) {
+                document.getElementById('source-status').textContent =
+                    'Sledujteto: zdroj nedostupný (' + (data.error || 'neznámá chyba') + ')';
+                return;
+            }
+            setActiveTab('sledujteto');
+            var qualDiv = document.getElementById('source-quality');
+            qualDiv.innerHTML = '';
+            qualDiv.style.display = 'none';
+            playUrl(data.video_url, 'mp4');
+            applySubtitles(data.subtitles || []);
+            document.getElementById('source-status').textContent =
+                'Sledujteto S' + initialSeason + 'E' + initialEpisode;
+            document.querySelectorAll('.prehrajto-item.active')
+                .forEach(function(el) { el.classList.remove('active'); });
+        })
+        .catch(function() {
+            document.getElementById('source-status').textContent =
+                'Sledujteto: chyba při načítání';
+        });
 }
 
 function loadPrehrajtoForEpisode(season, episode) {
