@@ -221,7 +221,13 @@ var prehrajtoHasSubs = {{ episode.prehrajto_has_subs }};
 // First alive www-CDN sledujteto source for this episode (#751). Populated
 // by import-sledujteto-series.py. When set, `ensureSledujtetoTab()` adds a
 // "Sledujteto" tab to the player; clicking it resolves the playback URL
-// via /api/sledujteto/resolve and switches state.source2 to it.
+// via /api/sledujteto/resolve and plays the returned MP4 directly via the
+// shared `playUrl()` helper. Note that sledujteto playback does NOT live
+// inside `state.source1` / `state.source2` — it short-circuits straight
+// to the player, since the slug → URL resolution is single-shot (signed
+// URL valid ~24h, no quality picker, no rotation) and adding it to the
+// state shape would only require a third branch in every state reader
+// without giving callers any extra information they could act on.
 var sledujtetoSlug = {% match episode.sledujteto_external_id %}{% when Some with (s) %}"{{ s }}"{% when None %}null{% endmatch %};
 
 // State — same shape as series_detail.html player
