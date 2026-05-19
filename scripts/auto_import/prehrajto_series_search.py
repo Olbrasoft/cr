@@ -36,6 +36,7 @@ callers should abort the run before burning more proxy quota.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import unicodedata
 import urllib.parse
@@ -91,22 +92,59 @@ class EpisodeMatch:
 
 
 def normalize_alias(s: str) -> str:
-    """Same normalization rule used inside the sktorrent importer's
-    alias filter (commit 9d1d1e08d). Lowercase + strip diacritics +
-    alnum-only — symmetric across the parsed prehraj.to title and the
-    DB series row's `title` / `original_title` so the filter accepts a
-    show whose uploader spelled it slightly differently (punctuation,
-    dots, capitalization) but rejects unrelated hits.
+    """Lowercase + strip diacritics + ASCII-only.
+
+    Originally lifted from the sktorrent importer's alias filter
+    (commit 9d1d1e08d). Extended in #745 to fold Latin-extended
+    characters like `ø`, `æ`, `ł` to ASCII drop (they don't decompose
+    under NFKD because they're single code points with no combining
+    marks, and `.isalnum()` accepts them, so they previously survived
+    untouched). Encoding to ASCII with errors='ignore' drops them
+    cleanly so the ø-less TMDB alt variant matches the upload.
+
+    Note: this function does NOT collapse English possessive `'s`.
+    Doing so would convert "Grey's Anatomy" → "greyanatomy" and break
+    the long-standing match against the bare-plural "Greys Anatomy"
+    upload form. Possessive-aware matching is handled in
+    `alias_variants()` instead — it returns BOTH forms so both upload
+    spellings find the show.
     """
     if not s:
         return ""
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    out = []
-    for ch in s.lower():
-        if ch.isalnum():
-            out.append(ch)
-    return "".join(out)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def alias_variants(s: str) -> list[str]:
+    """Return every normalize_alias form that could match this string.
+
+    Handles English possessive ambiguity by emitting BOTH the bare and
+    the 's-stripped variant when the input contains `'s` (or curly
+    `’s`). Uploaders are inconsistent about apostrophes — some keep
+    them ("Grey's Anatomy"), some drop ("Greys Anatomy"), some drop
+    the possessive entirely ("Jo Nesbo Detective Hole" for what TMDB
+    knows as "Jo Nesbo's Detective Hole"). By indexing all variants
+    we let any upload spelling find the show.
+    """
+    if not s:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(v: str) -> None:
+        k = normalize_alias(v)
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+
+    _push(s)
+    # Also try the possessive-stripped form ("Jo Nesbo's" → "Jo Nesbo")
+    stripped = re.sub(r"['’]s\b", "", s, flags=re.IGNORECASE)
+    if stripped != s:
+        _push(stripped)
+    return out
 
 
 def build_query(title: str, original_title: str | None, year: int | None) -> str:
