@@ -18,9 +18,11 @@ const SERIES_PER_PAGE: i64 = 24;
 /// each provider attribute from `video_sources`. The FilmRow counterpart
 /// in `films.rs` uses the same pattern — see there for performance notes.
 ///
-/// Scope: series episodes only (provider_id from `sktorrent` / `prehrajto`
-/// joined to `video_sources.episode_id`). sledujteto has no series support
-/// in legacy, so no sledujteto subquery here.
+/// Scope: series episodes from sktorrent / prehrajto / sledujteto. The
+/// sledujteto subquery (#751) only returns `cdn='www'` rows because
+/// `data{N}.sledujteto.cz` files are blocked from Hetzner ASNs and the
+/// client-side player would 4xx on them anyway — better to hide them
+/// entirely than expose dead links.
 const EPISODE_COLUMNS: &str = "e.id, e.season, e.episode, e.title, \
     (SELECT vs.external_id::INTEGER \
        FROM video_sources vs \
@@ -50,6 +52,13 @@ const EPISODE_COLUMNS: &str = "e.id, e.season, e.episode, e.title, \
       LIMIT 1) AS prehrajto_url, \
     false AS prehrajto_has_dub, \
     false AS prehrajto_has_subs, \
+    (SELECT vs.external_id \
+       FROM video_sources vs \
+       JOIN video_providers p ON p.id = vs.provider_id \
+      WHERE vs.episode_id = e.id AND p.slug = 'sledujteto' \
+        AND vs.is_alive AND vs.cdn = 'www' \
+      ORDER BY vs.is_primary DESC, vs.updated_at DESC \
+      LIMIT 1) AS sledujteto_external_id, \
     e.slug";
 
 /// Predicate that gates whether an episode has any playable source at all.
@@ -150,6 +159,13 @@ pub struct EpisodeRow {
     pub prehrajto_url: Option<String>,
     pub prehrajto_has_dub: bool,
     pub prehrajto_has_subs: bool,
+    /// Slug id of the first alive www-CDN sledujteto source for this
+    /// episode, populated by the new `import-sledujteto-series.py` (#745).
+    /// Rendered in `episode_detail.html` as a "Sledujteto" source tab that
+    /// resolves the playback URL via `/api/sledujteto/resolve?id=…` (#751).
+    /// `None` means either no source was imported OR every imported source
+    /// lives on `data{N}.sledujteto.cz` (blocked from Hetzner clients).
+    pub sledujteto_external_id: Option<String>,
     pub slug: Option<String>,
 }
 
