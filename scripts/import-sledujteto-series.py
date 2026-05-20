@@ -97,15 +97,14 @@ from video_sources_helper import (
 log = logging.getLogger("import-sledujteto-series")
 
 PROVIDER_SLUG = "sledujteto"
-# Probe-before-attach: every candidate upload is hit through the
-# cr-web resolve endpoint and is only attached when the returned
-# `video_url` host is `www.sledujteto.cz`. The preview-URL host
-# heuristic alone produces ~30% false positives — sledujteto returns
-# `success: true` with a `data{N}.sledujteto.cz` URL for files that
-# have been moved off the www CDN, and those data URLs 302 to
-# /?flash=invalid-file for ALL clients (residential included), so
-# they never actually play. The probe is the only reliable signal.
-RESOLVE_URL = "https://ceskarepublika.wiki/api/sledujteto/resolve"
+# Attach-time playability is determined by the preview-host heuristic
+# (`_is_playable_preview_heuristic`). Previously we also probed the
+# cr-web `/api/sledujteto/resolve?id=<x>` endpoint, but its abuse-guard
+# requires `external_id` to already exist in `video_sources` — a
+# chicken-and-egg for brand-new uploads (see #757). Post-attach cleanup
+# is handled by `scripts/verify-sledujteto-sources.py`, which probes
+# alive rows and demotes the ~30% whose actual media URL turns out to
+# be on a data{N} CDN.
 DEFAULT_INPUT = (
     _PROJECT_ROOT / "data" / "sledujteto"
     / f"sledujteto-series-raw-{date.today().isoformat()}.json"
@@ -151,9 +150,10 @@ class SledujtetoEpisode:
 
     `slug_id` is the URL-path slug (e.g. 49648) used in
     `/file/<slug>/...`. Sledujteto RECYCLES freed slugs across unrelated
-    uploads, so it MUST NOT be used as a stable identifier. We keep it for
-    URL reconstruction (probe_resolve hits `?id=<slug>`) and for queue
-    JSONL readability.
+    uploads, so it MUST NOT be used as a stable identifier. We keep it
+    for URL reconstruction (the queue file embeds the full
+    /file/<slug>/... link for human review) and for queue JSONL
+    readability.
     """
     upload_id: str          # global numeric id (canonical external_id)
     slug_id: str            # URL slug — NOT unique long-term
@@ -237,53 +237,18 @@ def _split_compound(raw_title: str) -> list[str]:
 def _is_playable_preview_heuristic(entry: dict) -> bool:
     """Cheap pre-filter: preview URL host hints at storage cluster.
 
-    Cleared because the actual playability is determined by `probe_resolve`
-    below — sledujteto can serve a `www` preview thumbnail for a file whose
-    media URL ends up on `data{N}` (and vice versa, occasionally). The
-    preview heuristic survives only to gate which entries are worth a probe
-    at all: clusters where every preview points at data{N} are very likely
-    to fail every probe, so we skip the round-trip entirely.
+    Per #757 the importer no longer probes at attach time (the cr-web
+    resolve endpoint's abuse-guard requires `external_id` to be in
+    `video_sources`, but a brand-new upload has no row yet — chicken-and-
+    egg). Attach now trusts this heuristic alone. `~30%` of `www` rows
+    will have their actual media URL on a data{N} CDN and won't play;
+    `scripts/verify-sledujteto-sources.py` runs after the importer to
+    demote those.
     """
     preview = (entry.get("preview") or "").strip()
     if not preview:
         return False
     return (urlparse(preview).hostname or "") == "www.sledujteto.cz"
-
-
-# Only successful probes are memoized. Caching transient errors (network
-# blips, upstream 5xx) would permanently downgrade playable uploads for
-# the rest of the run after a single hiccup — we'd rather retry on next
-# attach attempt. The PROBE_CACHE size is bounded by the cluster's slug
-# set, which is small.
-_PROBE_CACHE: dict[str, bool] = {}
-
-
-def probe_resolve(sess: requests.Session, slug_id: str) -> bool:
-    """Probe sledujteto resolve; return True iff the returned video_url
-    is on `www.sledujteto.cz`. Successful results are cached for the
-    run lifetime; failures (HTTP non-200, upstream success:false, parse
-    errors, exceptions) are NOT cached so a transient blip doesn't
-    permanently disable an otherwise-playable upload.
-    """
-    if _PROBE_CACHE.get(slug_id):
-        return True
-    try:
-        r = sess.get(RESOLVE_URL, params={"id": slug_id}, timeout=20)
-        if r.status_code != 200:
-            log.warning("  probe slug=%s: HTTP %d", slug_id, r.status_code)
-            return False
-        d = r.json()
-        url = d.get("video_url") or ""
-        if not (d.get("success") and url and "://" in url):
-            return False
-        host = urlparse(url).hostname or ""
-        ok = host == "www.sledujteto.cz"
-        if ok:
-            _PROBE_CACHE[slug_id] = True
-        return ok
-    except (requests.RequestException, ValueError) as e:
-        log.warning("  probe error slug=%s: %s", slug_id, e)
-        return False
 
 
 def _parse_duration_to_sec(s: str | None) -> int | None:
@@ -525,7 +490,6 @@ def _episodes_with_alive_prehrajto(cur, providers: dict, series_id: int) -> set[
 def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
                     providers: dict, stats: Stats,
                     tmdb_sess: requests.Session,
-                    probe_sess: requests.Session,
                     queue_fh, queued_ext_ids: set[str]) -> None:
     """Phase A: attach playable sledujteto sources to an existing series.
 
@@ -536,13 +500,12 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
     pipeline can re-host it. Episodes that already have a working
     prehrajto source still skip queuing — the viewer can play them today.
 
-    Two-stage playability gate:
-      1. Preview-host heuristic (cheap) skips data{N}-preview entries
-         entirely — `ep.playable` False.
-      2. Probe (network call) confirms the resolved video_url is on
-         `www.sledujteto.cz` — only then is the source attached. This
-         catches the ~30% of `www`-preview entries whose actual media
-         URL is on data{N} (always unplayable).
+    Playability gate: preview-host heuristic only (per #757). Probing
+    via cr-web at attach time deadlocks because the resolve handler's
+    abuse-guard requires the row to already exist in video_sources, and
+    a brand-new upload doesn't. `verify-sledujteto-sources.py` runs
+    after the importer to demote attached rows whose actual media URL
+    turns out to be on a data{N} CDN (~30% of `www`-preview entries).
     """
     cur = conn.cursor()
     existing_eps = get_existing_episode_ids(cur, series.id)
@@ -586,10 +549,14 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
         if ep.upload_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
-        if not probe_resolve(probe_sess, ep.slug_id):
-            stats.sources_skipped_unplayable += 1
-            _maybe_queue(ep)
-            continue
+        # No probe at attach time. The cr-web `/api/sledujteto/resolve`
+        # endpoint has an abuse-guard that requires `external_id` to be
+        # present in `video_sources` (chicken-and-egg: a brand-new upload
+        # has no row yet, so the probe would always 404). We trust the
+        # preview-host heuristic (`ep.playable`) here and rely on
+        # `scripts/verify-sledujteto-sources.py` running periodically to
+        # demote any rows whose actual media URL turns out to be on a
+        # data{N} CDN. See #757 for the chicken-and-egg analysis.
 
         cur.execute("SAVEPOINT slt_match")
         try:
@@ -725,7 +692,6 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
 def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
                        stats: Stats, queue_fh, queued_ext_ids: set[str], *,
                        covers_dir: Path, tmdb_sess: requests.Session,
-                       probe_sess: requests.Session,
                        dry_run: bool) -> None:
     """Phase B: TMDB-resolve unmatched cluster; create or queue."""
     parsed = ParsedTitle(
@@ -765,7 +731,7 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         # so unplayable uploads of existing series get into the re-host
         # JSONL (provided the episode doesn't already have prehraj.to).
         enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                        probe_sess, queue_fh, queued_ext_ids)
+                        queue_fh, queued_ext_ids)
         return
 
     if not cluster.has_any_playable:
@@ -811,7 +777,7 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
     # source covers the episode), so the separate _queue_unplayable_episodes
     # call below is no longer needed for the newly-created series.
     enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                    probe_sess, queue_fh, queued_ext_ids)
+                    queue_fh, queued_ext_ids)
     stats.clusters_new_tmdb += 1
 
 
@@ -901,10 +867,6 @@ def main() -> int:
 
     conn = psycopg2.connect(db_url)
     tmdb_sess = requests.Session()
-    # Separate session for cr-web probes (different headers, different
-    # connection pool) — both are reused across the whole run for
-    # TLS / keep-alive amortization.
-    probe_sess = requests.Session()
     cur = conn.cursor()
     providers = get_provider_ids(cur)
     if PROVIDER_SLUG not in providers:
@@ -933,13 +895,11 @@ def main() -> int:
                 # for unplayable uploads (skipping ones whose episode
                 # already has alive prehraj.to).
                 enrich_cluster(conn, cluster, match, providers, stats,
-                                tmdb_sess, probe_sess, queue_fh,
-                                queued_ext_ids)
+                                tmdb_sess, queue_fh, queued_ext_ids)
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
                                   queued_ext_ids,
                                   covers_dir=ns.covers_dir, tmdb_sess=tmdb_sess,
-                                  probe_sess=probe_sess,
                                   dry_run=ns.dry_run)
             cur.execute("RELEASE SAVEPOINT slt_cluster")
             if ns.dry_run:
