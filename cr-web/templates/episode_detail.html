@@ -45,15 +45,34 @@
         <span>›</span> <span>S{{ episode.season }}E{{ episode.episode }}</span>
     </nav>
 
+    {# Player section. Layout mirrors the film detail page (#613): numbered
+       colored tabs above the player (one per provider that has at least one
+       alive row in `video_sources_for_badges`), then the player itself,
+       then the unified Zdroje list below the meta block. Removing the old
+       hardcoded "Zdroj 1" / "Sledujteto" tabs fixes the UX bug where the
+       single visible button did nothing because no SK Torrent source
+       existed for that episode. #}
     <div class="player-section">
         <div class="source-tabs" id="source-tabs">
-            <button class="source-tab active" id="tab-source-1" onclick="switchToSource1()">Zdroj 1</button>
+            {% if has_source_sktorrent %}
+            <button class="source-tab source-tab-sktorrent active" data-provider="sktorrent" onclick="onTabClick(this)" aria-label="Zdroj 1: online.sktorrent.eu">1</button>
+            {% endif %}
+            {% if has_source_prehrajto %}
+            <button class="source-tab source-tab-prehrajto{% if !has_source_sktorrent %} active{% endif %}" data-provider="prehrajto" onclick="onTabClick(this)" aria-label="Zdroj 2: Přehraj.to">2</button>
+            {% endif %}
+            {% if has_source_sledujteto %}
+            <button class="source-tab source-tab-sledujteto{% if !has_source_sktorrent && !has_source_prehrajto %} active{% endif %}" data-provider="sledujteto" onclick="onTabClick(this)" aria-label="Zdroj 3: sledujteto.cz">3</button>
+            {% endif %}
         </div>
         <div class="player-panel">
             <video id="series-player" controls preload="metadata" width="100%"
                    {% match episode.still_filename %}{% when Some with (f) %}poster="/serialy-online/still/{{ f }}"{% when None %}poster="/serialy-online/{{ series.slug }}-large.webp"{% endmatch %}></video>
             <div class="player-controls">
-                <div class="player-quality" id="source-quality"></div>
+                {% match episode.sktorrent_video_id %}
+                {% when Some with (_vid) %}
+                <div class="player-quality" id="sktorrent-quality"></div>
+                {% when None %}
+                {% endmatch %}
                 <div id="subtitle-controls" class="subtitle-controls" style="display:none;">
                     <span class="sub-label">Velikost titulků</span>
                     <select id="sub-size-select" class="sub-select" onchange="setSubSize(this.value)" title="Velikost titulků">
@@ -71,11 +90,12 @@
                 <div id="source-status" class="source-status"></div>
             </div>
         </div>
-        <div class="prehrajto-section" id="prehrajto-section" style="display:none;">
-            <h3>Další zdroje</h3>
-            <div id="prehrajto-results" class="prehrajto-results"></div>
-            <button type="button" id="prehrajto-more" class="prehrajto-more" style="display:none;" alt="Zobrazit další zdroje" title="Zobrazit další zdroje">Zobrazit další zdroje</button>
-        </div>
+
+        {% match episode.sktorrent_video_id %}
+        {% when Some with (vid) %}
+        <script>var sktorrentVideoId = {{ vid }};</script>
+        {% when None %}
+        {% endmatch %}
     </div>
 
     <div class="episode-info">
@@ -98,6 +118,74 @@
             {% for p in writers %}<span class="crew-name">{{ p.name }}</span>{% endfor %}
         </div>
         {% endif %}
+    </div>
+
+    {# Unified Zdroje list — same component as on the film detail page. One
+       row per alive `video_sources` entry, server-ordered by provider
+       priority then is_primary DESC. The currently-playing row gets the
+       gold .active background so the viewer always sees which source is
+       feeding the player. Empty list (no sources at all) suppresses the
+       section entirely — the player above will show "Zdroj nedostupný". #}
+    {% if !video_sources_for_badges.is_empty() %}
+    <div class="sources-section" id="sources-section">
+        <h3>Zdroje</h3>
+        <div class="sources-list" id="sources-list">
+            {% for vs in video_sources_for_badges %}
+            <div class="source-row source-row-{{ vs.provider_slug }}{% if vs.is_primary %} is-primary{% endif %}"
+                 data-provider="{{ vs.provider_slug }}"
+                 data-external-id="{{ vs.external_id }}"
+                 data-playback-id="{{ vs.playback_id }}"
+                 role="button"
+                 tabindex="0"
+                 onclick="playSource(this)"
+                 onkeydown="onSourceRowKeydown(event, this)">
+                <div class="source-row-main">
+                    {% match vs.title %}
+                    {% when Some with (t) %}
+                    <span class="source-row-title">{{ t }}</span>
+                    {% when None %}
+                    <span class="source-row-title">{{ series.title }} S{{ "{:02}"|format(episode.season) }}E{{ "{:02}"|format(episode.episode) }}</span>
+                    {% endmatch %}
+                    <span class="source-row-badges">
+                        {% if vs.audio_lang.is_some() %}
+                        <span class="source-row-audio" title="Jazyk zvuku">🎧 {{ vs.audio_label() }}{% match vs.confidence_display() %}{% when Some with (c) %} <span class="confidence">({{ c }})</span>{% when None %}{% endmatch %}</span>
+                        {% endif %}
+                        {% if !vs.subtitle_langs.is_empty() %}
+                        <span class="source-row-subs" title="Titulky">📝 {{ vs.subtitle_display() }}</span>
+                        {% endif %}
+                        {% match vs.resolution_hint %}
+                        {% when Some with (r) %}
+                        <span class="source-row-res">{{ r }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                        {% if vs.is_primary %}
+                        <span class="source-row-primary" title="Primární zdroj">primary</span>
+                        {% endif %}
+                    </span>
+                </div>
+                <span class="source-row-play" aria-hidden="true">&#9654;</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Secondary discovery: live Prehraj.to search by series + SxxExx. Surfaces
+       Prehraj.to uploads we haven't yet ingested into `video_sources`. Hidden
+       by default — user clicks the toggle when they want to look for more.
+       Renders into the same .prehrajto-results container the existing
+       loadPrehrajtoForEpisode() JS already targets. #}
+    <div class="prehrajto-section" id="prehrajto-section">
+        <button type="button" id="prehrajto-toggle" class="prehrajto-toggle"
+                onclick="togglePrehrajtoSearch()"
+                aria-expanded="false">
+            Hledat další zdroje na Přehraj.to
+        </button>
+        <div class="prehrajto-body" id="prehrajto-body" hidden>
+            <div id="prehrajto-results" class="prehrajto-results"></div>
+            <button type="button" id="prehrajto-more" class="prehrajto-more" style="display:none;"
+                    aria-label="Zobrazit další zdroje" title="Zobrazit další zdroje">Zobrazit další zdroje</button>
+        </div>
     </div>
 
     <div class="episode-nav">
@@ -139,27 +227,97 @@
 .search-item .si-rating.tmdb { background: #01b4e4; color: #fff; }
 .search-item .si-rating.imdb { background: #f5c518; color: #000; }
 
-/* Player */
+/* --- Player + numbered tabs (matches film_detail.html) --- */
 .player-section { margin-bottom: 1.5rem; }
-.source-tabs { display: flex; gap: 0.3rem; background: #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 10px 10px 0 0; }
-.source-tab { background: #333; color: #ccc; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; font-size: 0.8rem; cursor: pointer; transition: background 0.15s; }
-.source-tab:hover { background: #444; }
-.source-tab.active { background: #D7141A; color: white; }
+.source-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; background: #1a1a1a; padding: 0.5rem 0.6rem; border-radius: 10px 10px 0 0; }
+.source-tab {
+    background: #333; color: #ccc; border: none;
+    width: 2rem; height: 2rem; border-radius: 50%;
+    cursor: pointer; font-size: 0.95rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+.source-tab:hover { background: #444; color: #fff; transform: scale(1.05); }
+.source-tab.active.source-tab-sktorrent { background: #11457E; color: #fff; }
+.source-tab.active.source-tab-prehrajto { background: #D7141A; color: #fff; }
+.source-tab.active.source-tab-sledujteto { background: #C5A059; color: #1a1a1a; }
+.source-tab.loading { background: #555; cursor: wait; }
 .player-panel { background: #000; border-radius: 0 0 10px 10px; overflow: hidden; }
 .player-panel video { display: block; width: 100%; max-height: 540px; background: #000; }
 .player-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.4rem 0.6rem; background: #111; }
 .player-quality { display: flex; gap: 0.3rem; }
 .quality-btn { background: #333; color: #ccc; border: none; padding: 0.25rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+.quality-btn:hover { background: #444; }
 .quality-btn.active { background: #D7141A; color: white; }
+.source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
+
+/* Subtitle controls */
 .subtitle-controls { display: flex; align-items: center; gap: 0.4rem; margin-left: 0.3rem; }
 .sub-label { color: #bbb; font-size: 0.78rem; }
 .sub-select { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.78rem; cursor: pointer; }
-.source-status { font-size: 0.78rem; color: #888; margin-left: auto; }
 video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif; }
 
-/* Additional sources list */
-.prehrajto-section { margin-top: 1rem; padding: 0.8rem; background: #f8f8f8; border-radius: 8px; }
-.prehrajto-section h3 { font-size: 1rem; margin: 0 0 0.6rem; color: #555; }
+/* --- Unified Zdroje list (matches film_detail.html) --- */
+.sources-section { margin-top: 2rem; }
+.sources-section h3 { font-size: 1.1rem; margin: 0 0 0.6rem; color: #555; }
+.sources-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.source-row {
+    display: flex; align-items: center; gap: 0.8rem;
+    padding: 0.6rem 0.8rem;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-left: 5px solid #ccc;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: #333;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.source-row:hover { background: #f0f0f0; }
+.source-row:focus-visible { outline: 2px solid #11457E; outline-offset: 2px; }
+.source-row.source-row-sktorrent { border-left-color: #11457E; }
+.source-row.source-row-prehrajto { border-left-color: #D7141A; }
+.source-row.source-row-sledujteto { border-left-color: #C5A059; }
+.source-row.loading { opacity: 0.55; cursor: wait; }
+.source-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.source-row-title {
+    font-weight: 500; font-size: 0.9rem; color: #222;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.source-row-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.source-row-audio { background: #dcfce7; color: #065f46; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
+.source-row-audio .confidence { color: #16a34a; font-size: 0.7rem; margin-left: 0.2rem; }
+.source-row-subs { background: #dbeafe; color: #1e40af; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
+.source-row-res { background: #f3f4f6; color: #6b7280; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.72rem; font-weight: 500; }
+.source-row-primary { background: #a68412; color: #fff; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.source-row-play {
+    flex-shrink: 0; width: 1.75rem; height: 1.75rem;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.06); border-radius: 50%; font-size: 0.8rem; color: #888;
+}
+.source-row.active {
+    background: #C5A059;
+    border-color: #C5A059;
+    color: #1a1a1a;
+}
+.source-row.active .source-row-title { color: #fff; }
+.source-row.active .source-row-audio,
+.source-row.active .source-row-subs,
+.source-row.active .source-row-res { background: rgba(255,255,255,0.35); color: #1a1a1a; }
+.source-row.active .source-row-audio .confidence { color: #3a2a00; }
+.source-row.active .source-row-primary { background: #1a1a1a; color: #e0c47c; }
+.source-row.active .source-row-play { background: rgba(0,0,0,0.25); color: #fff; }
+
+/* --- Secondary "Hledat další na Prehraj.to" panel --- */
+.prehrajto-section { margin-top: 1.2rem; padding: 0; }
+.prehrajto-toggle {
+    width: 100%; padding: 0.55rem 0.9rem; background: #f1f5f9; border: 1px solid #ddd;
+    border-radius: 8px; color: #11457E; font-size: 0.85rem; font-weight: 600;
+    cursor: pointer; transition: background 0.15s;
+}
+.prehrajto-toggle:hover { background: #e2e8f0; }
+.prehrajto-toggle[aria-expanded="true"] { border-radius: 8px 8px 0 0; border-bottom: none; }
+.prehrajto-body { padding: 0.8rem; background: #f8f8f8; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; }
 .prehrajto-results { display: flex; flex-direction: column; gap: 0.4rem; }
 .prehrajto-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem; background: white; border: 1px solid #eee; border-radius: 6px; cursor: pointer; transition: background 0.15s, border-color 0.15s; position: relative; width: 100%; text-align: left; font: inherit; color: inherit; }
 .prehrajto-item:hover { background: #f0f0f0; }
@@ -209,254 +367,331 @@ var seriesTitle = "{{ series.title }}";
 var episodeId = {{ episode.id }};
 var initialSeason = {{ episode.season }};
 var initialEpisode = {{ episode.episode }};
-var initialVideoId = {{ episode.sktorrent_video_id.unwrap_or(0) }};
-/* SK Torrent CDN + qualities are resolved live via /api/films/sktorrent-resolve —
-   SK Torrent rotates videos across online{N} servers, so any stored value goes
-   stale. Do not pass CDN or qualities from the DB. */
-// Cached Přehraj.to URL for this episode (stable across searches).
-// Used as primary Zdroj 1 when SK Torrent is not available.
-var prehrajtoUrl = {% match episode.prehrajto_url %}{% when Some with (u) %}"{{ u }}"{% when None %}null{% endmatch %};
-var prehrajtoHasDub  = {{ episode.prehrajto_has_dub }};
-var prehrajtoHasSubs = {{ episode.prehrajto_has_subs }};
-// First alive www-CDN sledujteto source for this episode (#751). Populated
-// by import-sledujteto-series.py. When set, `ensureSledujtetoTab()` adds a
-// "Sledujteto" tab to the player; clicking it resolves the playback URL
-// via /api/sledujteto/resolve and plays the returned MP4 directly via the
-// shared `playUrl()` helper. Note that sledujteto playback does NOT live
-// inside `state.source1` / `state.source2` — it short-circuits straight
-// to the player, since the slug → URL resolution is single-shot (signed
-// URL valid ~24h, no quality picker, no rotation) and adding it to the
-// state shape would only require a third branch in every state reader
-// without giving callers any extra information they could act on.
-var sledujtetoSlug = {% match episode.sledujteto_external_id %}{% when Some with (s) %}"{{ s }}"{% when None %}null{% endmatch %};
-
-// State — same shape as series_detail.html player
-var state = { source1: null, source2: null, activeSource: 1, activeEpisodeBtn: null };
-var resolvedSources = {};
+var sktorrentSources = [];
 var currentPrehrajto = { all: [], visibleCount: 3 };
 var _subPoll = null;
 
-function initPlayer() {
-    if (initialVideoId) {
-        // Primary: SK Torrent. Live-resolve current CDN + qualities.
-        document.getElementById('source-status').textContent = 'Načítám zdroj...';
-        fetch('/api/films/sktorrent-resolve?video_id=' + initialVideoId)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data.sources || !data.sources.length) {
-                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
-                    return;
-                }
-                var sources = data.sources.map(function(s) {
-                    return { url: s.url, quality: s.quality, res: s.res };
-                });
-                sources.sort(function(a, b) { return b.res - a.res; });
-                state.source1 = {
-                    episode: { season: initialSeason, episode: initialEpisode },
-                    sources: sources,
-                    currentIndex: 0,
-                    videoId: initialVideoId,
-                };
-                switchToSource1();
-            })
-            .catch(function() {
-                document.getElementById('source-status').textContent = 'Chyba obnovy zdroje';
-            });
-    } else if (prehrajtoUrl) {
-        // Fallback: cached Přehraj.to URL. Resolve on the fly, then play.
-        document.getElementById('source-status').textContent = 'Načítání Přehraj.to...';
-        fetch('/api/movies/video-url?url=' + encodeURIComponent(prehrajtoUrl))
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data.success || !data.video_url) {
-                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
-                    return;
-                }
-                var url = data.video_url.replace(/&amp;/g, '&');
-                var isHls = url.indexOf('.m3u8') !== -1;
-                state.source1 = {
-                    episode: { season: initialSeason, episode: initialEpisode },
-                    prehrajto: true,
-                    url: url,
-                    isHls: isHls,
-                    subtitles: data.subtitles || [],
-                };
-                switchToSource1Prehrajto();
-            })
-            .catch(function() {
-                document.getElementById('source-status').textContent = 'Zdroj nedostupný';
-            });
-    } else if (sledujtetoSlug) {
-        // Last-resort fallback (#751): episode has no sktorrent and no
-        // prehrajto but does have a www-CDN sledujteto upload. Promote
-        // sledujteto to the primary slot — the tab is added below too,
-        // so the user can re-click it if they reload.
-        switchToSledujteto();
-    } else {
-        document.getElementById('source-status').textContent = 'Zdroj nedostupný';
+/* --- Source-row / tab helpers (mirrored from film_detail.html) -------- */
+
+function findSourceRow(provider, externalId) {
+    var rows = document.querySelectorAll('.source-row[data-provider="' + provider + '"]');
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].dataset.externalId === externalId) return rows[i];
     }
-    // Always expose the sledujteto tab when a source exists, even if a
-    // higher-tier provider is currently primary — gives the user a manual
-    // failover when prehraj.to / sktorrent flake.
-    ensureSledujtetoTab();
-    loadPrehrajtoForEpisode(initialSeason, initialEpisode);
+    return null;
 }
 
-/* Variant of switchToSource1 for cached Přehraj.to primary source */
-function switchToSource1Prehrajto() {
-    if (!state.source1 || !state.source1.prehrajto) return;
-    state.activeSource = 1;
-    setActiveTab(1);
-    var qualDiv = document.getElementById('source-quality');
-    qualDiv.innerHTML = '';
-    qualDiv.style.display = 'none';
-    playUrl(state.source1.url, state.source1.isHls ? 'hls' : 'mp4');
-    document.getElementById('source-status').textContent = 'S' + state.source1.episode.season + 'E' + state.source1.episode.episode;
-    applySubtitles(state.source1.subtitles || []);
-    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
+function markActiveRow(provider, externalId) {
+    document.querySelectorAll('.source-row.active').forEach(function(r) { r.classList.remove('active'); });
+    document.querySelectorAll('.source-row.loading').forEach(function(r) { r.classList.remove('loading'); });
+    if (externalId) {
+        var row = findSourceRow(provider, externalId);
+        if (row) row.classList.add('active');
+    }
+    syncPlayIcons();
 }
 
-function switchToSource1() {
-    if (!state.source1) return;
-    if (state.source1.prehrajto) {
-        switchToSource1Prehrajto();
+function setActiveTab(provider) {
+    document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
+    var tab = document.querySelector('.source-tab[data-provider="' + provider + '"]');
+    if (tab) tab.classList.add('active');
+    var sktQ = document.getElementById('sktorrent-quality');
+    if (sktQ) sktQ.style.display = (provider === 'sktorrent') ? 'flex' : 'none';
+    var status = document.getElementById('source-status');
+    if (status) status.textContent = '';
+}
+
+function onTabClick(btn) {
+    var provider = btn.dataset.provider;
+    var row = document.querySelector('.source-row[data-provider="' + provider + '"]');
+    if (row) playSource(row);
+    else setActiveTab(provider);
+}
+
+function onSourceRowKeydown(e, row) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        playSource(row);
+    }
+}
+
+function playSource(row) {
+    var player = document.getElementById('series-player');
+    if (row.classList.contains('active') && player && player.src) {
+        if (player.paused) player.play().catch(function(){});
+        else player.pause();
         return;
     }
-    state.activeSource = 1;
-    setActiveTab(1);
-    var subCtrl = document.getElementById('subtitle-controls');
-    if (subCtrl) subCtrl.style.display = 'none';
-    var player = document.getElementById('series-player');
-    player.querySelectorAll('track').forEach(function(t) { t.remove(); });
+    var provider = row.dataset.provider;
+    var externalId = row.dataset.externalId;
+    var playbackId = row.dataset.playbackId || externalId;
+    setActiveTab(provider);
+    markActiveRow(provider, externalId);
+    row.classList.add('loading');
+    var onDone = function() { row.classList.remove('loading'); };
+
+    // Clear any live-search "Další zdroje" highlight when the user picks
+    // a row from the unified DB-backed Zdroje list.
     document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
-    renderQualityButtons1();
-    playQuality1(state.source1.currentIndex, true);
-}
 
-function renderQualityButtons1() {
-    var qualDiv = document.getElementById('source-quality');
-    qualDiv.innerHTML = '';
-    state.source1.sources.forEach(function(s, i) {
-        var qBtn = document.createElement('button');
-        qBtn.className = 'quality-btn' + (i === state.source1.currentIndex ? ' active' : '');
-        qBtn.textContent = s.quality;
-        qBtn.onclick = function() { playQuality1(i, true); };
-        qualDiv.appendChild(qBtn);
-    });
-    qualDiv.style.display = '';
-}
-
-function playQuality1(index, doPlay) {
-    if (!state.source1) return;
-    var src = state.source1.sources[index];
-    state.source1.currentIndex = index;
-    var player = document.getElementById('series-player');
-    if (window._hls) { window._hls.destroy(); window._hls = null; }
-    player.src = src.url;
-    player.dataset.fallbackVideoId = state.source1.videoId;
-    document.querySelectorAll('#source-quality .quality-btn').forEach(function(b, i) {
-        b.classList.toggle('active', i === index);
-    });
-    document.getElementById('source-status').textContent = 'S' + state.source1.episode.season + 'E' + state.source1.episode.episode;
-    if (doPlay) {
-        // If the browser blocks autoplay-with-sound, leave the player paused —
-        // the viewer hits play and gets sound via that user gesture. Never
-        // fall back to muted autoplay, which surprises the viewer with a
-        // silent video and a hidden unmute dance.
-        player.play().catch(function() {});
+    if (provider === 'sktorrent') {
+        resolveAndPlaySktorrent('Načítání...', onDone);
+    } else if (provider === 'prehrajto') {
+        playPrehrajtoUrl(playbackId, onDone);
+    } else if (provider === 'sledujteto') {
+        playSledujtetoFile(playbackId, onDone);
+    } else {
+        onDone();
     }
 }
 
-function switchToSource2() {
-    if (!state.source2) return;
-    state.activeSource = 2;
-    setActiveTab(2);
-    var qualDiv = document.getElementById('source-quality');
-    qualDiv.innerHTML = '';
-    qualDiv.style.display = 'none';
-    playUrl(state.source2.url, state.source2.isHls ? 'hls' : 'mp4');
-    document.getElementById('source-status').textContent = state.source2.label || 'Externí zdroj';
-    applySubtitles(state.source2.subtitles || []);
-    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
-    if (state.source2.activeItem) state.source2.activeItem.classList.add('active');
+var PLAY_GLYPH = '▶';
+var PAUSE_GLYPH = '⏸';
+function syncPlayIcons() {
+    var player = document.getElementById('series-player');
+    var playing = player && !player.paused && !player.ended && player.readyState > 0;
+    document.querySelectorAll('.source-row').forEach(function(row) {
+        var icon = row.querySelector('.source-row-play');
+        if (!icon) return;
+        icon.textContent = (playing && row.classList.contains('active')) ? PAUSE_GLYPH : PLAY_GLYPH;
+    });
+}
+(function() {
+    var player = document.getElementById('series-player');
+    if (!player) return;
+    ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function(ev) {
+        player.addEventListener(ev, syncPlayIcons);
+    });
+})();
+
+/* --- Core playback ---------------------------------------------------- */
+
+function playUrl(url, format) {
+    var player = document.getElementById('series-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    if (format === 'hls' && window.Hls && Hls.isSupported()) {
+        var hls = new Hls(); hls.loadSource(url); hls.attachMedia(player);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() { player.play().catch(function(){}); });
+        window._hls = hls;
+    } else {
+        player.src = url; player.play().catch(function(){});
+    }
 }
 
-function setActiveTab(n) {
-    var t1 = document.getElementById('tab-source-1');
-    var t2 = document.getElementById('tab-source-2');
-    var tslt = document.getElementById('tab-sledujteto');
-    if (t1) t1.classList.toggle('active', n === 1);
-    if (t2) t2.classList.toggle('active', n === 2);
-    if (tslt) tslt.classList.toggle('active', n === 'sledujteto');
+/* --- Per-provider playback ------------------------------------------- */
+
+function renderSktorrentSources(data) {
+    var status = document.getElementById('source-status');
+    if (!data || !data.sources || !data.sources.length) {
+        if (status) status.textContent = 'Zdroj nedostupný';
+        return false;
+    }
+    sktorrentSources = data.sources.map(function(s) {
+        return { url: s.url, quality: s.quality, res: s.res };
+    });
+    sktorrentSources.sort(function(a, b) { return b.res - a.res; });
+
+    var qualDiv = document.getElementById('sktorrent-quality');
+    if (qualDiv) {
+        qualDiv.innerHTML = '';
+        sktorrentSources.forEach(function(s, i) {
+            var btn = document.createElement('button');
+            btn.className = 'quality-btn' + (i === 0 ? ' active' : '');
+            btn.textContent = s.quality;
+            btn.onclick = function() { playSktorrent(i, btn); };
+            qualDiv.appendChild(btn);
+        });
+    }
+    return true;
 }
 
-function ensureSource2Tab() {
-    if (document.getElementById('tab-source-2')) return;
-    var tabs = document.getElementById('source-tabs');
-    var btn = document.createElement('button');
-    btn.className = 'source-tab';
-    btn.id = 'tab-source-2';
-    btn.textContent = 'Zdroj 2';
-    btn.onclick = switchToSource2;
-    tabs.appendChild(btn);
-}
-
-/* #751 — Sledujteto.cz source tab.
-   Rendered server-side only when the episode has at least one alive
-   www-CDN sledujteto upload (cdn=www; data{N}.* are blocked from
-   Hetzner). Clicking calls the existing /api/sledujteto/resolve
-   endpoint which returns a one-shot signed MP4 URL valid for ~24h. */
-function ensureSledujtetoTab() {
-    if (!sledujtetoSlug) return;
-    if (document.getElementById('tab-sledujteto')) return;
-    var tabs = document.getElementById('source-tabs');
-    var btn = document.createElement('button');
-    btn.className = 'source-tab';
-    btn.id = 'tab-sledujteto';
-    btn.textContent = 'Sledujteto';
-    btn.title = 'Přehrát ze sledujteto.cz';
-    btn.onclick = switchToSledujteto;
-    tabs.appendChild(btn);
-}
-
-function switchToSledujteto() {
-    if (!sledujtetoSlug) return;
-    document.getElementById('source-status').textContent = 'Načítání Sledujteto.cz...';
-    fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(sledujtetoSlug))
+function resolveAndPlaySktorrent(statusText, onDone) {
+    var status = document.getElementById('source-status');
+    if (status && statusText) status.textContent = statusText;
+    if (typeof sktorrentVideoId === 'undefined') {
+        if (onDone) onDone();
+        return;
+    }
+    return fetch('/api/films/sktorrent-resolve?video_id=' + sktorrentVideoId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (!data.success || !data.video_url) {
-                document.getElementById('source-status').textContent =
-                    'Sledujteto: zdroj nedostupný (' + (data.error || 'neznámá chyba') + ')';
-                return;
-            }
-            setActiveTab('sledujteto');
-            var qualDiv = document.getElementById('source-quality');
-            qualDiv.innerHTML = '';
-            qualDiv.style.display = 'none';
-            playUrl(data.video_url, 'mp4');
-            applySubtitles(data.subtitles || []);
-            document.getElementById('source-status').textContent =
-                'Sledujteto S' + initialSeason + 'E' + initialEpisode;
-            document.querySelectorAll('.prehrajto-item.active')
-                .forEach(function(el) { el.classList.remove('active'); });
+            if (onDone) onDone();
+            if (!renderSktorrentSources(data)) return;
+            var qualDiv = document.getElementById('sktorrent-quality');
+            playSktorrent(0, qualDiv ? qualDiv.querySelector('.quality-btn') : null);
         })
         .catch(function() {
-            document.getElementById('source-status').textContent =
-                'Sledujteto: chyba při načítání';
+            if (onDone) onDone();
+            if (status) status.textContent = 'Chyba obnovy zdroje';
         });
 }
 
+function playSktorrent(index, btn) {
+    var player = document.getElementById('series-player');
+    if (window._hls) { window._hls.destroy(); window._hls = null; }
+    var source = sktorrentSources[index];
+    if (!source) return;
+    player.src = source.url;
+    player.dataset.sktorrentSrc = source.url;
+    player.dataset.sktorrentQuality = source.quality;
+    document.querySelectorAll('#sktorrent-quality .quality-btn').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    var st = document.getElementById('source-status');
+    if (st) st.textContent = '';
+    // Direct MP4 URL — kick off playback. play() is no-op if the browser
+    // blocks autoplay-with-sound; the viewer hits play and the user
+    // gesture grants permission. Don't fall back to muted autoplay —
+    // surprising a viewer with silent video + hidden unmute dance is
+    // worse UX than a paused first frame.
+    player.play().catch(function(){});
+}
+
+function playPrehrajtoUrl(url, onDone) {
+    var player = document.getElementById('series-player');
+    var status = document.getElementById('source-status');
+    if (!player) { if (onDone) onDone(); return; }
+    if (status) status.textContent = 'Načítání Přehraj.to...';
+    return fetch('/api/movies/video-url?url=' + encodeURIComponent(url))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (onDone) onDone();
+            if (!data.success || !data.video_url) {
+                if (status) status.textContent = 'Zdroj nedostupný';
+                return;
+            }
+            var streamUrl = data.video_url.replace(/&amp;/g, '&');
+            playUrl(streamUrl, streamUrl.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+            if (status) status.textContent = 'Přehraj.to';
+            applySubtitles(data.subtitles || []);
+        })
+        .catch(function() {
+            if (onDone) onDone();
+            if (status) status.textContent = 'Zdroj nedostupný';
+        });
+}
+
+function playSledujtetoFile(fileId, onDone) {
+    var player = document.getElementById('series-player');
+    var status = document.getElementById('source-status');
+    if (!player) { if (onDone) onDone(); return; }
+    if (status) status.textContent = 'Načítání Sledujteto...';
+    return fetch('/api/sledujteto/resolve?id=' + encodeURIComponent(fileId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (onDone) onDone();
+            if (!data.success || !data.video_url) {
+                if (status) status.textContent =
+                    'Sledujteto: zdroj nedostupný' + (data.error ? ' (' + data.error + ')' : '');
+                return;
+            }
+            playUrl(data.video_url, data.video_url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+            if (status) status.textContent = 'Sledujteto S' + initialSeason + 'E' + initialEpisode;
+            applySubtitles(data.subtitles || []);
+        })
+        .catch(function() {
+            if (onDone) onDone();
+            if (status) status.textContent = 'Sledujteto: chyba při načítání';
+        });
+}
+
+/* --- SK Torrent CDN rotation fallback -------------------------------- */
+(function() {
+    var player = document.getElementById('series-player');
+    if (!player || typeof sktorrentVideoId === 'undefined') return;
+    var fallbackTried = false;
+    player.addEventListener('error', function() {
+        if (fallbackTried) return;
+        if (!player.src || player.src.indexOf('sktorrent.eu') === -1) return;
+        fallbackTried = true;
+        resolveAndPlaySktorrent('Obnovuji zdroj...', function() {
+            setTimeout(function() { fallbackTried = false; }, 5000);
+        });
+    }, true);
+})();
+
+/* --- Auto-play first available source on load ------------------------ */
+(function() {
+    var first = document.querySelector('.source-row');
+    if (first) playSource(first);
+    else {
+        var st = document.getElementById('source-status');
+        if (st) st.textContent = 'Zdroj nedostupný';
+    }
+})();
+
+/* --- Subtitle support ------------------------------------------------ */
+function applySubtitles(subtitles) {
+    var player = document.getElementById('series-player');
+    player.querySelectorAll('track').forEach(function(t) { t.remove(); });
+    var controls = document.getElementById('subtitle-controls');
+    if (!subtitles || !subtitles.length) {
+        if (controls) controls.style.display = 'none';
+        if (_subPoll) { clearInterval(_subPoll); _subPoll = null; }
+        return;
+    }
+    subtitles.forEach(function(sub) {
+        var track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.label || (sub.lang || '').toUpperCase();
+        track.srclang = sub.lang || '';
+        track.src = '/api/movies/subtitle?url=' + encodeURIComponent(sub.url);
+        if (sub.lang === 'cze' || sub.lang === 'cs') track.default = true;
+        player.appendChild(track);
+    });
+    var tt = player.textTracks;
+    var cz = false;
+    for (var i = 0; i < tt.length; i++) {
+        if (!cz && (tt[i].language === 'cze' || tt[i].language === 'cs')) { tt[i].mode = 'showing'; cz = true; }
+        else tt[i].mode = 'hidden';
+    }
+    if (!cz && tt.length > 0) tt[0].mode = 'showing';
+    var sel = document.getElementById('sub-size-select');
+    setSubSize(sel ? sel.value : 20);
+    if (controls) {
+        function update() {
+            var any = false;
+            for (var j = 0; j < tt.length; j++) if (tt[j].mode === 'showing') { any = true; break; }
+            controls.style.display = any ? 'flex' : 'none';
+        }
+        for (var k = 0; k < tt.length; k++) tt[k].addEventListener('cuechange', update);
+        if (_subPoll) clearInterval(_subPoll);
+        _subPoll = setInterval(update, 1000);
+        update();
+    }
+}
+
+function setSubSize(px) {
+    var style = document.getElementById('sub-cue-style');
+    if (!style) { style = document.createElement('style'); style.id = 'sub-cue-style'; document.head.appendChild(style); }
+    style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
+}
+
+/* --- Secondary "Hledat další na Prehraj.to" search -------------------- */
+function togglePrehrajtoSearch() {
+    var body = document.getElementById('prehrajto-body');
+    var btn = document.getElementById('prehrajto-toggle');
+    if (!body || !btn) return;
+    var willOpen = body.hasAttribute('hidden');
+    if (willOpen) {
+        body.removeAttribute('hidden');
+        btn.setAttribute('aria-expanded', 'true');
+        if (!body.dataset.loaded) {
+            body.dataset.loaded = '1';
+            loadPrehrajtoForEpisode(initialSeason, initialEpisode);
+        }
+    } else {
+        body.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', 'false');
+    }
+}
+
 function loadPrehrajtoForEpisode(season, episode) {
-    var section = document.getElementById('prehrajto-section');
     var container = document.getElementById('prehrajto-results');
-    if (!section || !container) return;
-    section.style.display = '';
+    if (!container) return;
     container.innerHTML = '<div class="pt-loading">Hledám další zdroje...</div>';
     var sStr = season < 10 ? '0' + season : '' + season;
     var eStr = episode < 10 ? '0' + episode : '' + episode;
     var query = seriesTitle + ' S' + sStr + 'E' + eStr;
-
     fetch('/api/movies/search?q=' + encodeURIComponent(query) + '&episode_id=' + episodeId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -477,225 +712,57 @@ function loadPrehrajtoForEpisode(season, episode) {
                     currentPrehrajto.visibleCount = currentPrehrajto.all.length;
                     renderPrehrajto();
                     moreBtn.style.display = 'none';
-                    validatePrehrajto(currentPrehrajto.all);
                 };
             }
-            validatePrehrajto(currentPrehrajto.all.slice(0, currentPrehrajto.visibleCount));
         })
         .catch(function() { container.innerHTML = '<div class="pt-loading">Chyba při hledání</div>'; });
-}
-
-function buildPrehrajtoItem(movie) {
-    var item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'prehrajto-item';
-    item.dataset.movieUrl = movie.url;
-    var cached = resolvedSources[movie.url];
-    item.dataset.height = cached && cached.height ? cached.height : 0;
-    var year = movie.year ? ' (' + movie.year + ')' : '';
-    var tooltip = (movie.title || 'Další zdroj') + year;
-    item.title = tooltip;
-    item.setAttribute('alt', tooltip);
-    item.onclick = function() { playPrehrajtoEpisode(movie, item); };
-    var thumb = movie.thumbnail
-        ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="' + (movie.title || 'Náhled') + '" title="' + (movie.title || '') + '">'
-        : '';
-    var badges = '';
-    if (cached) {
-        badges += cached.isDirect
-            ? '<span class="pt-badge direct" title="Přímý zdroj">Přímý</span>'
-            : '<span class="pt-badge proxy" title="Přes proxy">Proxy</span>';
-        // Real video resolution from prehraj.to microdata (not the filename —
-        // "1080p" in a candidate title is often a lie). Same logic as film_detail.
-        if (cached.height) {
-            var qCls = cached.height >= 1080 ? 'quality-hd' : (cached.height >= 720 ? 'quality-sd' : 'quality-low');
-            badges += '<span class="pt-badge ' + qCls + '" title="Skutečné rozlišení streamu">' + cached.height + 'p</span>';
-        }
-        if (cached.subtitles && cached.subtitles.length) badges += '<span class="cc-badge-sm" title="České titulky dostupné">CC</span>';
-        if (cached.duration_sec) {
-            var mm = Math.round(cached.duration_sec / 60);
-            badges += '<span class="pt-badge-dur" title="Délka videa">' + mm + ' min</span>';
-        }
-    }
-    item.innerHTML = thumb
-        + '<div class="pt-info"><span class="pt-title">' + (movie.title || '') + year + badges + '</span></div>'
-        + '<span class="play-indicator">▶</span>';
-    return item;
 }
 
 function renderPrehrajto() {
     var container = document.getElementById('prehrajto-results');
     if (!container) return;
-    var all = currentPrehrajto.all.slice();
-    // Primary key: direct > proxy > not-yet-validated.
-    // Secondary key (within each group): height DESC so 1080p > 720p > 480p > 304p.
-    all.sort(function(a, b) {
-        var ra = resolvedSources[a.url]; var rb = resolvedSources[b.url];
-        var ga = ra ? (ra.isDirect ? 0 : 1) : 2;
-        var gb = rb ? (rb.isDirect ? 0 : 1) : 2;
-        if (ga !== gb) return ga - gb;
-        var ha = ra && ra.height ? ra.height : 0;
-        var hb = rb && rb.height ? rb.height : 0;
-        return hb - ha;
-    });
     container.innerHTML = '';
-    all.slice(0, currentPrehrajto.visibleCount).forEach(function(movie) {
-        container.appendChild(buildPrehrajtoItem(movie));
-    });
-    if (state.source2 && state.source2.movie) {
-        var it = container.querySelector('.prehrajto-item[data-movie-url="' + state.source2.movie.url.replace(/"/g, '\\"') + '"]');
-        if (it) { it.classList.add('active'); state.source2.activeItem = it; }
-    }
-}
-
-function validatePrehrajto(movies) {
-    movies.forEach(function(movie) {
-        if (resolvedSources[movie.url]) return;
-        fetch('/api/movies/validate?url=' + encodeURIComponent(movie.url))
-            .then(function(r) { return r.json(); })
-            .then(function(vdata) {
-                var isDirect = !!vdata.valid;
-                var height = vdata.height || null;
-                var duration_sec = vdata.duration_sec || null;
-                return fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
-                    .then(function(r) { return r.json(); })
-                    .then(function(data) {
-                        if (!data.success || !data.video_url) return;
-                        resolvedSources[movie.url] = {
-                            video_url: data.video_url.replace(/&amp;/g, '&'),
-                            subtitles: data.subtitles || [],
-                            isDirect: isDirect,
-                            height: height,
-                            duration_sec: duration_sec,
-                        };
-                        renderPrehrajto();
-                    });
-            })
-            .catch(function() {});
+    currentPrehrajto.all.slice(0, currentPrehrajto.visibleCount).forEach(function(movie) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'prehrajto-item';
+        item.dataset.movieUrl = movie.url;
+        var year = movie.year ? ' (' + movie.year + ')' : '';
+        var tooltip = (movie.title || 'Další zdroj') + year;
+        item.title = tooltip;
+        item.setAttribute('alt', tooltip);
+        item.onclick = function() { playDiscoveredPrehrajto(movie, item); };
+        var thumb = movie.thumbnail
+            ? '<img src="/api/movies/thumb?url=' + encodeURIComponent(movie.thumbnail) + '" alt="' + (movie.title || 'Náhled') + '">'
+            : '';
+        item.innerHTML = thumb
+            + '<div class="pt-info"><span class="pt-title">' + (movie.title || '') + year + '</span></div>'
+            + '<span class="play-indicator">▶</span>';
+        container.appendChild(item);
     });
 }
 
-function playPrehrajtoEpisode(movie, item) {
-    var player = document.getElementById('series-player');
+function playDiscoveredPrehrajto(movie, item) {
     var status = document.getElementById('source-status');
-    if (!player) return;
-    document.getElementById('player-section') && document.querySelector('.player-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    function useResolved(resolved) {
-        var url = resolved.video_url;
-        var isHls = url.indexOf('.m3u8') !== -1;
-        state.source2 = {
-            movie: movie, url: url, isHls: isHls,
-            subtitles: resolved.subtitles || [], activeItem: item, label: movie.title || 'Externí zdroj',
-        };
-        ensureSource2Tab();
-        switchToSource2();
-    }
-    var cached = resolvedSources[movie.url];
-    if (cached) { useResolved(cached); return; }
-
-    item.classList.add('loading');
+    document.querySelectorAll('.source-row.active').forEach(function(r) { r.classList.remove('active'); });
+    document.querySelectorAll('.prehrajto-item.active').forEach(function(el) { el.classList.remove('active'); });
+    item.classList.add('active', 'loading');
     if (status) status.textContent = 'Načítání...';
+    setActiveTab('prehrajto');
     fetch('/api/movies/video-url?url=' + encodeURIComponent(movie.url))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             item.classList.remove('loading');
             if (!data.success || !data.video_url) { if (status) status.textContent = 'Zdroj nedostupný'; return; }
-            var resolved = { video_url: data.video_url.replace(/&amp;/g, '&'), subtitles: data.subtitles || [] };
-            resolvedSources[movie.url] = resolved;
-            useResolved(resolved);
+            var url = data.video_url.replace(/&amp;/g, '&');
+            playUrl(url, url.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4');
+            if (status) status.textContent = movie.title || 'Externí zdroj';
+            applySubtitles(data.subtitles || []);
         })
         .catch(function(e) { item.classList.remove('loading'); if (status) status.textContent = 'Chyba: ' + e.message; });
 }
 
-function playUrl(url, format) {
-    var player = document.getElementById('series-player');
-    if (window._hls) { window._hls.destroy(); window._hls = null; }
-    if (format === 'hls' && window.Hls && Hls.isSupported()) {
-        var hls = new Hls(); hls.loadSource(url); hls.attachMedia(player);
-        hls.on(Hls.Events.MANIFEST_PARSED, function() { player.play().catch(function(){}); });
-        window._hls = hls;
-    } else {
-        player.src = url; player.play().catch(function(){});
-    }
-}
-
-function applySubtitles(subtitles) {
-    var player = document.getElementById('series-player');
-    player.querySelectorAll('track').forEach(function(t) { t.remove(); });
-    if (!subtitles || !subtitles.length) {
-        var c0 = document.getElementById('subtitle-controls');
-        if (c0) c0.style.display = 'none';
-        if (_subPoll) { clearInterval(_subPoll); _subPoll = null; }
-        return;
-    }
-    subtitles.forEach(function(sub) {
-        var track = document.createElement('track');
-        track.kind = 'subtitles';
-        track.label = sub.label || (sub.lang || '').toUpperCase();
-        track.srclang = sub.lang || '';
-        track.src = '/api/movies/subtitle?url=' + encodeURIComponent(sub.url);
-        if (sub.lang === 'cze' || sub.lang === 'cs') track.default = true;
-        player.appendChild(track);
-    });
-    var tt = player.textTracks;
-    var cz = false;
-    for (var i = 0; i < tt.length; i++) {
-        if (!cz && (tt[i].language === 'cze' || tt[i].language === 'cs')) { tt[i].mode = 'showing'; cz = true; }
-        else tt[i].mode = 'hidden';
-    }
-    if (!cz && tt.length > 0) tt[0].mode = 'showing';
-    setSubSize(document.getElementById('sub-size-select').value || 20);
-    var controls = document.getElementById('subtitle-controls');
-    if (controls) {
-        function update() {
-            var any = false;
-            for (var j = 0; j < tt.length; j++) if (tt[j].mode === 'showing') { any = true; break; }
-            controls.style.display = any ? 'flex' : 'none';
-        }
-        for (var k = 0; k < tt.length; k++) tt[k].addEventListener('cuechange', update);
-        if (_subPoll) clearInterval(_subPoll);
-        _subPoll = setInterval(update, 1000);
-        update();
-    }
-}
-
-function setSubSize(px) {
-    var style = document.getElementById('sub-cue-style');
-    if (!style) { style = document.createElement('style'); style.id = 'sub-cue-style'; document.head.appendChild(style); }
-    style.textContent = 'video::cue { font-size: ' + px + 'px !important; }';
-}
-
-/* SK Torrent CDN fallback */
-(function() {
-    var player = document.getElementById('series-player');
-    var tried = false;
-    player.addEventListener('error', function() {
-        if (tried || state.activeSource !== 1) return;
-        var vid = player.dataset.fallbackVideoId;
-        if (!vid || !player.src || player.src.indexOf('sktorrent.eu') === -1) return;
-        tried = true;
-        document.getElementById('source-status').textContent = 'Hledám aktuální zdroj...';
-        fetch('/api/films/sktorrent-resolve?video_id=' + vid)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data.sources || !data.sources.length) {
-                    document.getElementById('source-status').textContent = 'Zdroj nedostupný';
-                    return;
-                }
-                var fresh = data.sources.map(function(s) { return { url: s.url, quality: s.quality, res: s.res }; });
-                fresh.sort(function(a, b) { return b.res - a.res; });
-                state.source1.sources = fresh;
-                state.source1.currentIndex = 0;
-                renderQualityButtons1();
-                playQuality1(0, true);
-                setTimeout(function() { tried = false; }, 5000);
-            })
-            .catch(function() { document.getElementById('source-status').textContent = 'Chyba obnovy zdroje'; });
-    }, true);
-})();
-
-/* Header search autocomplete */
+/* --- Header search autocomplete -------------------------------------- */
 function doSearch() {
     var q = document.getElementById('series-search').value.trim();
     if (q.length >= 2) window.location = '/serialy-online/?q=' + encodeURIComponent(q);
@@ -746,7 +813,5 @@ function doSearch() {
     document.addEventListener('click', function(e) { if (!e.target.closest('#header-search-box')) dd.classList.remove('open'); });
     input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 })();
-
-initPlayer();
 </script>
 {% endblock %}
