@@ -71,6 +71,37 @@ fn extract_upload_id_from_url(url: &str) -> Option<String> {
     }
 }
 
+/// Rewrite the `prehrajto.cz` mirror host to the canonical `prehraj.to`,
+/// preserving scheme, path, query, and any `www.` / subdomain prefix
+/// (`foo.prehrajto.cz` → `foo.prehraj.to`). Non-prehrajto hosts and
+/// unparseable URLs pass through unchanged — the caller has already
+/// validated the host via [`is_prehrajto_url`], so an unparseable input
+/// here means something has clobbered the URL since validation, in which
+/// case the original is the least-surprising fallback. Used at the
+/// CZ proxy boundary because `Proxy.ashx` validates `url.Contains("prehraj.to")`
+/// and rejects every `prehrajto.cz` mirror URL.
+fn canonicalize_prehrajto_host(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    let host = match parsed.host_str() {
+        Some(h) => h.to_ascii_lowercase(),
+        None => return url.to_string(),
+    };
+    let new_host = if host == "prehrajto.cz" {
+        Some("prehraj.to".to_string())
+    } else {
+        host.strip_suffix(".prehrajto.cz")
+            .map(|prefix| format!("{prefix}.prehraj.to"))
+    };
+    if let Some(new_host) = new_host
+        && parsed.set_host(Some(&new_host)).is_ok()
+    {
+        return parsed.to_string();
+    }
+    url.to_string()
+}
+
 #[derive(Deserialize)]
 pub struct VideoUrlQuery {
     url: String,
@@ -388,8 +419,12 @@ pub async fn movies_video_url(
     // rejects the `prehrajto.cz` mirror domain even though it serves the
     // same uploads. Some `video_sources.metadata->>'url'` entries (notably
     // Sledujteto-discovered episodes) still hold `.cz` URLs, so canonicalize
-    // before crossing the proxy boundary.
-    let video_url = video_url.replace("https://prehrajto.cz/", "https://prehraj.to/");
+    // the host to `prehraj.to` (and `*.prehrajto.cz` subdomains to
+    // `*.prehraj.to`) before crossing the proxy boundary. Operates on the
+    // parsed host, not a raw substring, so scheme + path + query are
+    // preserved regardless of `http`/`https`/`www.`-style variants that
+    // `is_prehrajto_url` already accepts.
+    let video_url = canonicalize_prehrajto_host(&video_url);
 
     let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or_else(|| {
         WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
@@ -463,4 +498,53 @@ pub async fn movies_video_url(
         subtitles,
         error: data.error,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_prehrajto_host;
+
+    #[test]
+    fn rewrites_bare_https_prehrajto_cz() {
+        let out = canonicalize_prehrajto_host("https://prehrajto.cz/foo/abc123def");
+        assert_eq!(out, "https://prehraj.to/foo/abc123def");
+    }
+
+    #[test]
+    fn rewrites_http_scheme() {
+        let out = canonicalize_prehrajto_host("http://prehrajto.cz/foo");
+        assert_eq!(out, "http://prehraj.to/foo");
+    }
+
+    #[test]
+    fn rewrites_www_subdomain() {
+        let out = canonicalize_prehrajto_host("https://www.prehrajto.cz/foo");
+        assert_eq!(out, "https://www.prehraj.to/foo");
+    }
+
+    #[test]
+    fn preserves_query_and_fragment() {
+        let out = canonicalize_prehrajto_host("https://prehrajto.cz/foo?x=1&y=2#bar");
+        assert_eq!(out, "https://prehraj.to/foo?x=1&y=2#bar");
+    }
+
+    #[test]
+    fn leaves_canonical_host_untouched() {
+        let out = canonicalize_prehrajto_host("https://prehraj.to/foo/abc");
+        assert_eq!(out, "https://prehraj.to/foo/abc");
+    }
+
+    #[test]
+    fn does_not_touch_unrelated_host_with_similar_path() {
+        // Path contains the literal substring but host is different — the raw
+        // `replace` approach would corrupt this; host-based logic must not.
+        let out = canonicalize_prehrajto_host("https://example.com/https://prehrajto.cz/foo");
+        assert_eq!(out, "https://example.com/https://prehrajto.cz/foo");
+    }
+
+    #[test]
+    fn passes_through_unparseable_input() {
+        let out = canonicalize_prehrajto_host("not a url");
+        assert_eq!(out, "not a url");
+    }
 }
