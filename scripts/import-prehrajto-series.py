@@ -1287,9 +1287,15 @@ def main() -> int:
                     help="discover mode: directory of video-sitemap-*.xml "
                          "files (default: /var/cache/cr/prehrajto-sitemap "
                          "where the daily cron caches them on the VPS).")
-    ap.add_argument("--covers-dir", default="data/movies/series-covers",
+    # Path MUST contain a `series` segment — cover_downloader._push_cover_to_r2
+    # routes uploads to films/{id}/... otherwise, overwriting any film whose id
+    # matches the created series id. Matches auto-import.py / sktorrent-series
+    # importer.
+    ap.add_argument("--covers-dir", default="data/series/covers-webp",
                     help="discover mode: target directory for TMDB cover "
-                         "downloads (id-keyed layout).")
+                         "downloads (id-keyed layout). MUST contain a "
+                         "'series' segment so R2 prefix detection picks "
+                         "'series/' not 'films/'.")
     ap.add_argument("--min-distinct-episodes", type=int, default=2,
                     dest="min_distinct_episodes",
                     help="discover mode: drop clusters whose uploads share "
