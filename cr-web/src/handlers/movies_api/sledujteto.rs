@@ -316,11 +316,26 @@ pub async fn sledujteto_resolve(
 
     // Upstream's add-file-link accepts the id as integer in the JSON
     // body — leading zeros aren't meaningful at the file-id level
-    // (they're a URL/display convention). Parse and re-serialize as
-    // int; on parse failure (non-numeric slug, shouldn't happen since
-    // the DB check above already matched a numeric-string row), fall
-    // back to 0 which the upstream will reject.
-    let upstream_id: i64 = params.id.parse().unwrap_or(0);
+    // (they're a URL/display convention). The DB check above already
+    // matched a row, so `external_id` should be numeric; if for some
+    // reason it isn't (data corruption, partial migration, future
+    // schema change), surface the misformat explicitly rather than
+    // silently making an upstream request with id=0 that we'd then
+    // mis-attribute to "invalid file" on the user side.
+    let upstream_id: i64 = match params.id.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            tracing::warn!("sledujteto resolve: non-numeric external_id={:?}",
+                            params.id);
+            return Json(ResolveResponse {
+                success: false,
+                video_url: None,
+                download_url: None,
+                subtitles: vec![],
+                error: Some("invalid slug id".into()),
+            });
+        }
+    };
     let body = json!({ "params": { "id": upstream_id } });
 
     let resp = state
