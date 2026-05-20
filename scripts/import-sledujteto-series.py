@@ -142,8 +142,21 @@ _BOUNDARY_RE = re.compile(
 
 @dataclass
 class SledujtetoEpisode:
-    """One sledujteto upload, post-parse."""
-    slug_id: str
+    """One sledujteto upload, post-parse.
+
+    `upload_id` is the canonical global numeric id (e.g. 104715) from the
+    sledujteto JSON `id` field — STABLE across the file's lifetime. Use it
+    as `video_sources.external_id` so re-imports never collide with rows
+    written from a previous scrape.
+
+    `slug_id` is the URL-path slug (e.g. 49648) used in
+    `/file/<slug>/...`. Sledujteto RECYCLES freed slugs across unrelated
+    uploads, so it MUST NOT be used as a stable identifier. We keep it for
+    URL reconstruction (probe_resolve hits `?id=<slug>`) and for queue
+    JSONL readability.
+    """
+    upload_id: str          # global numeric id (canonical external_id)
+    slug_id: str            # URL slug — NOT unique long-term
     raw_title: str
     season: int
     episode: int
@@ -361,7 +374,16 @@ def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoClus
                 candidate_index.setdefault(cand_key, key)
             if c not in cl.candidates:
                 cl.candidates.append(c)
+        # Sledujteto's `id` field is the canonical global numeric id; the
+        # dict key (`slug_id`) is the URL-path slug, which sledujteto reuses
+        # across unrelated uploads (see #757). Both are kept on the object.
+        raw_upload_id = u.get("id")
+        if raw_upload_id is None:
+            # Dump rows without `id` are crawler error markers — skip rather
+            # than fabricate a fake external_id.
+            continue
         cl.episodes.append(SledujtetoEpisode(
+            upload_id=str(raw_upload_id),
             slug_id=slug_id,
             raw_title=name,
             season=pt.season,
@@ -534,10 +556,13 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
         """
         if (ep.season, ep.episode) in eps_with_prehrajto:
             return
-        if ep.slug_id in queued_ext_ids:
+        # Idempotence is keyed on upload_id (global, stable) — slug_id
+        # collides across recycled sledujteto slugs.
+        if ep.upload_id in queued_ext_ids:
             return
         queue_fh.write(json.dumps({
             "sledujteto_url": ep.full_url,
+            "upload_id": ep.upload_id,
             "slug_id": ep.slug_id,
             "raw_title": ep.raw_title,
             "season": ep.season,
@@ -550,7 +575,7 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             "source_series_id": series.id,
         }, ensure_ascii=False) + "\n")
         queue_fh.flush()
-        queued_ext_ids.add(ep.slug_id)
+        queued_ext_ids.add(ep.upload_id)
         stats.queued_for_upload += 1
 
     for ep in cluster.episodes:
@@ -558,7 +583,7 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             stats.sources_skipped_unplayable += 1
             _maybe_queue(ep)
             continue
-        if ep.slug_id in existing_ext:
+        if ep.upload_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
         if not probe_resolve(probe_sess, ep.slug_id):
@@ -609,7 +634,7 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             upsert_video_source(
                 cur,
                 provider_id=providers[PROVIDER_SLUG],
-                external_id=ep.slug_id,
+                external_id=ep.upload_id,
                 episode_id=episode_id,
                 title=ep.raw_title,
                 duration_sec=ep.duration_sec,
@@ -625,8 +650,8 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             stats.sources_added += 1
             cur.execute("RELEASE SAVEPOINT slt_match")
         except Exception as e:  # noqa: BLE001
-            log.exception("  unexpected failure on series=%d S%dE%d ext=%s: %s",
-                            series.id, ep.season, ep.episode, ep.slug_id, e)
+            log.exception("  unexpected failure on series=%d S%dE%d upload=%s: %s",
+                            series.id, ep.season, ep.episode, ep.upload_id, e)
             cur.execute("ROLLBACK TO SAVEPOINT slt_match")
             cur.execute("RELEASE SAVEPOINT slt_match")
             stats.failed_other += 1
@@ -638,12 +663,15 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
 
 
 def load_queued_slug_ids(queue_path: Path) -> set[str]:
-    """Read every `slug_id` already present in `queue_path`.
+    """Read every queued upload's stable id from `queue_path`.
 
-    Used to dedupe before append — re-running the importer on the same
-    day (or after a crash) would otherwise stack duplicate JSONL rows
-    that the downstream prehraj.to upload pipeline has to filter back
-    out. Returns an empty set if the file doesn't exist yet.
+    Returns a set of `upload_id`s (post-#757) — falling back to `slug_id`
+    on legacy rows that pre-date the upload_id field. Either lookup is
+    enough for dedupe: as long as we never re-queue an upload we already
+    queued, the dedupe is sound. Re-running the importer on the same day
+    (or after a crash) would otherwise stack duplicate JSONL rows that the
+    downstream prehraj.to upload pipeline has to filter back out. Returns
+    an empty set if the file doesn't exist yet.
     """
     if not queue_path.exists():
         return set()
@@ -654,11 +682,12 @@ def load_queued_slug_ids(queue_path: Path) -> set[str]:
             if not line:
                 continue
             try:
-                slug = json.loads(line).get("slug_id")
+                row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if slug:
-                seen.add(slug)
+            stable_id = row.get("upload_id") or row.get("slug_id")
+            if stable_id:
+                seen.add(str(stable_id))
     return seen
 
 
@@ -672,10 +701,11 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
     today = date.today().isoformat()
     written = 0
     for ep in eps:
-        if ep.slug_id in queued_ext_ids:
+        if ep.upload_id in queued_ext_ids:
             continue
         queue_fh.write(json.dumps({
             "sledujteto_url": ep.full_url,
+            "upload_id": ep.upload_id,
             "slug_id": ep.slug_id,
             "raw_title": ep.raw_title,
             "season": ep.season,
@@ -686,7 +716,7 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
             "lang_class": ep.lang_class,
             "found_at": today,
         }, ensure_ascii=False) + "\n")
-        queued_ext_ids.add(ep.slug_id)
+        queued_ext_ids.add(ep.upload_id)
         stats.queued_for_upload += 1
         written += 1
     return written
