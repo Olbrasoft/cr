@@ -242,7 +242,13 @@ pub async fn sledujteto_search(
 
 #[derive(Deserialize)]
 pub struct ResolveQuery {
-    id: i64,
+    /// String, not integer — sledujteto's slug ids are 5-digit zero-padded
+    /// (e.g. `00524`, `03411`), and parsing as integer drops the leading
+    /// zero. `video_sources.external_id` is VARCHAR(128) and stores the
+    /// raw slug with padding preserved; matching on the integer form
+    /// (e.g. `524`) misses every leading-zero slug, returning a bogus
+    /// "unknown file_id" for files that exist on both sides.
+    id: String,
 }
 
 #[derive(Serialize)]
@@ -280,9 +286,9 @@ pub async fn sledujteto_resolve(
         "SELECT vs.lang_class \
            FROM video_sources vs \
            JOIN video_providers p ON p.id = vs.provider_id \
-          WHERE p.slug = 'sledujteto' AND vs.external_id = $1::TEXT",
+          WHERE p.slug = 'sledujteto' AND vs.external_id = $1",
     )
-    .bind(params.id as i32)
+    .bind(&params.id)
     .fetch_optional(&state.db)
     .await
     {
@@ -308,7 +314,31 @@ pub async fn sledujteto_resolve(
         }
     };
 
-    let body = json!({ "params": { "id": params.id } });
+    // Upstream's add-file-link accepts the id as integer in the JSON
+    // body — leading zeros aren't meaningful at the file-id level
+    // (they're a URL/display convention). The DB check above already
+    // matched a row, so `external_id` should be numeric; if for some
+    // reason it isn't (data corruption, partial migration, future
+    // schema change), surface the misformat explicitly rather than
+    // silently making an upstream request with id=0 that we'd then
+    // mis-attribute to "invalid file" on the user side.
+    let upstream_id: i64 = match params.id.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            tracing::warn!(
+                "sledujteto resolve: non-numeric external_id={:?}",
+                params.id
+            );
+            return Json(ResolveResponse {
+                success: false,
+                video_url: None,
+                download_url: None,
+                subtitles: vec![],
+                error: Some("invalid slug id".into()),
+            });
+        }
+    };
+    let body = json!({ "params": { "id": upstream_id } });
 
     let resp = state
         .http_client
