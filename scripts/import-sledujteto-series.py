@@ -479,15 +479,40 @@ def get_existing_sledujteto_external_ids(cur, series_id: int,
     return {row[0] for row in cur.fetchall()}
 
 
+def _episodes_with_alive_prehrajto(cur, providers: dict, series_id: int) -> set[tuple[int, int]]:
+    """Return {(season, episode)} for episodes of `series_id` that already
+    have at least one alive prehraj.to source. Single query per series; used
+    to gate the enrich-path queue write so we don't re-queue uploads the
+    viewer can already play via Přehraj.to.
+    """
+    if "prehrajto" not in providers:
+        return set()
+    cur.execute(
+        """SELECT DISTINCT e.season, e.episode
+             FROM episodes e
+             JOIN video_sources vs
+               ON vs.episode_id = e.id
+              AND vs.provider_id = %s
+              AND vs.is_alive
+            WHERE e.series_id = %s""",
+        (providers["prehrajto"], series_id),
+    )
+    return {(int(s), int(e)) for s, e in cur.fetchall()}
+
+
 def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
                     providers: dict, stats: Stats,
                     tmdb_sess: requests.Session,
-                    probe_sess: requests.Session) -> None:
+                    probe_sess: requests.Session,
+                    queue_fh, queued_ext_ids: set[str]) -> None:
     """Phase A: attach playable sledujteto sources to an existing series.
 
-    Per user policy: not-playable episodes are SKIPPED (the existing
-    series already has some source, a dead sledujteto link adds no value
-    without the prehraj.to-upload pipeline that would re-host them).
+    Updated queue policy (user 2026-05-20): unplayable sledujteto uploads
+    are NO LONGER silently skipped. If the same (season, episode) doesn't
+    already have an alive prehraj.to source, the upload goes into the
+    JSONL queue so the manual download-via-proxy → upload-to-prehraj.to
+    pipeline can re-host it. Episodes that already have a working
+    prehrajto source still skip queuing — the viewer can play them today.
 
     Two-stage playability gate:
       1. Preview-host heuristic (cheap) skips data{N}-preview entries
@@ -500,16 +525,45 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
     cur = conn.cursor()
     existing_eps = get_existing_episode_ids(cur, series.id)
     existing_ext = get_existing_sledujteto_external_ids(cur, series.id, providers)
+    eps_with_prehrajto = _episodes_with_alive_prehrajto(cur, providers, series.id)
+
+    def _maybe_queue(ep: SledujtetoEpisode) -> None:
+        """Write `ep` to the upload queue iff the same (season, episode)
+        of this series doesn't already have an alive prehraj.to source.
+        Idempotent via `queued_ext_ids`.
+        """
+        if (ep.season, ep.episode) in eps_with_prehrajto:
+            return
+        if ep.slug_id in queued_ext_ids:
+            return
+        queue_fh.write(json.dumps({
+            "sledujteto_url": ep.full_url,
+            "slug_id": ep.slug_id,
+            "raw_title": ep.raw_title,
+            "season": ep.season,
+            "episode": ep.episode,
+            "year": ep.year,
+            "tmdb_tv_id": series.tmdb_id,
+            "tmdb_name": series.title,
+            "lang_class": ep.lang_class,
+            "found_at": date.today().isoformat(),
+            "source_series_id": series.id,
+        }, ensure_ascii=False) + "\n")
+        queue_fh.flush()
+        queued_ext_ids.add(ep.slug_id)
+        stats.queued_for_upload += 1
 
     for ep in cluster.episodes:
         if not ep.playable:
             stats.sources_skipped_unplayable += 1
+            _maybe_queue(ep)
             continue
         if ep.slug_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
         if not probe_resolve(probe_sess, ep.slug_id):
             stats.sources_skipped_unplayable += 1
+            _maybe_queue(ep)
             continue
 
         cur.execute("SAVEPOINT slt_match")
@@ -674,11 +728,14 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         log.info("  TMDB tv=%d already in DB as series #%d — switching to enrich",
                   tv.tmdb_id, s_row.id)
         stats.clusters_matched += 1
-        if cluster.has_any_playable:
-            enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                            probe_sess)
-        else:
+        if not cluster.has_any_playable:
             stats.clusters_skipped_existing_unplayable += 1
+        # Always go through enrich_cluster — even when no upload passes the
+        # preview heuristic, the per-episode queue policy still needs to fire
+        # so unplayable uploads of existing series get into the re-host
+        # JSONL (provided the episode doesn't already have prehraj.to).
+        enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
+                        probe_sess, queue_fh, queued_ext_ids)
         return
 
     if not cluster.has_any_playable:
@@ -719,14 +776,12 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         "SELECT id, title, original_title, first_air_year, tmdb_id "
         "FROM series WHERE id = %s", (series_id,))
     s_row = SeriesRow(*cur.fetchone())
+    # enrich_cluster now handles BOTH halves: it attaches playable uploads
+    # and pushes the unplayable rest into the queue (when no prehrajto
+    # source covers the episode), so the separate _queue_unplayable_episodes
+    # call below is no longer needed for the newly-created series.
     enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                    probe_sess)
-    # Mixed cluster: enrich_cluster only attached the playable half.
-    # Queue the unplayable half for re-host so it isn't silently lost.
-    _queue_unplayable_episodes(
-        [e for e in cluster.episodes if not e.playable],
-        tv, queue_fh, queued_ext_ids, stats,
-    )
+                    probe_sess, queue_fh, queued_ext_ids)
     stats.clusters_new_tmdb += 1
 
 
@@ -841,11 +896,15 @@ def main() -> int:
             match = match_cluster_to_series(cluster, alias_index)
             if match is not None and ns.mode in ("enrich", "both"):
                 stats.clusters_matched += 1
-                if cluster.has_any_playable:
-                    enrich_cluster(conn, cluster, match, providers, stats,
-                                    tmdb_sess, probe_sess)
-                else:
+                if not cluster.has_any_playable:
                     stats.clusters_skipped_existing_unplayable += 1
+                # See discover_cluster's TMDB-already-in-DB branch: always
+                # call enrich_cluster so the per-episode queue policy fires
+                # for unplayable uploads (skipping ones whose episode
+                # already has alive prehraj.to).
+                enrich_cluster(conn, cluster, match, providers, stats,
+                                tmdb_sess, probe_sess, queue_fh,
+                                queued_ext_ids)
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
                                   queued_ext_ids,
