@@ -479,6 +479,13 @@ struct EpisodeDetailTemplate {
     next_episode: Option<EpisodeNav>,
     directors: Vec<PersonRow>,
     writers: Vec<PersonRow>,
+    /// Unified per-source list rendered as colored "Zdroje" rows below the
+    /// player + matching numbered tabs above it. Same shape as on the film
+    /// detail page so the two UIs stay visually consistent.
+    video_sources_for_badges: Vec<super::films::VideoSourceBadgeRow>,
+    has_source_sktorrent: bool,
+    has_source_prehrajto: bool,
+    has_source_sledujteto: bool,
 }
 
 pub struct EpisodeNav {
@@ -1438,6 +1445,59 @@ pub async fn episode_detail(
     .await
     .unwrap_or_default();
 
+    // Per-source rows for the unified Zdroje list + numbered tabs above the
+    // player. Same SELECT shape as the film detail page (see films.rs), but
+    // filtered on `episode_id` instead of `film_id`. The handler tolerates a
+    // query failure by rendering the page with no badge list — better than
+    // 500ing the entire episode page over a missing badge.
+    let video_sources_for_badges = sqlx::query_as::<_, super::films::VideoSourceBadgeRow>(
+        "SELECT p.slug AS provider_slug, \
+                    p.host AS provider_host, \
+                    p.display_name AS provider_display_name, \
+                    p.sort_priority, \
+                    vs.external_id, \
+                    COALESCE( \
+                        vs.metadata->>'url', \
+                        CASE WHEN p.slug = 'prehrajto' THEN 'https://prehraj.to/' || vs.external_id ELSE vs.external_id END \
+                    ) AS playback_id, \
+                    vs.title, \
+                    vs.lang_class, \
+                    vs.audio_lang, \
+                    vs.audio_confidence, \
+                    vs.audio_detected_by, \
+                    vs.resolution_hint, \
+                    vs.cdn, \
+                    vs.is_primary, \
+                    COALESCE( \
+                        (SELECT array_agg(DISTINCT vss.lang::TEXT ORDER BY vss.lang::TEXT) \
+                         FROM video_source_subtitles vss \
+                         WHERE vss.source_id = vs.id), \
+                        '{}'::TEXT[] \
+                    ) AS subtitle_langs \
+             FROM video_sources vs \
+             JOIN video_providers p ON p.id = vs.provider_id \
+             WHERE vs.episode_id = $1 AND vs.is_alive \
+             ORDER BY p.sort_priority, vs.is_primary DESC, vs.updated_at DESC",
+    )
+    .bind(episode.id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(episode_id = episode.id, error = ?e,
+                "video_sources badge query failed; episode page renders without badges");
+        Vec::new()
+    });
+
+    let has_source_sktorrent = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "sktorrent");
+    let has_source_prehrajto = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "prehrajto");
+    let has_source_sledujteto = video_sources_for_badges
+        .iter()
+        .any(|r| r.provider_slug == "sledujteto");
+
     let tmpl = EpisodeDetailTemplate {
         img: state.image_base_url.clone(),
         series,
@@ -1446,6 +1506,10 @@ pub async fn episode_detail(
         next_episode,
         directors,
         writers,
+        video_sources_for_badges,
+        has_source_sktorrent,
+        has_source_prehrajto,
+        has_source_sledujteto,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
