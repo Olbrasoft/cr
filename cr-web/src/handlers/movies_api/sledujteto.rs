@@ -325,8 +325,10 @@ pub async fn sledujteto_resolve(
     let upstream_id: i64 = match params.id.parse() {
         Ok(n) => n,
         Err(_) => {
-            tracing::warn!("sledujteto resolve: non-numeric external_id={:?}",
-                            params.id);
+            tracing::warn!(
+                "sledujteto resolve: non-numeric external_id={:?}",
+                params.id
+            );
             return Json(ResolveResponse {
                 success: false,
                 video_url: None,
