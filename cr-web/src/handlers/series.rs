@@ -1477,6 +1477,11 @@ pub async fn episode_detail(
              FROM video_sources vs \
              JOIN video_providers p ON p.id = vs.provider_id \
              WHERE vs.episode_id = $1 AND vs.is_alive \
+               -- data{N}.sledujteto.cz uploads 302 to /?flash=invalid-file \
+               -- for everyone (residential IPs included), so they can never \
+               -- play in a browser. Matches the same gate used by the \
+               -- EPISODE_COLUMNS legacy fallback projection above. \
+               AND (p.slug != 'sledujteto' OR vs.cdn = 'www') \
              ORDER BY p.sort_priority, vs.is_primary DESC, vs.updated_at DESC",
     )
     .bind(episode.id)

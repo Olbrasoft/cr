@@ -184,7 +184,7 @@
         <div class="prehrajto-body" id="prehrajto-body" hidden>
             <div id="prehrajto-results" class="prehrajto-results"></div>
             <button type="button" id="prehrajto-more" class="prehrajto-more" style="display:none;"
-                    alt="Zobrazit další zdroje" title="Zobrazit další zdroje">Zobrazit další zdroje</button>
+                    aria-label="Zobrazit další zdroje" title="Zobrazit další zdroje">Zobrazit další zdroje</button>
         </div>
     </div>
 
@@ -538,6 +538,12 @@ function playSktorrent(index, btn) {
     if (btn) btn.classList.add('active');
     var st = document.getElementById('source-status');
     if (st) st.textContent = '';
+    // Direct MP4 URL — kick off playback. play() is no-op if the browser
+    // blocks autoplay-with-sound; the viewer hits play and the user
+    // gesture grants permission. Don't fall back to muted autoplay —
+    // surprising a viewer with silent video + hidden unmute dance is
+    // worse UX than a paused first frame.
+    player.play().catch(function(){});
 }
 
 function playPrehrajtoUrl(url, onDone) {
