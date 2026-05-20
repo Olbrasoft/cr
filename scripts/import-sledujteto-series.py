@@ -97,15 +97,14 @@ from video_sources_helper import (
 log = logging.getLogger("import-sledujteto-series")
 
 PROVIDER_SLUG = "sledujteto"
-# Probe-before-attach: every candidate upload is hit through the
-# cr-web resolve endpoint and is only attached when the returned
-# `video_url` host is `www.sledujteto.cz`. The preview-URL host
-# heuristic alone produces ~30% false positives — sledujteto returns
-# `success: true` with a `data{N}.sledujteto.cz` URL for files that
-# have been moved off the www CDN, and those data URLs 302 to
-# /?flash=invalid-file for ALL clients (residential included), so
-# they never actually play. The probe is the only reliable signal.
-RESOLVE_URL = "https://ceskarepublika.wiki/api/sledujteto/resolve"
+# Attach-time playability is determined by the preview-host heuristic
+# (`_is_playable_preview_heuristic`). Previously we also probed the
+# cr-web `/api/sledujteto/resolve?id=<x>` endpoint, but its abuse-guard
+# requires `external_id` to already exist in `video_sources` — a
+# chicken-and-egg for brand-new uploads (see #757). Post-attach cleanup
+# is handled by `scripts/verify-sledujteto-sources.py`, which probes
+# alive rows and demotes the ~30% whose actual media URL turns out to
+# be on a data{N} CDN.
 DEFAULT_INPUT = (
     _PROJECT_ROOT / "data" / "sledujteto"
     / f"sledujteto-series-raw-{date.today().isoformat()}.json"
@@ -142,8 +141,22 @@ _BOUNDARY_RE = re.compile(
 
 @dataclass
 class SledujtetoEpisode:
-    """One sledujteto upload, post-parse."""
-    slug_id: str
+    """One sledujteto upload, post-parse.
+
+    `upload_id` is the canonical global numeric id (e.g. 104715) from the
+    sledujteto JSON `id` field — STABLE across the file's lifetime. Use it
+    as `video_sources.external_id` so re-imports never collide with rows
+    written from a previous scrape.
+
+    `slug_id` is the URL-path slug (e.g. 49648) used in
+    `/file/<slug>/...`. Sledujteto RECYCLES freed slugs across unrelated
+    uploads, so it MUST NOT be used as a stable identifier. We keep it
+    for URL reconstruction (the queue file embeds the full
+    /file/<slug>/... link for human review) and for queue JSONL
+    readability.
+    """
+    upload_id: str          # global numeric id (canonical external_id)
+    slug_id: str            # URL slug — NOT unique long-term
     raw_title: str
     season: int
     episode: int
@@ -224,53 +237,18 @@ def _split_compound(raw_title: str) -> list[str]:
 def _is_playable_preview_heuristic(entry: dict) -> bool:
     """Cheap pre-filter: preview URL host hints at storage cluster.
 
-    Cleared because the actual playability is determined by `probe_resolve`
-    below — sledujteto can serve a `www` preview thumbnail for a file whose
-    media URL ends up on `data{N}` (and vice versa, occasionally). The
-    preview heuristic survives only to gate which entries are worth a probe
-    at all: clusters where every preview points at data{N} are very likely
-    to fail every probe, so we skip the round-trip entirely.
+    Per #757 the importer no longer probes at attach time (the cr-web
+    resolve endpoint's abuse-guard requires `external_id` to be in
+    `video_sources`, but a brand-new upload has no row yet — chicken-and-
+    egg). Attach now trusts this heuristic alone. `~30%` of `www` rows
+    will have their actual media URL on a data{N} CDN and won't play;
+    `scripts/verify-sledujteto-sources.py` runs after the importer to
+    demote those.
     """
     preview = (entry.get("preview") or "").strip()
     if not preview:
         return False
     return (urlparse(preview).hostname or "") == "www.sledujteto.cz"
-
-
-# Only successful probes are memoized. Caching transient errors (network
-# blips, upstream 5xx) would permanently downgrade playable uploads for
-# the rest of the run after a single hiccup — we'd rather retry on next
-# attach attempt. The PROBE_CACHE size is bounded by the cluster's slug
-# set, which is small.
-_PROBE_CACHE: dict[str, bool] = {}
-
-
-def probe_resolve(sess: requests.Session, slug_id: str) -> bool:
-    """Probe sledujteto resolve; return True iff the returned video_url
-    is on `www.sledujteto.cz`. Successful results are cached for the
-    run lifetime; failures (HTTP non-200, upstream success:false, parse
-    errors, exceptions) are NOT cached so a transient blip doesn't
-    permanently disable an otherwise-playable upload.
-    """
-    if _PROBE_CACHE.get(slug_id):
-        return True
-    try:
-        r = sess.get(RESOLVE_URL, params={"id": slug_id}, timeout=20)
-        if r.status_code != 200:
-            log.warning("  probe slug=%s: HTTP %d", slug_id, r.status_code)
-            return False
-        d = r.json()
-        url = d.get("video_url") or ""
-        if not (d.get("success") and url and "://" in url):
-            return False
-        host = urlparse(url).hostname or ""
-        ok = host == "www.sledujteto.cz"
-        if ok:
-            _PROBE_CACHE[slug_id] = True
-        return ok
-    except (requests.RequestException, ValueError) as e:
-        log.warning("  probe error slug=%s: %s", slug_id, e)
-        return False
 
 
 def _parse_duration_to_sec(s: str | None) -> int | None:
@@ -361,7 +339,16 @@ def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoClus
                 candidate_index.setdefault(cand_key, key)
             if c not in cl.candidates:
                 cl.candidates.append(c)
+        # Sledujteto's `id` field is the canonical global numeric id; the
+        # dict key (`slug_id`) is the URL-path slug, which sledujteto reuses
+        # across unrelated uploads (see #757). Both are kept on the object.
+        raw_upload_id = u.get("id")
+        if raw_upload_id is None:
+            # Dump rows without `id` are crawler error markers — skip rather
+            # than fabricate a fake external_id.
+            continue
         cl.episodes.append(SledujtetoEpisode(
+            upload_id=str(raw_upload_id),
             slug_id=slug_id,
             raw_title=name,
             season=pt.season,
@@ -479,38 +466,97 @@ def get_existing_sledujteto_external_ids(cur, series_id: int,
     return {row[0] for row in cur.fetchall()}
 
 
+def _episodes_with_alive_prehrajto(cur, providers: dict, series_id: int) -> set[tuple[int, int]]:
+    """Return {(season, episode)} for episodes of `series_id` that already
+    have at least one alive prehraj.to source. Single query per series; used
+    to gate the enrich-path queue write so we don't re-queue uploads the
+    viewer can already play via Přehraj.to.
+    """
+    if "prehrajto" not in providers:
+        return set()
+    cur.execute(
+        """SELECT DISTINCT e.season, e.episode
+             FROM episodes e
+             JOIN video_sources vs
+               ON vs.episode_id = e.id
+              AND vs.provider_id = %s
+              AND vs.is_alive
+            WHERE e.series_id = %s""",
+        (providers["prehrajto"], series_id),
+    )
+    return {(int(s), int(e)) for s, e in cur.fetchall()}
+
+
 def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
                     providers: dict, stats: Stats,
                     tmdb_sess: requests.Session,
-                    probe_sess: requests.Session) -> None:
+                    queue_fh, queued_ext_ids: set[str]) -> None:
     """Phase A: attach playable sledujteto sources to an existing series.
 
-    Per user policy: not-playable episodes are SKIPPED (the existing
-    series already has some source, a dead sledujteto link adds no value
-    without the prehraj.to-upload pipeline that would re-host them).
+    Updated queue policy (user 2026-05-20): unplayable sledujteto uploads
+    are NO LONGER silently skipped. If the same (season, episode) doesn't
+    already have an alive prehraj.to source, the upload goes into the
+    JSONL queue so the manual download-via-proxy → upload-to-prehraj.to
+    pipeline can re-host it. Episodes that already have a working
+    prehrajto source still skip queuing — the viewer can play them today.
 
-    Two-stage playability gate:
-      1. Preview-host heuristic (cheap) skips data{N}-preview entries
-         entirely — `ep.playable` False.
-      2. Probe (network call) confirms the resolved video_url is on
-         `www.sledujteto.cz` — only then is the source attached. This
-         catches the ~30% of `www`-preview entries whose actual media
-         URL is on data{N} (always unplayable).
+    Playability gate: preview-host heuristic only (per #757). Probing
+    via cr-web at attach time deadlocks because the resolve handler's
+    abuse-guard requires the row to already exist in video_sources, and
+    a brand-new upload doesn't. `verify-sledujteto-sources.py` runs
+    after the importer to demote attached rows whose actual media URL
+    turns out to be on a data{N} CDN (~30% of `www`-preview entries).
     """
     cur = conn.cursor()
     existing_eps = get_existing_episode_ids(cur, series.id)
     existing_ext = get_existing_sledujteto_external_ids(cur, series.id, providers)
+    eps_with_prehrajto = _episodes_with_alive_prehrajto(cur, providers, series.id)
+
+    def _maybe_queue(ep: SledujtetoEpisode) -> None:
+        """Write `ep` to the upload queue iff the same (season, episode)
+        of this series doesn't already have an alive prehraj.to source.
+        Idempotent via `queued_ext_ids`.
+        """
+        if (ep.season, ep.episode) in eps_with_prehrajto:
+            return
+        # Idempotence is keyed on upload_id (global, stable) — slug_id
+        # collides across recycled sledujteto slugs.
+        if ep.upload_id in queued_ext_ids:
+            return
+        queue_fh.write(json.dumps({
+            "sledujteto_url": ep.full_url,
+            "upload_id": ep.upload_id,
+            "slug_id": ep.slug_id,
+            "raw_title": ep.raw_title,
+            "season": ep.season,
+            "episode": ep.episode,
+            "year": ep.year,
+            "tmdb_tv_id": series.tmdb_id,
+            "tmdb_name": series.title,
+            "lang_class": ep.lang_class,
+            "found_at": date.today().isoformat(),
+            "source_series_id": series.id,
+        }, ensure_ascii=False) + "\n")
+        queue_fh.flush()
+        queued_ext_ids.add(ep.upload_id)
+        stats.queued_for_upload += 1
 
     for ep in cluster.episodes:
         if not ep.playable:
             stats.sources_skipped_unplayable += 1
+            _maybe_queue(ep)
             continue
-        if ep.slug_id in existing_ext:
+        if ep.upload_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
-        if not probe_resolve(probe_sess, ep.slug_id):
-            stats.sources_skipped_unplayable += 1
-            continue
+        # No probe at attach time. The cr-web `/api/sledujteto/resolve`
+        # endpoint has an abuse-guard that requires `external_id` to be
+        # present in `video_sources` (chicken-and-egg: a brand-new upload
+        # has no row yet, so the probe would always 404). We trust the
+        # preview-host heuristic (`ep.playable`) here and rely on
+        # `scripts/verify-sledujteto-sources.py` running periodically to
+        # demote any rows whose actual media URL turns out to be on a
+        # data{N} CDN. See #757 for the chicken-and-egg analysis.
 
         cur.execute("SAVEPOINT slt_match")
         try:
@@ -555,7 +601,7 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             upsert_video_source(
                 cur,
                 provider_id=providers[PROVIDER_SLUG],
-                external_id=ep.slug_id,
+                external_id=ep.upload_id,
                 episode_id=episode_id,
                 title=ep.raw_title,
                 duration_sec=ep.duration_sec,
@@ -571,8 +617,8 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             stats.sources_added += 1
             cur.execute("RELEASE SAVEPOINT slt_match")
         except Exception as e:  # noqa: BLE001
-            log.exception("  unexpected failure on series=%d S%dE%d ext=%s: %s",
-                            series.id, ep.season, ep.episode, ep.slug_id, e)
+            log.exception("  unexpected failure on series=%d S%dE%d upload=%s: %s",
+                            series.id, ep.season, ep.episode, ep.upload_id, e)
             cur.execute("ROLLBACK TO SAVEPOINT slt_match")
             cur.execute("RELEASE SAVEPOINT slt_match")
             stats.failed_other += 1
@@ -583,13 +629,16 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
 # ---------------------------------------------------------------------------
 
 
-def load_queued_slug_ids(queue_path: Path) -> set[str]:
-    """Read every `slug_id` already present in `queue_path`.
+def load_queued_stable_ids(queue_path: Path) -> set[str]:
+    """Read every queued upload's stable id from `queue_path`.
 
-    Used to dedupe before append — re-running the importer on the same
-    day (or after a crash) would otherwise stack duplicate JSONL rows
-    that the downstream prehraj.to upload pipeline has to filter back
-    out. Returns an empty set if the file doesn't exist yet.
+    Returns a set of `upload_id`s (post-#757) — falling back to `slug_id`
+    on legacy rows that pre-date the upload_id field. Either lookup is
+    enough for dedupe: as long as we never re-queue an upload we already
+    queued, the dedupe is sound. Re-running the importer on the same day
+    (or after a crash) would otherwise stack duplicate JSONL rows that the
+    downstream prehraj.to upload pipeline has to filter back out. Returns
+    an empty set if the file doesn't exist yet.
     """
     if not queue_path.exists():
         return set()
@@ -600,28 +649,33 @@ def load_queued_slug_ids(queue_path: Path) -> set[str]:
             if not line:
                 continue
             try:
-                slug = json.loads(line).get("slug_id")
+                row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if slug:
-                seen.add(slug)
+            stable_id = row.get("upload_id") or row.get("slug_id")
+            if stable_id:
+                seen.add(str(stable_id))
     return seen
 
 
 def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
                                  queue_fh, queued_ext_ids: set[str],
                                  stats: Stats) -> int:
-    """Append non-playable episodes to the upload queue, skipping
-    `slug_id`s already present (rerun-safe — see `load_queued_slug_ids`).
-    Returns the number of NEW entries written.
+    """Append non-playable episodes to the upload queue, skipping uploads
+    whose stable id is already present (rerun-safe — see
+    `load_queued_stable_ids`). Dedupe key is `upload_id` (canonical, post-
+    #757); legacy queue entries written without `upload_id` are still
+    matched via their `slug_id`. Returns the number of NEW entries
+    written.
     """
     today = date.today().isoformat()
     written = 0
     for ep in eps:
-        if ep.slug_id in queued_ext_ids:
+        if ep.upload_id in queued_ext_ids:
             continue
         queue_fh.write(json.dumps({
             "sledujteto_url": ep.full_url,
+            "upload_id": ep.upload_id,
             "slug_id": ep.slug_id,
             "raw_title": ep.raw_title,
             "season": ep.season,
@@ -632,7 +686,7 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
             "lang_class": ep.lang_class,
             "found_at": today,
         }, ensure_ascii=False) + "\n")
-        queued_ext_ids.add(ep.slug_id)
+        queued_ext_ids.add(ep.upload_id)
         stats.queued_for_upload += 1
         written += 1
     return written
@@ -641,7 +695,6 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
 def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
                        stats: Stats, queue_fh, queued_ext_ids: set[str], *,
                        covers_dir: Path, tmdb_sess: requests.Session,
-                       probe_sess: requests.Session,
                        dry_run: bool) -> None:
     """Phase B: TMDB-resolve unmatched cluster; create or queue."""
     parsed = ParsedTitle(
@@ -674,11 +727,14 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         log.info("  TMDB tv=%d already in DB as series #%d — switching to enrich",
                   tv.tmdb_id, s_row.id)
         stats.clusters_matched += 1
-        if cluster.has_any_playable:
-            enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                            probe_sess)
-        else:
+        if not cluster.has_any_playable:
             stats.clusters_skipped_existing_unplayable += 1
+        # Always go through enrich_cluster — even when no upload passes the
+        # preview heuristic, the per-episode queue policy still needs to fire
+        # so unplayable uploads of existing series get into the re-host
+        # JSONL (provided the episode doesn't already have prehraj.to).
+        enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
+                        queue_fh, queued_ext_ids)
         return
 
     if not cluster.has_any_playable:
@@ -719,14 +775,12 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         "SELECT id, title, original_title, first_air_year, tmdb_id "
         "FROM series WHERE id = %s", (series_id,))
     s_row = SeriesRow(*cur.fetchone())
+    # enrich_cluster now handles BOTH halves: it attaches playable uploads
+    # and pushes the unplayable rest into the queue (when no prehrajto
+    # source covers the episode), so the separate _queue_unplayable_episodes
+    # call below is no longer needed for the newly-created series.
     enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                    probe_sess)
-    # Mixed cluster: enrich_cluster only attached the playable half.
-    # Queue the unplayable half for re-host so it isn't silently lost.
-    _queue_unplayable_episodes(
-        [e for e in cluster.episodes if not e.playable],
-        tv, queue_fh, queued_ext_ids, stats,
-    )
+                    queue_fh, queued_ext_ids)
     stats.clusters_new_tmdb += 1
 
 
@@ -809,17 +863,13 @@ def main() -> int:
         f"{date.today().isoformat()}.jsonl"
     )
     queue_path = UPLOAD_QUEUE_DIR / queue_name
-    queued_ext_ids = load_queued_slug_ids(queue_path)
+    queued_ext_ids = load_queued_stable_ids(queue_path)
     queue_fh = queue_path.open("a", encoding="utf-8")
-    log.info("upload queue: %s (%d slug_ids already present, will skip)",
+    log.info("upload queue: %s (%d stable ids already present, will skip)",
               queue_path, len(queued_ext_ids))
 
     conn = psycopg2.connect(db_url)
     tmdb_sess = requests.Session()
-    # Separate session for cr-web probes (different headers, different
-    # connection pool) — both are reused across the whole run for
-    # TLS / keep-alive amortization.
-    probe_sess = requests.Session()
     cur = conn.cursor()
     providers = get_provider_ids(cur)
     if PROVIDER_SLUG not in providers:
@@ -841,16 +891,18 @@ def main() -> int:
             match = match_cluster_to_series(cluster, alias_index)
             if match is not None and ns.mode in ("enrich", "both"):
                 stats.clusters_matched += 1
-                if cluster.has_any_playable:
-                    enrich_cluster(conn, cluster, match, providers, stats,
-                                    tmdb_sess, probe_sess)
-                else:
+                if not cluster.has_any_playable:
                     stats.clusters_skipped_existing_unplayable += 1
+                # See discover_cluster's TMDB-already-in-DB branch: always
+                # call enrich_cluster so the per-episode queue policy fires
+                # for unplayable uploads (skipping ones whose episode
+                # already has alive prehraj.to).
+                enrich_cluster(conn, cluster, match, providers, stats,
+                                tmdb_sess, queue_fh, queued_ext_ids)
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
                                   queued_ext_ids,
                                   covers_dir=ns.covers_dir, tmdb_sess=tmdb_sess,
-                                  probe_sess=probe_sess,
                                   dry_run=ns.dry_run)
             cur.execute("RELEASE SAVEPOINT slt_cluster")
             if ns.dry_run:
