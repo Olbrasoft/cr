@@ -242,7 +242,13 @@ pub async fn sledujteto_search(
 
 #[derive(Deserialize)]
 pub struct ResolveQuery {
-    id: i64,
+    /// String, not integer — sledujteto's slug ids are 5-digit zero-padded
+    /// (e.g. `00524`, `03411`), and parsing as integer drops the leading
+    /// zero. `video_sources.external_id` is VARCHAR(128) and stores the
+    /// raw slug with padding preserved; matching on the integer form
+    /// (e.g. `524`) misses every leading-zero slug, returning a bogus
+    /// "unknown file_id" for files that exist on both sides.
+    id: String,
 }
 
 #[derive(Serialize)]
@@ -280,9 +286,9 @@ pub async fn sledujteto_resolve(
         "SELECT vs.lang_class \
            FROM video_sources vs \
            JOIN video_providers p ON p.id = vs.provider_id \
-          WHERE p.slug = 'sledujteto' AND vs.external_id = $1::TEXT",
+          WHERE p.slug = 'sledujteto' AND vs.external_id = $1",
     )
-    .bind(params.id as i32)
+    .bind(&params.id)
     .fetch_optional(&state.db)
     .await
     {
@@ -308,7 +314,14 @@ pub async fn sledujteto_resolve(
         }
     };
 
-    let body = json!({ "params": { "id": params.id } });
+    // Upstream's add-file-link accepts the id as integer in the JSON
+    // body — leading zeros aren't meaningful at the file-id level
+    // (they're a URL/display convention). Parse and re-serialize as
+    // int; on parse failure (non-numeric slug, shouldn't happen since
+    // the DB check above already matched a numeric-string row), fall
+    // back to 0 which the upstream will reject.
+    let upstream_id: i64 = params.id.parse().unwrap_or(0);
+    let body = json!({ "params": { "id": upstream_id } });
 
     let resp = state
         .http_client
