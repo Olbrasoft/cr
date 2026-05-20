@@ -145,7 +145,10 @@ def main() -> int:
     print(f"  written:        {n_ok}", file=sys.stderr)
     print(f"  already:        {n_noop}", file=sys.stderr)
     print(f"  failed:         {n_fail}", file=sys.stderr)
-    return 0
+    # Non-zero exit on partial failure so automation / shell wrappers can
+    # detect that the recovery wasn't fully clean and re-run with
+    # --start-from to cover the gaps.
+    return 1 if n_fail > 0 else 0
 
 
 if __name__ == "__main__":

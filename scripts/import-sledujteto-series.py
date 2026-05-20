@@ -63,6 +63,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -231,40 +232,44 @@ def _is_playable_preview_heuristic(entry: dict) -> bool:
     to fail every probe, so we skip the round-trip entirely.
     """
     preview = (entry.get("preview") or "").strip()
-    if not preview or "://" not in preview:
+    if not preview:
         return False
-    try:
-        host = preview.split("/")[2]
-    except IndexError:
-        return False
-    return host == "www.sledujteto.cz"
+    return (urlparse(preview).hostname or "") == "www.sledujteto.cz"
 
 
+# Only successful probes are memoized. Caching transient errors (network
+# blips, upstream 5xx) would permanently downgrade playable uploads for
+# the rest of the run after a single hiccup — we'd rather retry on next
+# attach attempt. The PROBE_CACHE size is bounded by the cluster's slug
+# set, which is small.
 _PROBE_CACHE: dict[str, bool] = {}
 
 
 def probe_resolve(sess: requests.Session, slug_id: str) -> bool:
     """Probe sledujteto resolve; return True iff the returned video_url
-    is on `www.sledujteto.cz`. Cached per slug for the run lifetime so
-    a cluster with the same slug attached twice (shouldn't happen, but
-    re-runs of the importer can collide) doesn't pay twice.
+    is on `www.sledujteto.cz`. Successful results are cached for the
+    run lifetime; failures (HTTP non-200, upstream success:false, parse
+    errors, exceptions) are NOT cached so a transient blip doesn't
+    permanently disable an otherwise-playable upload.
     """
-    if slug_id in _PROBE_CACHE:
-        return _PROBE_CACHE[slug_id]
+    if _PROBE_CACHE.get(slug_id):
+        return True
     try:
         r = sess.get(RESOLVE_URL, params={"id": slug_id}, timeout=20)
-        ok = False
-        if r.status_code == 200:
-            d = r.json()
-            url = d.get("video_url") or ""
-            if d.get("success") and url and "://" in url:
-                host = url.split("/")[2]
-                ok = host == "www.sledujteto.cz"
-        _PROBE_CACHE[slug_id] = ok
+        if r.status_code != 200:
+            log.warning("  probe slug=%s: HTTP %d", slug_id, r.status_code)
+            return False
+        d = r.json()
+        url = d.get("video_url") or ""
+        if not (d.get("success") and url and "://" in url):
+            return False
+        host = urlparse(url).hostname or ""
+        ok = host == "www.sledujteto.cz"
+        if ok:
+            _PROBE_CACHE[slug_id] = True
         return ok
     except (requests.RequestException, ValueError) as e:
         log.warning("  probe error slug=%s: %s", slug_id, e)
-        _PROBE_CACHE[slug_id] = False
         return False
 
 
