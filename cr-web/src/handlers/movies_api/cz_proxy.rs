@@ -384,6 +384,12 @@ pub async fn movies_video_url(
     if !is_prehrajto_url(&video_url) {
         return Err(WebError::bad_request("Invalid prehraj.to URL"));
     }
+    // CZ proxy (`Proxy.ashx`) validates `url.Contains("prehraj.to")`, which
+    // rejects the `prehrajto.cz` mirror domain even though it serves the
+    // same uploads. Some `video_sources.metadata->>'url'` entries (notably
+    // Sledujteto-discovered episodes) still hold `.cz` URLs, so canonicalize
+    // before crossing the proxy boundary.
+    let video_url = video_url.replace("https://prehrajto.cz/", "https://prehraj.to/");
 
     let (proxy_url, proxy_key) = cz_proxy_config(&state.config).ok_or_else(|| {
         WebError::status(StatusCode::INTERNAL_SERVER_ERROR, "Proxy not configured")
