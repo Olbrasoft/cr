@@ -96,12 +96,27 @@ from video_sources_helper import (
 log = logging.getLogger("import-sledujteto-series")
 
 PROVIDER_SLUG = "sledujteto"
+# Probe-before-attach: every candidate upload is hit through the
+# cr-web resolve endpoint and is only attached when the returned
+# `video_url` host is `www.sledujteto.cz`. The preview-URL host
+# heuristic alone produces ~30% false positives — sledujteto returns
+# `success: true` with a `data{N}.sledujteto.cz` URL for files that
+# have been moved off the www CDN, and those data URLs 302 to
+# /?flash=invalid-file for ALL clients (residential included), so
+# they never actually play. The probe is the only reliable signal.
+RESOLVE_URL = "https://ceskarepublika.wiki/api/sledujteto/resolve"
 DEFAULT_INPUT = (
     _PROJECT_ROOT / "data" / "sledujteto"
     / f"sledujteto-series-raw-{date.today().isoformat()}.json"
 )
 UPLOAD_QUEUE_DIR = _PROJECT_ROOT / "data" / "sledujteto"
-DEFAULT_COVERS_DIR = _PROJECT_ROOT / "data" / "movies" / "series-covers"
+# Path MUST contain a `series` segment — cover_downloader._push_cover_to_r2
+# derives the R2 prefix (`films`/`series`/`tv-shows`) from path parts. Using
+# `data/movies/series-covers` silently routed every series cover to
+# `films/{id}/cover.webp` and overwrote every film that shared a numeric id
+# with a created series. Matches the canonical layout used by auto-import.py
+# and import-sktorrent-series.py.
+DEFAULT_COVERS_DIR = _PROJECT_ROOT / "data" / "series" / "covers-webp"
 
 # Compound-title separators uploaders use ("CS - EN").
 _SEP_RE = re.compile(r"\s+[\-—|]\s+")
@@ -205,14 +220,15 @@ def _split_compound(raw_title: str) -> list[str]:
     return out
 
 
-def _is_playable(entry: dict) -> bool:
-    """Hetzner-playable iff the preview URL host is www.sledujteto.cz.
+def _is_playable_preview_heuristic(entry: dict) -> bool:
+    """Cheap pre-filter: preview URL host hints at storage cluster.
 
-    Per `cr-web/src/handlers/movies_api/sledujteto.rs:15-18`,
-    www.sledujteto.cz serves 206 Partial Content from any ASN;
-    data{N}.sledujteto.cz is blocked from datacenter IPs (and from
-    the cr-web validate endpoint). The preview-URL host is a good
-    proxy for the upload's actual storage cluster.
+    Cleared because the actual playability is determined by `probe_resolve`
+    below — sledujteto can serve a `www` preview thumbnail for a file whose
+    media URL ends up on `data{N}` (and vice versa, occasionally). The
+    preview heuristic survives only to gate which entries are worth a probe
+    at all: clusters where every preview points at data{N} are very likely
+    to fail every probe, so we skip the round-trip entirely.
     """
     preview = (entry.get("preview") or "").strip()
     if not preview or "://" not in preview:
@@ -222,6 +238,34 @@ def _is_playable(entry: dict) -> bool:
     except IndexError:
         return False
     return host == "www.sledujteto.cz"
+
+
+_PROBE_CACHE: dict[str, bool] = {}
+
+
+def probe_resolve(sess: requests.Session, slug_id: str) -> bool:
+    """Probe sledujteto resolve; return True iff the returned video_url
+    is on `www.sledujteto.cz`. Cached per slug for the run lifetime so
+    a cluster with the same slug attached twice (shouldn't happen, but
+    re-runs of the importer can collide) doesn't pay twice.
+    """
+    if slug_id in _PROBE_CACHE:
+        return _PROBE_CACHE[slug_id]
+    try:
+        r = sess.get(RESOLVE_URL, params={"id": slug_id}, timeout=20)
+        ok = False
+        if r.status_code == 200:
+            d = r.json()
+            url = d.get("video_url") or ""
+            if d.get("success") and url and "://" in url:
+                host = url.split("/")[2]
+                ok = host == "www.sledujteto.cz"
+        _PROBE_CACHE[slug_id] = ok
+        return ok
+    except (requests.RequestException, ValueError) as e:
+        log.warning("  probe error slug=%s: %s", slug_id, e)
+        _PROBE_CACHE[slug_id] = False
+        return False
 
 
 def _parse_duration_to_sec(s: str | None) -> int | None:
@@ -322,7 +366,7 @@ def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoClus
             # than the parser's raw `langs` flags (SUBS_CZ etc.) which
             # don't match the DB CHECK constraint.
             lang_class=detect_lang(name),
-            playable=_is_playable(u),
+            playable=_is_playable_preview_heuristic(u),
             full_url=u.get("full_url") or u.get("link") or "",
             preview_url=u.get("preview", "") or "",
             duration_sec=_parse_duration_to_sec(u.get("duration")),
@@ -432,12 +476,21 @@ def get_existing_sledujteto_external_ids(cur, series_id: int,
 
 def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
                     providers: dict, stats: Stats,
-                    tmdb_sess: requests.Session) -> None:
+                    tmdb_sess: requests.Session,
+                    probe_sess: requests.Session) -> None:
     """Phase A: attach playable sledujteto sources to an existing series.
 
     Per user policy: not-playable episodes are SKIPPED (the existing
     series already has some source, a dead sledujteto link adds no value
     without the prehraj.to-upload pipeline that would re-host them).
+
+    Two-stage playability gate:
+      1. Preview-host heuristic (cheap) skips data{N}-preview entries
+         entirely — `ep.playable` False.
+      2. Probe (network call) confirms the resolved video_url is on
+         `www.sledujteto.cz` — only then is the source attached. This
+         catches the ~30% of `www`-preview entries whose actual media
+         URL is on data{N} (always unplayable).
     """
     cur = conn.cursor()
     existing_eps = get_existing_episode_ids(cur, series.id)
@@ -449,6 +502,9 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
             continue
         if ep.slug_id in existing_ext:
             stats.sources_skipped_present += 1
+            continue
+        if not probe_resolve(probe_sess, ep.slug_id):
+            stats.sources_skipped_unplayable += 1
             continue
 
         cur.execute("SAVEPOINT slt_match")
@@ -580,6 +636,7 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
 def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
                        stats: Stats, queue_fh, queued_ext_ids: set[str], *,
                        covers_dir: Path, tmdb_sess: requests.Session,
+                       probe_sess: requests.Session,
                        dry_run: bool) -> None:
     """Phase B: TMDB-resolve unmatched cluster; create or queue."""
     parsed = ParsedTitle(
@@ -613,7 +670,8 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
                   tv.tmdb_id, s_row.id)
         stats.clusters_matched += 1
         if cluster.has_any_playable:
-            enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess)
+            enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
+                            probe_sess)
         else:
             stats.clusters_skipped_existing_unplayable += 1
         return
@@ -656,7 +714,8 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         "SELECT id, title, original_title, first_air_year, tmdb_id "
         "FROM series WHERE id = %s", (series_id,))
     s_row = SeriesRow(*cur.fetchone())
-    enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess)
+    enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
+                    probe_sess)
     # Mixed cluster: enrich_cluster only attached the playable half.
     # Queue the unplayable half for re-host so it isn't silently lost.
     _queue_unplayable_episodes(
@@ -752,6 +811,10 @@ def main() -> int:
 
     conn = psycopg2.connect(db_url)
     tmdb_sess = requests.Session()
+    # Separate session for cr-web probes (different headers, different
+    # connection pool) — both are reused across the whole run for
+    # TLS / keep-alive amortization.
+    probe_sess = requests.Session()
     cur = conn.cursor()
     providers = get_provider_ids(cur)
     if PROVIDER_SLUG not in providers:
@@ -775,13 +838,14 @@ def main() -> int:
                 stats.clusters_matched += 1
                 if cluster.has_any_playable:
                     enrich_cluster(conn, cluster, match, providers, stats,
-                                    tmdb_sess)
+                                    tmdb_sess, probe_sess)
                 else:
                     stats.clusters_skipped_existing_unplayable += 1
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
                                   queued_ext_ids,
                                   covers_dir=ns.covers_dir, tmdb_sess=tmdb_sess,
+                                  probe_sess=probe_sess,
                                   dry_run=ns.dry_run)
             cur.execute("RELEASE SAVEPOINT slt_cluster")
             if ns.dry_run:
