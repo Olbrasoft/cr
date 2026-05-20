@@ -70,21 +70,51 @@ except ImportError as e:
 log = logging.getLogger("migrate-sledujteto-external-ids")
 
 
-def load_slug_to_upload_id(dump_path: Path) -> dict[str, str]:
-    """Return {slug: str(upload_id)} from a sledujteto raw scrape.
+def load_slug_to_upload_id(
+    dump_path: Path,
+) -> tuple[dict[str, tuple[str, str]], set[str]]:
+    """Return ({slug: (upload_id, name)}, set of known upload_ids).
 
     The dump's top-level key is the URL slug; each value's `id` field is
-    the global numeric upload_id. Both are normalized to str so DB
-    comparisons stay text-typed (video_sources.external_id is TEXT).
+    the global numeric upload_id; `name` is the human title. All strings
+    are normalized to str so DB comparisons stay text-typed
+    (video_sources.external_id is TEXT). `name` lets the migration
+    detect slug recycling: if the row's stored title doesn't match the
+    dump's current name for the slug, the underlying upload has been
+    deleted and the slug rebound to an unrelated file.
+
+    The second return is the set of every upload_id present in the dump.
+    Re-running the migration on a fully-migrated DB needs this to
+    recognise rows whose `external_id` is already the numeric upload_id
+    (rather than mis-classifying them as "dead" because they aren't slug
+    keys).
+
+    Raises if a numeric `id` appears under two different slugs. If
+    sledujteto ever returned two slugs pointing at the same physical
+    file, pass 2 of the migration would treat the second rename as a
+    collision and could delete a valid row — fail loud at load time
+    instead of silently corrupting data.
     """
     raw = json.loads(dump_path.read_text())
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
+    upload_id_seen: dict[str, str] = {}  # upload_id → first slug we saw
     for slug, v in raw.items():
         upload_id = v.get("id")
         if upload_id is None:
             continue
-        out[str(slug)] = str(upload_id)
-    return out
+        uid = str(upload_id)
+        prior = upload_id_seen.get(uid)
+        if prior is not None and prior != str(slug):
+            raise RuntimeError(
+                f"dump invariant violated: upload_id={uid} appears under "
+                f"two slugs ({prior!r} and {slug!r}); migration cannot "
+                "safely proceed because pass 2 would treat the second "
+                "rename as a collision."
+            )
+        upload_id_seen[uid] = str(slug)
+        name = (v.get("name") or "").strip()
+        out[str(slug)] = (uid, name)
+    return out, set(upload_id_seen.keys())
 
 
 def main() -> int:
@@ -104,8 +134,9 @@ def main() -> int:
         return 2
 
     log.info("loading dump: %s", ns.dump)
-    slug_to_upload = load_slug_to_upload_id(ns.dump)
-    log.info("  %d slug→upload_id mappings loaded", len(slug_to_upload))
+    slug_to_upload, known_upload_ids = load_slug_to_upload_id(ns.dump)
+    log.info("  %d slug→upload_id mappings loaded (%d unique upload_ids)",
+              len(slug_to_upload), len(known_upload_ids))
 
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
@@ -119,12 +150,12 @@ def main() -> int:
     provider_id = row[0]
     log.info("sledujteto provider_id = %d", provider_id)
 
-    # All sledujteto episode rows whose external_id is non-numeric OR a
-    # known slug (numeric slugs and numeric upload_ids overlap, so we
-    # widen the candidate set to ALL rows and let the dump lookup
-    # decide). Films aren't touched — they've always used upload_id.
+    # All sledujteto episode rows. Read `title` too so we can detect slug
+    # recycling (row's title doesn't match the dump's current name for
+    # the slug → underlying upload was deleted and the slug was rebound
+    # to an unrelated file).
     cur.execute(
-        """SELECT vs.id, vs.external_id, vs.episode_id, vs.is_alive
+        """SELECT vs.id, vs.external_id, vs.episode_id, vs.is_alive, vs.title
              FROM video_sources vs
             WHERE vs.provider_id = %s
               AND vs.episode_id IS NOT NULL
@@ -134,40 +165,64 @@ def main() -> int:
     rows = cur.fetchall()
     log.info("episode-attached sledujteto rows: %d", len(rows))
 
+    # Build vs_id → row map ONCE; pass 2's "dead" branch needs is_alive.
+    rows_by_id: dict[int, tuple] = {r[0]: r for r in rows}
+
     # Classify rows up front:
     #   plan[vs_id] = (kind, payload)
-    #   kind="dead"   payload=None        — slug not in dump, mark dead
-    #   kind="noop"   payload=None        — already on upload_id
-    #   kind="rename" payload=upload_id   — needs slug→upload_id rename
+    #   kind="dead"   payload=None        — underlying upload is gone:
+    #                                       ext_id isn't a known slug or
+    #                                       upload_id, OR ext_id is a slug
+    #                                       whose dump entry has a title
+    #                                       different from this row (= the
+    #                                       slug was recycled).
+    #   kind="noop"   payload=None        — ext_id already equals a known
+    #                                       upload_id (rerun-safe).
+    #   kind="rename" payload=upload_id   — slug → upload_id rename, dump
+    #                                       title matches the row's title.
     plan: dict[int, tuple[str, str | None]] = {}
     n_noop = 0
     n_dead = 0
     n_rename = 0
-    for vs_id, ext_id, episode_id, is_alive in rows:
-        upload_id = slug_to_upload.get(str(ext_id))
-        if upload_id is None:
-            plan[vs_id] = ("dead", None)
-            n_dead += 1
-        elif str(ext_id) == upload_id:
+    for vs_id, ext_id, episode_id, is_alive, row_title in rows:
+        ext_str = str(ext_id)
+        dump_entry = slug_to_upload.get(ext_str)
+        if dump_entry is None:
+            # ext_id is not a known slug. If it IS a known upload_id, the
+            # row was already migrated by a prior run — leave it alone.
+            # Otherwise the underlying upload has been deleted on
+            # sledujteto and the row is dead.
+            if ext_str in known_upload_ids:
+                plan[vs_id] = ("noop", None)
+                n_noop += 1
+            else:
+                plan[vs_id] = ("dead", None)
+                n_dead += 1
+            continue
+
+        upload_id, dump_name = dump_entry
+        if ext_str == upload_id:
             plan[vs_id] = ("noop", None)
             n_noop += 1
+            continue
+
+        # ext_id is a slug in the dump but its current upload_id differs
+        # from the stored external_id. Two scenarios:
+        #   1. Row's title matches the dump's name → simple slug→upload_id
+        #      rename of a row that hasn't been migrated yet.
+        #   2. Row's title differs from the dump's name → the slug was
+        #      recycled after the original upload was deleted; this row
+        #      references a vanished file. Mark dead — renaming would
+        #      silently re-point it to an unrelated upload (the original
+        #      bug this migration fixes).
+        if dump_name and row_title and row_title.strip() != dump_name:
+            plan[vs_id] = ("dead", None)
+            n_dead += 1
         else:
             plan[vs_id] = ("rename", upload_id)
             n_rename += 1
 
     log.info("plan: %d noop, %d dead, %d to rename", n_noop, n_dead, n_rename)
-
-    # Set of external_ids belonging to rows we will NOT touch (films +
-    # episode noops). After we clear all rename-targets to placeholders
-    # in pass 1, the only remaining collisions in pass 2 are against
-    # this set — those are genuine film-vs-episode duplicates.
-    cur.execute(
-        "SELECT external_id FROM video_sources WHERE provider_id = %s",
-        (provider_id,),
-    )
-    all_ext = {r[0] for r in cur.fetchall()}
-    rename_old_ext = {str(r[1]) for r in rows if plan[r[0]][0] == "rename"}
-    untouched_ext = all_ext - rename_old_ext
 
     n_updated = 0
     n_marked_dead = 0
@@ -191,29 +246,71 @@ def main() -> int:
         if kind == "noop":
             continue
         if kind == "dead":
-            if rows_by_id := {r[0]: r for r in rows}:
-                _, _, episode_id, is_alive = rows_by_id[vs_id]
-                if is_alive:
-                    if not ns.dry_run:
-                        cur.execute(
-                            "UPDATE video_sources SET is_alive=false WHERE id=%s",
-                            (vs_id,),
-                        )
-                    n_marked_dead += 1
+            _, _, _episode_id, is_alive, _ = rows_by_id[vs_id]
+            if is_alive:
+                if not ns.dry_run:
+                    cur.execute(
+                        "UPDATE video_sources SET is_alive=false WHERE id=%s",
+                        (vs_id,),
+                    )
+                n_marked_dead += 1
             continue
 
-        if upload_id in untouched_ext:
-            # Genuine collision: a film (or an already-correct row)
-            # holds this upload_id. Films pipeline is authoritative —
-            # drop the episode row.
-            log.warning("row vs_id=%d collides with existing film/correct row "
-                         "upload_id=%s — deleting episode row",
-                         vs_id, upload_id)
-            if not ns.dry_run:
-                cur.execute("DELETE FROM video_sources WHERE id = %s",
-                             (vs_id,))
-            n_collision_deleted += 1
-            continue
+        # Look up the colliding row at write time. After pass 1, every
+        # rename source has been parked under `__mig:<vs_id>`, so the only
+        # rows still holding non-placeholder external_ids are: films,
+        # episode noops, and dead-episode rows (whose external_id is left
+        # untouched on purpose). Decide what to do based on which:
+        #   - film row              → episode row loses (films are authoritative
+        #                             and have always used upload_id correctly)
+        #   - alive episode row     → shouldn't happen post-pass-1 (would
+        #                             require slug==upload_id on a noop), but
+        #                             defensively skip and log
+        #   - dead episode row      → DELETE the dead row, let the rename land
+        cur.execute(
+            "SELECT id, film_id, episode_id, is_alive FROM video_sources "
+            "WHERE provider_id = %s AND external_id = %s",
+            (provider_id, upload_id),
+        )
+        collider = cur.fetchone()
+        if collider is not None:
+            col_id, col_film, col_ep, col_alive = collider
+            if col_film is not None:
+                # Film holds this upload_id — drop the episode row.
+                log.warning("row vs_id=%d rename to upload_id=%s collides "
+                             "with film vs_id=%d — deleting episode row",
+                             vs_id, upload_id, col_id)
+                if not ns.dry_run:
+                    cur.execute("DELETE FROM video_sources WHERE id = %s",
+                                 (vs_id,))
+                n_collision_deleted += 1
+                continue
+            if col_ep is not None and not col_alive:
+                # Dead episode row blocking the upload_id — delete the
+                # stale row, let our rename land.
+                log.warning("row vs_id=%d rename to upload_id=%s blocked by "
+                             "dead episode vs_id=%d — deleting dead row",
+                             vs_id, upload_id, col_id)
+                if not ns.dry_run:
+                    cur.execute("DELETE FROM video_sources WHERE id = %s",
+                                 (col_id,))
+            else:
+                # Live episode row already on upload_id — same physical
+                # upload claimed by two different episode rows (likely a
+                # parser-side cross-attach). The existing alive row wins;
+                # delete our placeholder so it doesn't linger in the table
+                # with a `__mig:<id>` external_id forever. Importer will
+                # re-create the lost attach next run if the upload genuinely
+                # belongs to two different shows.
+                log.warning("row vs_id=%d rename to upload_id=%s collides "
+                             "with alive episode vs_id=%d — deleting our "
+                             "placeholder row (the alive row wins)",
+                             vs_id, upload_id, col_id)
+                if not ns.dry_run:
+                    cur.execute("DELETE FROM video_sources WHERE id = %s",
+                                 (vs_id,))
+                n_collision_deleted += 1
+                continue
 
         if not ns.dry_run:
             cur.execute(
@@ -221,7 +318,6 @@ def main() -> int:
                 (upload_id, vs_id),
             )
         n_updated += 1
-        untouched_ext.add(upload_id)
 
     if ns.dry_run:
         conn.rollback()

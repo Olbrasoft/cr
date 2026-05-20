@@ -629,7 +629,7 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
 # ---------------------------------------------------------------------------
 
 
-def load_queued_slug_ids(queue_path: Path) -> set[str]:
+def load_queued_stable_ids(queue_path: Path) -> set[str]:
     """Read every queued upload's stable id from `queue_path`.
 
     Returns a set of `upload_id`s (post-#757) — falling back to `slug_id`
@@ -661,9 +661,12 @@ def load_queued_slug_ids(queue_path: Path) -> set[str]:
 def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
                                  queue_fh, queued_ext_ids: set[str],
                                  stats: Stats) -> int:
-    """Append non-playable episodes to the upload queue, skipping
-    `slug_id`s already present (rerun-safe — see `load_queued_slug_ids`).
-    Returns the number of NEW entries written.
+    """Append non-playable episodes to the upload queue, skipping uploads
+    whose stable id is already present (rerun-safe — see
+    `load_queued_stable_ids`). Dedupe key is `upload_id` (canonical, post-
+    #757); legacy queue entries written without `upload_id` are still
+    matched via their `slug_id`. Returns the number of NEW entries
+    written.
     """
     today = date.today().isoformat()
     written = 0
@@ -860,9 +863,9 @@ def main() -> int:
         f"{date.today().isoformat()}.jsonl"
     )
     queue_path = UPLOAD_QUEUE_DIR / queue_name
-    queued_ext_ids = load_queued_slug_ids(queue_path)
+    queued_ext_ids = load_queued_stable_ids(queue_path)
     queue_fh = queue_path.open("a", encoding="utf-8")
-    log.info("upload queue: %s (%d slug_ids already present, will skip)",
+    log.info("upload queue: %s (%d stable ids already present, will skip)",
               queue_path, len(queued_ext_ids))
 
     conn = psycopg2.connect(db_url)
