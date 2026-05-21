@@ -281,6 +281,8 @@ impl SeriesQuery {
             (Some("imdb"), false) => "s.imdb_rating ASC NULLS LAST, s.title",
             (Some("tmdb"), true) => "s.tmdb_rating DESC NULLS LAST, s.title",
             (Some("tmdb"), false) => "s.tmdb_rating ASC NULLS LAST, s.title",
+            (Some("csfd"), true) => "s.csfd_rating DESC NULLS LAST, s.title",
+            (Some("csfd"), false) => "s.csfd_rating ASC NULLS LAST, s.title",
             (Some("nazev"), true) => "s.title DESC",
             (Some("nazev"), false) => "s.title ASC",
             (_, true) => "s.added_at DESC NULLS LAST, s.title",
@@ -298,6 +300,7 @@ impl SeriesQuery {
         match self.razeni.as_deref() {
             Some("imdb") => Some("s.imdb_votes >= 500"),
             Some("tmdb") => Some("s.tmdb_vote_count >= 50"),
+            Some("csfd") => Some("s.csfd_rating_count >= 5"),
             _ => None,
         }
     }
@@ -310,7 +313,7 @@ impl SeriesQuery {
     fn wants_shows_mode(&self) -> bool {
         matches!(
             self.razeni.as_deref(),
-            Some("rok") | Some("imdb") | Some("tmdb") | Some("nazev")
+            Some("rok") | Some("imdb") | Some("tmdb") | Some("csfd") | Some("nazev")
         )
     }
 

@@ -197,6 +197,8 @@ impl TvShowQuery {
             (Some("imdb"), true) => "s.imdb_rating ASC NULLS LAST, s.title",
             (Some("tmdb"), false) => "s.tmdb_rating DESC NULLS LAST, s.title",
             (Some("tmdb"), true) => "s.tmdb_rating ASC NULLS LAST, s.title",
+            (Some("csfd"), false) => "s.csfd_rating DESC NULLS LAST, s.title",
+            (Some("csfd"), true) => "s.csfd_rating ASC NULLS LAST, s.title",
             (Some("nazev"), false) => "s.title DESC",
             (Some("nazev"), true) => "s.title ASC",
             // Default + razeni=pridano: by added_at. Direction follows smer.
@@ -215,6 +217,7 @@ impl TvShowQuery {
         match self.razeni.as_deref() {
             Some("imdb") => Some("s.imdb_votes >= 500"),
             Some("tmdb") => Some("s.tmdb_vote_count >= 50"),
+            Some("csfd") => Some("s.csfd_rating_count >= 5"),
             _ => None,
         }
     }
@@ -226,7 +229,7 @@ impl TvShowQuery {
     fn wants_shows_mode(&self) -> bool {
         matches!(
             self.razeni.as_deref(),
-            Some("rok") | Some("imdb") | Some("tmdb") | Some("nazev")
+            Some("rok") | Some("imdb") | Some("tmdb") | Some("csfd") | Some("nazev")
         )
     }
 }
