@@ -84,9 +84,11 @@ struct FilmRow {
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     // ČSFD id + rating count (#758/#764). The chip in film_detail.html links
-    // to https://www.csfd.cz/film/{csfd_id}/ and only renders when the
-    // rating has been fetched (csfd_rating_synced_at IS NOT NULL) AND at
-    // least 5 users rated, to avoid showing "1 person rated it 100%".
+    // to https://www.csfd.cz/film/{csfd_id}/ and only renders when both
+    // csfd_rating is Some(_) AND csfd_rating_count >= 5 — that filters out
+    // both never-synced rows (legacy data with NULL count) and freshly
+    // synced niche rows where 1–4 votes would produce noise like
+    // "ČSFD 100% · 1 hodnocení".
     csfd_id: Option<i32>,
     csfd_rating_count: Option<i32>,
     runtime_min: Option<i16>,

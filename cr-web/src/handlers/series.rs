@@ -82,8 +82,10 @@ pub struct SeriesRow {
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
     // ČSFD id + rating count (#758/#764). Same chip semantics as films:
-    // link out to https://www.csfd.cz/film/{csfd_id}/ and render only when
-    // at least 5 users rated.
+    // chip renders only when csfd_rating is Some(_) AND
+    // csfd_rating_count >= 5 (filters legacy NULL-count rows + low-vote
+    // noise). When csfd_id is also Some(_) the chip wraps in an <a> to
+    // https://www.csfd.cz/film/{csfd_id}/; otherwise plain <span>.
     csfd_id: Option<i32>,
     csfd_rating_count: Option<i32>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
