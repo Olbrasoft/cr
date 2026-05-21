@@ -103,6 +103,32 @@
         <div class="episode-meta">
             {% match episode.air_date %}{% when Some with (d) %}<span class="meta-pill">📅 {{ d }}</span>{% when None %}{% endmatch %}
             {% match episode.runtime %}{% when Some with (r) %}<span class="meta-pill">⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+            {# Parent series ratings — episodes inherit them so the viewer doesn't
+               have to bounce up to /serialy-online/{slug}/ to see them. All
+               external links carry rel="nofollow noopener". #}
+            {% match series.tmdb_rating %}
+            {% when Some with (r) %}
+                {% match series.tmdb_id %}
+                {% when Some with (tid) %}<a class="meta-badge tmdb" href="https://www.themoviedb.org/tv/{{ tid }}" target="_blank" rel="nofollow noopener" title="Otevřít na TMDB">TMDB {{ "{:.1}"|format(r) }}{% match series.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</a>
+                {% when None %}<span class="meta-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}{% match series.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</span>
+                {% endmatch %}
+            {% when None %}{% endmatch %}
+            {% match series.imdb_rating %}
+            {% when Some with (r) %}
+                {% match series.imdb_id %}
+                {% when Some with (iid) %}<a class="meta-badge imdb" href="https://www.imdb.com/title/{{ iid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na IMDb">IMDb {{ "{:.1}"|format(r) }}{% match series.imdb_votes %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</a>
+                {% when None %}<span class="meta-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}{% match series.imdb_votes %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</span>
+                {% endmatch %}
+            {% when None %}{% endmatch %}
+            {% match series.csfd_rating %}
+            {% when Some with (r) %}
+                {% if series.csfd_rating_count.unwrap_or(0) >= 5 %}
+                    {% match series.csfd_id %}
+                    {% when Some with (cid) %}<a class="meta-badge csfd" href="https://www.csfd.cz/film/{{ cid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na ČSFD">ČSFD {{ r }}% · {{ series.csfd_rating_count.unwrap_or(0) }}</a>
+                    {% when None %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}% · {{ series.csfd_rating_count.unwrap_or(0) }}</span>
+                    {% endmatch %}
+                {% endif %}
+            {% when None %}{% endmatch %}
         </div>
         {% match episode.overview %}{% when Some with (o) %}<p class="episode-overview">{{ o }}</p>{% when None %}{% endmatch %}
 

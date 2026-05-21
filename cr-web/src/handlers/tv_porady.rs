@@ -74,6 +74,10 @@ pub struct TvShowRow {
     // https://www.csfd.cz/film/{csfd_id}/; otherwise plain <span>.
     csfd_id: Option<i32>,
     csfd_rating_count: Option<i32>,
+    tmdb_id: Option<i32>,
+    imdb_id: Option<String>,
+    tmdb_vote_count: Option<i32>,
+    imdb_votes: Option<i32>,
     #[allow(dead_code)]
     season_count: Option<i16>,
     #[allow(dead_code)]
@@ -122,6 +126,7 @@ pub struct TvEpisodeCardRow {
     pub tv_show_tmdb_rating: Option<f32>,
     pub tv_show_imdb_rating: Option<f32>,
     pub tv_show_csfd_rating: Option<i16>,
+    pub tv_show_csfd_rating_count: Option<i32>,
     pub tv_show_description: Option<String>,
     pub season: i16,
     pub episode: i16,
@@ -312,7 +317,8 @@ pub async fn tv_porady_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
-             s.csfd_id, s.csfd_rating_count, s.season_count, s.episode_count, s.added_at, \
+             s.csfd_id, s.csfd_rating_count, s.tmdb_id, s.imdb_id, s.tmdb_vote_count, s.imdb_votes, \
+             s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s \
              WHERE (unaccent(s.title) ILIKE unaccent($1) \
@@ -346,7 +352,8 @@ pub async fn tv_porady_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
-             s.csfd_id, s.csfd_rating_count, s.season_count, s.episode_count, s.added_at, \
+             s.csfd_id, s.csfd_rating_count, s.tmdb_id, s.imdb_id, s.tmdb_vote_count, s.imdb_votes, \
+             s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM tv_shows s {votes_filter} \
              ORDER BY {order} LIMIT $1 OFFSET $2"
@@ -440,6 +447,7 @@ async fn fetch_latest_episode_cards(
             s.tmdb_rating AS tv_show_tmdb_rating, \
             s.imdb_rating AS tv_show_imdb_rating, \
             s.csfd_rating AS tv_show_csfd_rating, \
+            s.csfd_rating_count AS tv_show_csfd_rating_count, \
             s.description AS tv_show_description, \
             ps.season, ps.episode, ps.has_subtitles, ps.has_dub, ps.created_at, \
             (SELECT e2.slug FROM tv_episodes e2 WHERE e2.id = ps.id) AS episode_slug, \
@@ -544,6 +552,7 @@ pub async fn tv_porad_detail(
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+         tmdb_id, imdb_id, tmdb_vote_count, imdb_votes, \
          season_count, episode_count, added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug_raw)
@@ -556,6 +565,7 @@ pub async fn tv_porad_detail(
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+                 tmdb_id, imdb_id, tmdb_vote_count, imdb_votes, \
                  season_count, episode_count, added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug_raw)
@@ -627,6 +637,7 @@ pub async fn tv_epizoda_detail(
     let show = sqlx::query_as::<_, TvShowRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
          original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+         tmdb_id, imdb_id, tmdb_vote_count, imdb_votes, \
          season_count, episode_count, added_at, tmdb_poster_path FROM tv_shows WHERE slug = $1",
     )
     .bind(&slug)
@@ -639,6 +650,7 @@ pub async fn tv_epizoda_detail(
             let old_match = sqlx::query_as::<_, TvShowRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
                  original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+                 tmdb_id, imdb_id, tmdb_vote_count, imdb_votes, \
                  season_count, episode_count, added_at, tmdb_poster_path FROM tv_shows WHERE old_slug = $1",
             )
             .bind(&slug)

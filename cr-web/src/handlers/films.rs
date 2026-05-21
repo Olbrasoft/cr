@@ -35,6 +35,7 @@ const FILMS_PER_PAGE: i64 = 24;
 ///   from datacenter ASNs). Preserved here via `cdn = 'www'` predicate.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
     f.tmdb_rating, f.imdb_rating, f.csfd_rating, f.csfd_id, f.csfd_rating_count, \
+    f.tmdb_id, f.imdb_id, f.tmdb_vote_count, f.imdb_votes, \
     NULLIF(f.runtime_min, 0) AS runtime_min, \
     f.added_at, f.tmdb_poster_path, \
     (SELECT vs.external_id::INTEGER \
@@ -91,6 +92,10 @@ struct FilmRow {
     // "ČSFD 100% · 1 hodnocení".
     csfd_id: Option<i32>,
     csfd_rating_count: Option<i32>,
+    tmdb_id: Option<i32>,
+    imdb_id: Option<String>,
+    tmdb_vote_count: Option<i32>,
+    imdb_votes: Option<i32>,
     runtime_min: Option<i16>,
     sktorrent_video_id: Option<i32>,
     // `sktorrent_cdn` is used as a first-try hint by `sktorrent_resolve`
