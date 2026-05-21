@@ -250,11 +250,12 @@
 .film-meta .year { color: #888; font-weight: 400; }
 .original-title { color: #888; font-style: italic; margin: 0 0 0.6rem; font-size: 0.9rem; }
 .meta-row { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
-.meta-badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.meta-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; text-decoration: none; }
 .meta-badge.tmdb { background: #01b4e4; color: #fff; }
 .meta-badge.imdb { background: #f5c518; color: #000; }
 .meta-badge.csfd { background: #ba0305; color: #fff; }
 .meta-badge.none { background: #eef2f7; color: #6b7785; font-style: italic; }
+a.meta-badge:hover { filter: brightness(1.1); }
 .genre-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
 .genre-tag { padding: 0.3rem 0.8rem; border-radius: 999px; background: #f1f5f9; color: #11457E; text-decoration: none; font-size: 0.85rem; font-weight: 600; transition: background 0.15s, color 0.15s; cursor: pointer; }
 .genre-tag:hover { background: #11457E; color: white; }
