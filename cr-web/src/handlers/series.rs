@@ -81,6 +81,13 @@ pub struct SeriesRow {
     tmdb_rating: Option<f32>,
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
+    // ČSFD id + rating count (#758/#764). Same chip semantics as films:
+    // chip renders only when csfd_rating is Some(_) AND
+    // csfd_rating_count >= 5 (filters legacy NULL-count rows + low-vote
+    // noise). When csfd_id is also Some(_) the chip wraps in an <a> to
+    // https://www.csfd.cz/film/{csfd_id}/; otherwise plain <span>.
+    csfd_id: Option<i32>,
+    csfd_rating_count: Option<i32>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
     season_count: Option<i16>,
     #[allow(dead_code)] // Not rendered in current templates; kept for future series stats
@@ -570,7 +577,7 @@ pub async fn series_list(
         let query = format!(
             "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
              s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
-             s.season_count, s.episode_count, s.added_at, \
+             s.csfd_id, s.csfd_rating_count, s.season_count, s.episode_count, s.added_at, \
              s.tmdb_poster_path \
              FROM series s \
              WHERE (unaccent(s.title) ILIKE unaccent($1) \
@@ -838,7 +845,7 @@ async fn run_shows_mode_query(
     let rows_sql = format!(
         "SELECT s.id, s.title, s.slug, s.first_air_year, s.last_air_year, \
          s.description, s.original_title, s.tmdb_rating, s.imdb_rating, s.csfd_rating, \
-         s.season_count, s.episode_count, s.added_at, \
+         s.csfd_id, s.csfd_rating_count, s.season_count, s.episode_count, s.added_at, \
          s.tmdb_poster_path \
          FROM series s {where_clause} \
          ORDER BY {order} LIMIT ${limit_idx} OFFSET ${offset_idx}",
@@ -1147,8 +1154,8 @@ pub async fn series_resolve(
     // Series detail
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
-         added_at, tmdb_poster_path \
+         original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+         season_count, episode_count, added_at, tmdb_poster_path \
          FROM series WHERE slug = $1",
     )
     .bind(&slug_raw)
@@ -1161,8 +1168,8 @@ pub async fn series_resolve(
             // Check old_slug for 301 redirect (series slug changed, e.g. year removed)
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
-                 added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
+                 original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+                 season_count, episode_count, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug_raw)
             .fetch_optional(&state.db)
@@ -1288,8 +1295,8 @@ pub async fn episode_detail(
     // --- Resolve series (support old slugs with year via redirect) ---
     let series = sqlx::query_as::<_, SeriesRow>(
         "SELECT id, title, slug, first_air_year, last_air_year, description, \
-         original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
-         added_at, tmdb_poster_path FROM series WHERE slug = $1",
+         original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+         season_count, episode_count, added_at, tmdb_poster_path FROM series WHERE slug = $1",
     )
     .bind(&slug)
     .fetch_optional(&state.db)
@@ -1301,8 +1308,8 @@ pub async fn episode_detail(
         None => {
             let old_match = sqlx::query_as::<_, SeriesRow>(
                 "SELECT id, title, slug, first_air_year, last_air_year, description, \
-                 original_title, tmdb_rating, imdb_rating, csfd_rating, season_count, episode_count, \
-                 added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
+                 original_title, tmdb_rating, imdb_rating, csfd_rating, csfd_id, csfd_rating_count, \
+                 season_count, episode_count, added_at, tmdb_poster_path FROM series WHERE old_slug = $1",
             )
             .bind(&slug)
             .fetch_optional(&state.db)

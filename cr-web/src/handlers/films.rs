@@ -34,7 +34,8 @@ const FILMS_PER_PAGE: i64 = 24;
 ///   when the primary upload's CDN is `www`, because data{N} is blocked
 ///   from datacenter ASNs). Preserved here via `cdn = 'www'` predicate.
 const FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, f.description, f.original_title, \
-    f.tmdb_rating, f.imdb_rating, f.csfd_rating, NULLIF(f.runtime_min, 0) AS runtime_min, \
+    f.tmdb_rating, f.imdb_rating, f.csfd_rating, f.csfd_id, f.csfd_rating_count, \
+    NULLIF(f.runtime_min, 0) AS runtime_min, \
     f.added_at, f.tmdb_poster_path, \
     (SELECT vs.external_id::INTEGER \
        FROM video_sources vs \
@@ -82,6 +83,14 @@ struct FilmRow {
     tmdb_rating: Option<f32>,
     imdb_rating: Option<f32>,
     csfd_rating: Option<i16>,
+    // ČSFD id + rating count (#758/#764). The chip in film_detail.html links
+    // to https://www.csfd.cz/film/{csfd_id}/ and only renders when both
+    // csfd_rating is Some(_) AND csfd_rating_count >= 5 — that filters out
+    // both never-synced rows (legacy data with NULL count) and freshly
+    // synced niche rows where 1–4 votes would produce noise like
+    // "ČSFD 100% · 1 hodnocení".
+    csfd_id: Option<i32>,
+    csfd_rating_count: Option<i32>,
     runtime_min: Option<i16>,
     sktorrent_video_id: Option<i32>,
     // `sktorrent_cdn` is used as a first-try hint by `sktorrent_resolve`
