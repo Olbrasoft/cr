@@ -157,9 +157,19 @@
                 {% when None %}
                 {% endmatch %}
 
+                {# ČSFD chip (#764) — link to csfd.cz when csfd_id is set; hide the
+                   chip entirely when fewer than 5 users rated (raw % from one or
+                   two voters is misleading — e.g. "1 person rated this 100%"). #}
                 {% match film.csfd_rating %}
                 {% when Some with (r) %}
-                <span class="meta-badge csfd">ČSFD {{ r }}%</span>
+                    {% if film.csfd_rating_count.unwrap_or(0) >= 5 %}
+                        {% match film.csfd_id %}
+                        {% when Some with (cid) %}
+                <a class="meta-badge csfd" href="https://www.csfd.cz/film/{{ cid }}/" target="_blank" rel="noopener" title="Otevřít na ČSFD">ČSFD {{ r }}% · {{ film.csfd_rating_count.unwrap_or(0) }} hodnocení</a>
+                        {% when None %}
+                <span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}% · {{ film.csfd_rating_count.unwrap_or(0) }} hodnocení</span>
+                        {% endmatch %}
+                    {% endif %}
                 {% when None %}
                 {% endmatch %}
 
