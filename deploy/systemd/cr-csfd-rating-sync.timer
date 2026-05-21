@@ -1,0 +1,19 @@
+[Unit]
+Description=CR — ČSFD audience rating refresh daily at 06:00 UTC
+Documentation=https://github.com/Olbrasoft/cr/issues/758
+Documentation=https://github.com/Olbrasoft/cr/issues/762
+
+[Timer]
+# Slot picked to land cleanly between cr-auto-import (05:02 UTC) and
+# cr-llm-resolver (06:32 UTC). One run processes the 5 000 rows with
+# the oldest csfd_rating_synced_at (or NULL) — at par=8 that's ~2.5 min
+# wall-clock, so the timer is back to idle long before llm-resolver
+# fires. Full set of ~38 k rows refreshes in ~7-8 daily runs which
+# matches the 7-day max-age window the script defaults to.
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=cr-csfd-rating-sync.service
+
+[Install]
+WantedBy=timers.target
