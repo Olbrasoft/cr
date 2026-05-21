@@ -1,0 +1,42 @@
+[Unit]
+Description=CR — Refresh ČSFD audience ratings (films + series + tv_shows)
+Documentation=https://github.com/Olbrasoft/cr/issues/758
+Documentation=https://github.com/Olbrasoft/cr/issues/762
+# After= only orders start jobs in the same transaction; the daily
+# timer fires at 06:00 UTC so all the upstream sync/import jobs
+# (04:00 prehrajto, 04:30 imdb, 04:47 tmdb, 05:02 auto-import) have
+# normally finished long before. We still chain After= and a guarding
+# ExecStartPre so that on slow days a runover doesn't double-load the
+# database row locks.
+After=docker.service network-online.target cr-auto-import.service cr-imdb-rating-sync.service cr-tmdb-rating-sync.service
+Wants=network-online.target
+StartLimitBurst=2
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/cr/scripts
+EnvironmentFile=/opt/cr/.env
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-auto-import.service; then echo "cr-auto-import.service still active — refusing to start" >&2; exit 1; fi'
+# DATABASE_URL in /opt/cr/.env points at @db: (the docker-compose hostname);
+# bare-metal scripts on the host can only reach Postgres via 127.0.0.1:5432.
+# The substitution mirrors what cr-csfd-resolver / cr-tmdb-rating-sync do.
+# Limit per run: 5 000 rows × ~30 ms wall-clock (par=8) ≈ 2.5 min.
+# Full 38 k refresh cycle therefore takes ~7-8 days at one run/day, which
+# matches the 7-day max-age window the script defaults to.
+ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/node /opt/cr/scripts/fetch_csfd_ratings.mjs --table all --limit 5000'
+StandardOutput=append:/var/log/cr-csfd-rating-sync.log
+StandardError=append:/var/log/cr-csfd-rating-sync.log
+# The script exits 1 when any per-row fetch errored (per #761 spec) and
+# 2 on catastrophic failures (missing DATABASE_URL, uncaught exception).
+# A node-csfd-api parser glitch on a single film out of 5 000 should NOT
+# trigger systemd's Restart=on-failure loop and re-burn 3 min × StartLimit
+# of the same 5 000 rows. Treat exit 1 as "completed with recoverable
+# errors" so only catastrophic exit 2 (or a real crash) triggers retry.
+SuccessExitStatus=1
+Restart=on-failure
+RestartSec=300
+
+[Install]
+WantedBy=multi-user.target
