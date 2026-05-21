@@ -5,9 +5,15 @@ Two-phase pipeline modelled on `scripts/import-prehrajto-series.py`,
 with the key difference that sledujteto's discovery surface is the
 offline raw-scrape JSON in `data/sledujteto/sledujteto-series-raw-*.json`
 (produced by `scripts/scrape-sledujteto-series.py`) rather than a live
-sitemap stream. The site blocks Hetzner datacenter IPs on its search
-endpoint, so all enrich/discover work runs against the pre-scraped
-local file — no live HTTP to sledujteto.cz is needed.
+sitemap stream. The site blocks Hetzner datacenter IPs on its **search**
+endpoint (`/api/web/videos`), but enrich/discover don't need search —
+they read the pre-scraped local file.
+
+The importer DOES make limited live HTTP calls to one sledujteto endpoint:
+`/services/add-file-link` (the attach-time playability probe — see
+`_probe_real_media_host` / #769). That endpoint is not geo-blocked and
+works from Hetzner as well as from residential IPs, so operators on
+restricted networks can still run the importer.
 
 Phases (selected via `--mode`):
 
@@ -263,9 +269,19 @@ def _probe_real_media_host(upload_id: str, sess: requests.Session,
     source of truth our wrapper proxies to, so probing it directly is
     both faster (one HTTP round-trip) and free of the deadlock.
 
-    Cached per-process by `upload_id` (see `_PROBE_CACHE`). Caller treats
-    `None` as "not playable from our IPs" — that errs on the safe side
-    (no bogus alive row) and never inserts something we know would fail.
+    Successful resolutions are cached per-process by `upload_id` (see
+    `_PROBE_CACHE`) — the same upload often surfaces under multiple alias
+    variants (compound titles like "Chirurgové - Greys Anatomy"), and
+    caching spares us N redundant POSTs for the same id. **Failures are
+    NOT cached**: a transient network blip or upstream 5xx must not
+    permanently mark an otherwise-playable upload as unplayable for the
+    rest of the run. Repeated genuine failures will re-probe on each
+    encounter, but uploads typically appear in 1–2 clusters max, so the
+    extra cost is negligible.
+
+    Caller treats `None` as "not playable from our IPs" — that errs on
+    the safe side (no bogus alive row) and never inserts something we
+    know would fail.
 
     `sleep_after` is the post-call delay used to stay polite (sledujteto
     throttles aggressively; the offline scraper sticks to ~5 req/s, so
@@ -292,7 +308,10 @@ def _probe_real_media_host(upload_id: str, sess: requests.Session,
     except Exception as e:  # noqa: BLE001
         log.debug("probe upload_id=%s failed: %s", upload_id, e)
         host = None
-    _PROBE_CACHE[upload_id] = host
+    # Only cache successful resolutions — transient failures must be
+    # retryable on subsequent encounters (see docstring).
+    if host is not None:
+        _PROBE_CACHE[upload_id] = host
     if sleep_after > 0:
         time.sleep(sleep_after)
     return host
@@ -605,8 +624,10 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
         stats.queued_for_upload += 1
 
     for ep in cluster.episodes:
-        # Skip the probe for uploads we'd just `ON CONFLICT DO UPDATE`
-        # anyway — saves one network round-trip per re-import.
+        # If a sledujteto row for this upload already exists, the importer
+        # has nothing to do — leave the row's state (alive flag, lang_class,
+        # etc.) to whatever the last successful import / verify run set it
+        # to. Also skips the upstream probe round-trip per re-import.
         if ep.upload_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
