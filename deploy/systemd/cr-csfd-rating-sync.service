@@ -2,12 +2,12 @@
 Description=CR — Refresh ČSFD audience ratings (films + series + tv_shows)
 Documentation=https://github.com/Olbrasoft/cr/issues/758
 Documentation=https://github.com/Olbrasoft/cr/issues/762
-# After= only orders start jobs in the same transaction; the daily
-# timer fires at 06:00 UTC so all the upstream sync/import jobs
-# (04:00 prehrajto, 04:30 imdb, 04:47 tmdb, 05:02 auto-import) have
-# normally finished long before. We still chain After= and a guarding
-# ExecStartPre so that on slow days a runover doesn't double-load the
-# database row locks.
+# After= only orders start jobs in the same transaction. When a timer
+# fires our unit independently (the normal case), it does NOT prevent
+# overlap with another long-running daily job — so we also guard via
+# ExecStartPre below. Order matches sibling cr-tmdb-rating-sync.service:
+# each refresher refuses to start while any earlier-in-the-chain
+# refresher is still active.
 After=docker.service network-online.target cr-auto-import.service cr-imdb-rating-sync.service cr-tmdb-rating-sync.service
 Wants=network-online.target
 StartLimitBurst=2
@@ -18,7 +18,15 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/cr/scripts
 EnvironmentFile=/opt/cr/.env
-ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-auto-import.service; then echo "cr-auto-import.service still active — refusing to start" >&2; exit 1; fi'
+# Guards exit with code 75 (EX_TEMPFAIL from sysexits.h), deliberately
+# NOT 1 — because SuccessExitStatus=1 below makes systemd treat exit 1
+# as success, INCLUDING from ExecStartPre. With exit 1 the guard would
+# fail open and let the service start anyway. (Copilot review on
+# PR #770 caught this.) 75 is outside the SuccessExitStatus list so the
+# guard correctly aborts.
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-auto-import.service; then echo "cr-auto-import.service still active — refusing to start" >&2; exit 75; fi'
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-imdb-rating-sync.service; then echo "cr-imdb-rating-sync.service still active — refusing to start" >&2; exit 75; fi'
+ExecStartPre=/bin/bash -c 'if systemctl is-active --quiet cr-tmdb-rating-sync.service; then echo "cr-tmdb-rating-sync.service still active — refusing to start" >&2; exit 75; fi'
 # DATABASE_URL in /opt/cr/.env points at @db: (the docker-compose hostname);
 # bare-metal scripts on the host can only reach Postgres via 127.0.0.1:5432.
 # The substitution mirrors what cr-csfd-resolver / cr-tmdb-rating-sync do.
