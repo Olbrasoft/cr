@@ -5,14 +5,21 @@ Two-phase pipeline modelled on `scripts/import-prehrajto-series.py`,
 with the key difference that sledujteto's discovery surface is the
 offline raw-scrape JSON in `data/sledujteto/sledujteto-series-raw-*.json`
 (produced by `scripts/scrape-sledujteto-series.py`) rather than a live
-sitemap stream. The site blocks Hetzner datacenter IPs on its search
-endpoint, so all enrich/discover work runs against the pre-scraped
-local file — no live HTTP to sledujteto.cz is needed.
+sitemap stream. The site blocks Hetzner datacenter IPs on its **search**
+endpoint (`/api/web/videos`), but enrich/discover don't need search —
+they read the pre-scraped local file.
+
+The importer DOES make limited live HTTP calls to one sledujteto endpoint:
+`/services/add-file-link` (the attach-time playability probe — see
+`_probe_real_media_host` / #769). That endpoint is not geo-blocked and
+works from Hetzner as well as from residential IPs, so operators on
+restricted networks can still run the importer.
 
 Phases (selected via `--mode`):
 
 * `enrich`   (issue #745) — for every SxxExx-tagged sledujteto upload
-              that (a) is **playable from Hetzner** (cdn=www) and
+              that (a) is **playable from our IPs** (probed live via
+              sledujteto's public add-file-link upstream — #769) and
               (b) whose parsed show title alias-matches a series
               already in our DB, INSERT a `video_sources` row attached
               to the episode (creating the episode via TMDB resolve
@@ -97,14 +104,24 @@ from video_sources_helper import (
 log = logging.getLogger("import-sledujteto-series")
 
 PROVIDER_SLUG = "sledujteto"
-# Attach-time playability is determined by the preview-host heuristic
-# (`_is_playable_preview_heuristic`). Previously we also probed the
-# cr-web `/api/sledujteto/resolve?id=<x>` endpoint, but its abuse-guard
-# requires `external_id` to already exist in `video_sources` — a
-# chicken-and-egg for brand-new uploads (see #757). Post-attach cleanup
-# is handled by `scripts/verify-sledujteto-sources.py`, which probes
-# alive rows and demotes the ~30% whose actual media URL turns out to
-# be on a data{N} CDN.
+# Attach-time playability is determined by a direct probe to sledujteto's
+# public `add-file-link` endpoint (see `_probe_real_media_host`). We
+# DON'T go through our own `/api/sledujteto/resolve` — that endpoint's
+# abuse-guard requires `external_id` to already exist in `video_sources`
+# (chicken-and-egg with brand-new uploads, see #757). The upstream API
+# has no such guard, so the importer hits it directly and only attaches
+# uploads whose resolved media URL is on `www.sledujteto.cz` (the
+# data{N}.sledujteto.cz CDNs return media that doesn't play from our
+# infra). This makes attach-time decisions authoritative and removes
+# the ~30% bogus-row rate that the old preview-host heuristic produced
+# (#769).
+PROBE_URL = "https://www.sledujteto.cz/services/add-file-link"
+# upload_id → resolved host (or None on probe failure). Lives for the
+# importer process — same upload appears under multiple alias clusters
+# (compound titles like "Chirurgové - Greys Anatomy"), and the cache
+# spares the cluster boundary from issuing N redundant POSTs for the
+# same id.
+_PROBE_CACHE: dict[str, str | None] = {}
 DEFAULT_INPUT = (
     _PROJECT_ROOT / "data" / "sledujteto"
     / f"sledujteto-series-raw-{date.today().isoformat()}.json"
@@ -161,7 +178,13 @@ class SledujtetoEpisode:
     season: int
     episode: int
     lang_class: str
-    playable: bool          # preview URL host == www.sledujteto.cz
+    # Preview-URL host HINT (NOT authoritative). Set from the cheap local
+    # heuristic in `load_clusters`; used as a sort key and for the
+    # discover-phase early-exit ("don't create a brand-new series if even
+    # the optimistic check says nothing plays"). The attach gate uses
+    # `_is_playable_real(upload_id, …)` which actually resolves the media
+    # URL upstream — see #769.
+    playable: bool
     full_url: str
     preview_url: str
     duration_sec: int | None
@@ -234,21 +257,74 @@ def _split_compound(raw_title: str) -> list[str]:
     return out
 
 
-def _is_playable_preview_heuristic(entry: dict) -> bool:
-    """Cheap pre-filter: preview URL host hints at storage cluster.
+def _probe_real_media_host(upload_id: str, sess: requests.Session,
+                            *, sleep_after: float = 0.20) -> str | None:
+    """POST sledujteto's public add-file-link; return the hostname of the
+    resolved `video_url`, or None on any error.
 
-    Per #757 the importer no longer probes at attach time (the cr-web
-    resolve endpoint's abuse-guard requires `external_id` to be in
-    `video_sources`, but a brand-new upload has no row yet — chicken-and-
-    egg). Attach now trusts this heuristic alone. `~30%` of `www` rows
-    will have their actual media URL on a data{N} CDN and won't play;
-    `scripts/verify-sledujteto-sources.py` runs after the importer to
-    demote those.
+    The upstream endpoint at `https://www.sledujteto.cz/services/add-file-link`
+    is unauthenticated and bears no `external_id`-must-exist-in-DB guard
+    — that guard lives on OUR own `/api/sledujteto/resolve` wrapper, and
+    is the chicken-and-egg #757 ran into. The upstream is the same
+    source of truth our wrapper proxies to, so probing it directly is
+    both faster (one HTTP round-trip) and free of the deadlock.
+
+    Successful resolutions are cached per-process by `upload_id` (see
+    `_PROBE_CACHE`) — the same upload often surfaces under multiple alias
+    variants (compound titles like "Chirurgové - Greys Anatomy"), and
+    caching spares us N redundant POSTs for the same id. **Failures are
+    NOT cached**: a transient network blip or upstream 5xx must not
+    permanently mark an otherwise-playable upload as unplayable for the
+    rest of the run. Repeated genuine failures will re-probe on each
+    encounter, but uploads typically appear in 1–2 clusters max, so the
+    extra cost is negligible.
+
+    Caller treats `None` as "not playable from our IPs" — that errs on
+    the safe side (no bogus alive row) and never inserts something we
+    know would fail.
+
+    `sleep_after` is the post-call delay used to stay polite (sledujteto
+    throttles aggressively; the offline scraper sticks to ~5 req/s, so
+    we mirror that here for the per-upload probes).
     """
-    preview = (entry.get("preview") or "").strip()
-    if not preview:
-        return False
-    return (urlparse(preview).hostname or "") == "www.sledujteto.cz"
+    if upload_id in _PROBE_CACHE:
+        return _PROBE_CACHE[upload_id]
+    host: str | None
+    try:
+        r = sess.post(
+            PROBE_URL,
+            json={"params": {"id": int(upload_id)}},
+            headers={
+                "Content-Type": "application/json;charset=UTF-8",
+                "Accept": "application/json, text/plain, */*",
+                "Requested-With-AngularJS": "true",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        url = (data.get("video_url") or "").strip()
+        host = urlparse(url).hostname if url else None
+    except Exception as e:  # noqa: BLE001
+        log.debug("probe upload_id=%s failed: %s", upload_id, e)
+        host = None
+    # Only cache successful resolutions — transient failures must be
+    # retryable on subsequent encounters (see docstring).
+    if host is not None:
+        _PROBE_CACHE[upload_id] = host
+    if sleep_after > 0:
+        time.sleep(sleep_after)
+    return host
+
+
+def _is_playable_real(upload_id: str, sess: requests.Session) -> bool:
+    """True iff sledujteto's add-file-link resolves to `www.sledujteto.cz`.
+
+    The `data{N}.sledujteto.cz` CDNs serve media that doesn't load from
+    our infra (signed-URL / geo-fenced — empirically dead). Anything
+    else (None, unexpected host, etc.) is also treated as not playable.
+    """
+    return _probe_real_media_host(upload_id, sess) == "www.sledujteto.cz"
 
 
 def _parse_duration_to_sec(s: str | None) -> int | None:
@@ -358,7 +434,12 @@ def load_clusters(raw_path: Path) -> dict[tuple[str, int | None], SledujtetoClus
             # than the parser's raw `langs` flags (SUBS_CZ etc.) which
             # don't match the DB CHECK constraint.
             lang_class=detect_lang(name),
-            playable=_is_playable_preview_heuristic(u),
+            # Preview-host hint only — the authoritative attach-time
+            # gate is `_is_playable_real` (a real upstream probe). This
+            # cheap pre-flag is kept for sorting and the discover early-
+            # exit (#769).
+            playable=(urlparse((u.get("preview") or "").strip()).hostname
+                      == "www.sledujteto.cz"),
             full_url=u.get("full_url") or u.get("link") or "",
             preview_url=u.get("preview", "") or "",
             duration_sec=_parse_duration_to_sec(u.get("duration")),
@@ -490,6 +571,7 @@ def _episodes_with_alive_prehrajto(cur, providers: dict, series_id: int) -> set[
 def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
                     providers: dict, stats: Stats,
                     tmdb_sess: requests.Session,
+                    sled_sess: requests.Session,
                     queue_fh, queued_ext_ids: set[str]) -> None:
     """Phase A: attach playable sledujteto sources to an existing series.
 
@@ -500,12 +582,12 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
     pipeline can re-host it. Episodes that already have a working
     prehrajto source still skip queuing — the viewer can play them today.
 
-    Playability gate: preview-host heuristic only (per #757). Probing
-    via cr-web at attach time deadlocks because the resolve handler's
-    abuse-guard requires the row to already exist in video_sources, and
-    a brand-new upload doesn't. `verify-sledujteto-sources.py` runs
-    after the importer to demote attached rows whose actual media URL
-    turns out to be on a data{N} CDN (~30% of `www`-preview entries).
+    Playability gate (per #769): each upload is probed against sledujteto's
+    public `add-file-link` endpoint at attach time; only uploads whose
+    resolved `video_url` host is `www.sledujteto.cz` get a row written.
+    We bypass our own `/api/sledujteto/resolve` (whose abuse-guard
+    requires the row to already exist in `video_sources` — #757's
+    chicken-and-egg) by hitting the upstream directly.
     """
     cur = conn.cursor()
     existing_eps = get_existing_episode_ids(cur, series.id)
@@ -542,21 +624,20 @@ def enrich_cluster(conn, cluster: SledujtetoCluster, series: SeriesRow,
         stats.queued_for_upload += 1
 
     for ep in cluster.episodes:
-        if not ep.playable:
-            stats.sources_skipped_unplayable += 1
-            _maybe_queue(ep)
-            continue
+        # If a sledujteto row for this upload already exists, the importer
+        # has nothing to do — leave the row's state (alive flag, lang_class,
+        # etc.) to whatever the last successful import / verify run set it
+        # to. Also skips the upstream probe round-trip per re-import.
         if ep.upload_id in existing_ext:
             stats.sources_skipped_present += 1
             continue
-        # No probe at attach time. The cr-web `/api/sledujteto/resolve`
-        # endpoint has an abuse-guard that requires `external_id` to be
-        # present in `video_sources` (chicken-and-egg: a brand-new upload
-        # has no row yet, so the probe would always 404). We trust the
-        # preview-host heuristic (`ep.playable`) here and rely on
-        # `scripts/verify-sledujteto-sources.py` running periodically to
-        # demote any rows whose actual media URL turns out to be on a
-        # data{N} CDN. See #757 for the chicken-and-egg analysis.
+        # Authoritative playability gate: probe sledujteto's add-file-link
+        # upstream and accept only `www.sledujteto.cz` resolutions. Probe
+        # results are cached per upload_id for the run (#769).
+        if not _is_playable_real(ep.upload_id, sled_sess):
+            stats.sources_skipped_unplayable += 1
+            _maybe_queue(ep)
+            continue
 
         cur.execute("SAVEPOINT slt_match")
         try:
@@ -695,6 +776,7 @@ def _queue_unplayable_episodes(eps: list[SledujtetoEpisode], tv,
 def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
                        stats: Stats, queue_fh, queued_ext_ids: set[str], *,
                        covers_dir: Path, tmdb_sess: requests.Session,
+                       sled_sess: requests.Session,
                        dry_run: bool) -> None:
     """Phase B: TMDB-resolve unmatched cluster; create or queue."""
     parsed = ParsedTitle(
@@ -734,7 +816,7 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
         # so unplayable uploads of existing series get into the re-host
         # JSONL (provided the episode doesn't already have prehraj.to).
         enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                        queue_fh, queued_ext_ids)
+                        sled_sess, queue_fh, queued_ext_ids)
         return
 
     if not cluster.has_any_playable:
@@ -780,7 +862,7 @@ def discover_cluster(conn, cluster: SledujtetoCluster, providers: dict,
     # source covers the episode), so the separate _queue_unplayable_episodes
     # call below is no longer needed for the newly-created series.
     enrich_cluster(conn, cluster, s_row, providers, stats, tmdb_sess,
-                    queue_fh, queued_ext_ids)
+                    sled_sess, queue_fh, queued_ext_ids)
     stats.clusters_new_tmdb += 1
 
 
@@ -870,6 +952,17 @@ def main() -> int:
 
     conn = psycopg2.connect(db_url)
     tmdb_sess = requests.Session()
+    # Separate session for sledujteto upstream probes (#769). Mirrors the
+    # default UA + Accept the official angular client sends; some endpoints
+    # quietly 403 generic python-requests UAs.
+    sled_sess = requests.Session()
+    sled_sess.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+    })
     cur = conn.cursor()
     providers = get_provider_ids(cur)
     if PROVIDER_SLUG not in providers:
@@ -898,11 +991,12 @@ def main() -> int:
                 # for unplayable uploads (skipping ones whose episode
                 # already has alive prehraj.to).
                 enrich_cluster(conn, cluster, match, providers, stats,
-                                tmdb_sess, queue_fh, queued_ext_ids)
+                                tmdb_sess, sled_sess, queue_fh, queued_ext_ids)
             elif match is None and ns.mode in ("discover", "both"):
                 discover_cluster(conn, cluster, providers, stats, queue_fh,
                                   queued_ext_ids,
                                   covers_dir=ns.covers_dir, tmdb_sess=tmdb_sess,
+                                  sled_sess=sled_sess,
                                   dry_run=ns.dry_run)
             cur.execute("RELEASE SAVEPOINT slt_cluster")
             if ns.dry_run:
