@@ -435,6 +435,7 @@ impl FilmsQuery {
         match self.razeni.as_deref() {
             Some("imdb") => Some("f.imdb_votes >= 500"),
             Some("tmdb") => Some("f.tmdb_vote_count >= 50"),
+            Some("csfd") => Some("f.csfd_rating_count >= 5"),
             _ => None,
         }
     }
