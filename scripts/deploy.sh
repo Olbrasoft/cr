@@ -43,6 +43,7 @@ echo "==> Checking scripts/ drift against ${VPS_HOST}:${REMOTE_SCRIPTS} ..."
 drift_output=$(rsync --archive --dry-run --delete --itemize-changes \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
+  --exclude 'node_modules/' \
   -e "$rsync_ssh" \
   scripts/ "${VPS_USER}@${VPS_HOST}:${REMOTE_SCRIPTS}" \
   | grep -v '^$' || true)
@@ -72,9 +73,13 @@ fi
 #    importers that fire during our restart window already see the new code.
 #    --delete so removed files disappear from the server.
 echo "==> Syncing scripts/ ..."
+# node_modules/ is excluded — produced locally by `npm install` for the
+# Node helpers (fetch_csfd_ratings.mjs etc.). On the VPS we install deps
+# in place via `npm install --omit=dev` after the rsync (see #762).
 rsync -avz --delete \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
+  --exclude 'node_modules/' \
   -e "$rsync_ssh" \
   scripts/ "${VPS_USER}@${VPS_HOST}:${REMOTE_SCRIPTS}"
 

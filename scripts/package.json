@@ -1,0 +1,15 @@
+{
+  "name": "cr-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js helper scripts for cr (ceskarepublika.wiki). Python scripts coexist in the same directory.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "node-csfd-api": "^5.10.0",
+    "p-limit": "^5.0.0",
+    "pg": "^8.13.0"
+  }
+}
