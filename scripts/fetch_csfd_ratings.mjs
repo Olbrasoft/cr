@@ -40,6 +40,7 @@
 import { csfd } from "node-csfd-api";
 import pg from "pg";
 import pLimit from "p-limit";
+import fs from "node:fs";
 
 const TABLES = ["films", "series", "tv_shows"];
 
@@ -50,6 +51,7 @@ function parseArgs(argv) {
     concurrency: 8,
     maxAgeDays: 7,
     dryRun: false,
+    tsvOut: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -59,11 +61,13 @@ function parseArgs(argv) {
     else if (a === "--concurrency") args.concurrency = parseInt(next(), 10);
     else if (a === "--max-age-days") args.maxAgeDays = parseInt(next(), 10);
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--tsv-out") args.tsvOut = next();
     else if (a === "--help" || a === "-h") {
       console.log(
         "Usage: node fetch_csfd_ratings.mjs --table films|series|tv_shows|all\n" +
           "                                  [--limit N=5000] [--concurrency C=8]\n" +
-          "                                  [--max-age-days D=7] [--dry-run]\n",
+          "                                  [--max-age-days D=7] [--dry-run]\n" +
+          "                                  [--tsv-out path]\n",
       );
       process.exit(0);
     } else {
@@ -80,6 +84,31 @@ function parseArgs(argv) {
   if (!Number.isFinite(args.maxAgeDays) || args.maxAgeDays < 0)
     throw new Error("--max-age-days must be a non-negative integer");
   return args;
+}
+
+// Per-row TSV log so a debug run can produce a machine-readable trace
+// alongside the human-readable stdout. Default routing for systemd is
+// stdout → /var/log/cr-csfd-ratings.log (configured by #762's unit
+// file); the TSV is opt-in via --tsv-out and is meant for ad-hoc local
+// debugging and the one-shot initial backfill (#763).
+let tsvStream = null;
+function openTsv(path) {
+  if (!path) return;
+  try {
+    tsvStream = fs.createWriteStream(path, { flags: "a" });
+    tsvStream.on("error", (e) => {
+      console.error(`tsv-out: write error on ${path}: ${e.message} — falling back to stdout only`);
+      tsvStream = null;
+    });
+    tsvStream.write("ts\ttable\tid\tcsfd_id\trating\tcount\tstatus\n");
+  } catch (e) {
+    console.error(`tsv-out: cannot open ${path}: ${e.message} — falling back to stdout only`);
+    tsvStream = null;
+  }
+}
+function writeTsv(cols) {
+  if (!tsvStream) return;
+  tsvStream.write([new Date().toISOString(), ...cols].join("\t") + "\n");
 }
 
 async function pickRows(pool, table, limit, maxAgeDays) {
@@ -118,18 +147,17 @@ async function processTable(pool, table, args) {
 
   const tasks = rows.map((row) =>
     limit(async () => {
+      let r = null;
       try {
-        const r = await fetchOne(row.csfd_id);
-        stats.ok++;
-        if (r.rating != null) stats.withRating++;
+        r = await fetchOne(row.csfd_id);
         if (args.dryRun) {
-          if (stats.ok <= 5)
+          if (stats.ok < 5)
             console.log(`  DRY id=${row.id} csfd=${row.csfd_id} → rating=${r.rating} count=${r.ratingCount}`);
         } else {
-          // The UPDATE is guarded on id, not on the synced_at window. If a
-          // parallel worker already stamped this row between SELECT and
-          // UPDATE, we'd just overwrite with a fresher value — that's a
-          // no-op for correctness. We do NOT touch csfd_id.
+          // The UPDATE is unguarded — last writer wins. If a parallel
+          // worker stamped this row between SELECT and UPDATE we'd just
+          // overwrite with a fresher value, which is a no-op for
+          // correctness. We do NOT touch csfd_id.
           const res = await pool.query(
             `UPDATE ${table}
                 SET csfd_rating = $1,
@@ -140,9 +168,17 @@ async function processTable(pool, table, args) {
           );
           if (res.rowCount > 0) stats.applied++;
         }
+        // Only count a row as ok once both fetch AND (dry-run or UPDATE)
+        // succeeded — Copilot review on PR #768 caught the previous code
+        // double-counting rows whose fetch passed but UPDATE threw
+        // (both ok++ and err++ ran for the same row).
+        stats.ok++;
+        if (r.rating != null) stats.withRating++;
+        writeTsv([table, row.id, row.csfd_id, r.rating ?? "", r.ratingCount, "ok"]);
       } catch (e) {
         stats.err++;
         errors.push({ id: row.id, csfd_id: row.csfd_id, msg: e.message.slice(0, 200) });
+        writeTsv([table, row.id, row.csfd_id, "", "", "err:" + e.message.slice(0, 80).replace(/\t/g, " ")]);
       }
       if ((stats.ok + stats.err) % 100 === 0) {
         const elapsed = (Date.now() - t0) / 1000;
@@ -173,13 +209,16 @@ async function main() {
   const args = parseArgs(process.argv);
   console.log(
     `cr-csfd-ratings: table=${args.table} limit=${args.limit} conc=${args.concurrency}` +
-      ` max-age=${args.maxAgeDays}d dry-run=${args.dryRun}`,
+      ` max-age=${args.maxAgeDays}d dry-run=${args.dryRun}` +
+      (args.tsvOut ? ` tsv-out=${args.tsvOut}` : ""),
   );
 
   if (!process.env.DATABASE_URL) {
     console.error("ERROR: DATABASE_URL not set");
     process.exit(2);
   }
+
+  openTsv(args.tsvOut);
 
   // Pool sized to match worker concurrency + 1 spare for the picker SELECT.
   // pg.Client (single connection) would serialise all queries through one
@@ -198,6 +237,9 @@ async function main() {
     }
   } finally {
     await pool.end();
+    if (tsvStream) {
+      await new Promise((resolve) => tsvStream.end(resolve));
+    }
   }
   process.exit(totalErr > 0 ? 1 : 0);
 }
