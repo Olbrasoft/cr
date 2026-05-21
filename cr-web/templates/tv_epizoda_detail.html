@@ -82,6 +82,32 @@
         <div class="episode-meta">
             {% match episode.air_date %}{% when Some with (d) %}<span class="meta-pill">📅 {{ d }}</span>{% when None %}{% endmatch %}
             {% match episode.runtime %}{% when Some with (r) %}<span class="meta-pill">⏱ {{ r }} min</span>{% when None %}{% endmatch %}
+            {# Parent show ratings — episodes inherit them so the viewer doesn't
+               have to bounce up to /tv-porady/{slug}/ to see them. All external
+               links carry rel="nofollow noopener". #}
+            {% match show.tmdb_rating %}
+            {% when Some with (r) %}
+                {% match show.tmdb_id %}
+                {% when Some with (tid) %}<a class="meta-badge tmdb" href="https://www.themoviedb.org/tv/{{ tid }}" target="_blank" rel="nofollow noopener" title="Otevřít na TMDB">TMDB {{ "{:.1}"|format(r) }}{% match show.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</a>
+                {% when None %}<span class="meta-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}{% match show.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</span>
+                {% endmatch %}
+            {% when None %}{% endmatch %}
+            {% match show.imdb_rating %}
+            {% when Some with (r) %}
+                {% match show.imdb_id %}
+                {% when Some with (iid) %}<a class="meta-badge imdb" href="https://www.imdb.com/title/{{ iid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na IMDb">IMDb {{ "{:.1}"|format(r) }}{% match show.imdb_votes %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</a>
+                {% when None %}<span class="meta-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}{% match show.imdb_votes %}{% when Some with (vc) %} · {{ vc }}{% when None %}{% endmatch %}</span>
+                {% endmatch %}
+            {% when None %}{% endmatch %}
+            {% match show.csfd_rating %}
+            {% when Some with (r) %}
+                {% if show.csfd_rating_count.unwrap_or(0) >= 5 %}
+                    {% match show.csfd_id %}
+                    {% when Some with (cid) %}<a class="meta-badge csfd" href="https://www.csfd.cz/film/{{ cid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na ČSFD">ČSFD {{ r }}% · {{ show.csfd_rating_count.unwrap_or(0) }}</a>
+                    {% when None %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}% · {{ show.csfd_rating_count.unwrap_or(0) }}</span>
+                    {% endmatch %}
+                {% endif %}
+            {% when None %}{% endmatch %}
         </div>
         {% match episode.overview %}{% when Some with (o) %}<p class="episode-overview">{{ o }}</p>{% when None %}{% endmatch %}
     </div>
@@ -162,6 +188,11 @@ video::cue { background: rgba(0,0,0,0.7); color: white; font-family: sans-serif;
 .episode-info h2 { margin: 0 0 0.5rem; font-size: 1.3rem; }
 .episode-meta { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
 .meta-pill { padding: 0.2rem 0.6rem; background: #f1f5f9; border-radius: 999px; font-size: 0.82rem; color: #555; }
+.meta-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; text-decoration: none; }
+.meta-badge.tmdb { background: #01b4e4; color: #fff; }
+.meta-badge.imdb { background: #f5c518; color: #000; }
+.meta-badge.csfd { background: #ba0305; color: #fff; }
+a.meta-badge:hover { filter: brightness(1.1); }
 .episode-overview { line-height: 1.6; color: #333; margin-bottom: 1rem; }
 .crew-row { margin-bottom: 0.4rem; font-size: 0.9rem; }
 .crew-label { font-weight: 600; color: #555; margin-right: 0.3rem; }

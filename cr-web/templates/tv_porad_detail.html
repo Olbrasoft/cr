@@ -66,19 +66,32 @@
             {% when Some with (ot) %}{% if ot.as_str() != show.title.as_str() %}<p class="original-title">{{ ot }}</p>{% endif %}
             {% when None %}{% endmatch %}
             <div class="meta-row">
+                {# Rating chips link out to the source database when an external
+                   id is set (TMDB tv → themoviedb.org/tv/{id}, IMDb →
+                   imdb.com/title/{ttid}, ČSFD → csfd.cz/film/{id}). All external
+                   links carry rel="nofollow noopener" so the SEO juice stays on
+                   ceskarepublika.wiki. Vote-count suffix lets the visitor judge
+                   how representative the rating is. #}
                 {% match show.tmdb_rating %}
-                {% when Some with (r) %}<span class="meta-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}</span>
+                {% when Some with (r) %}
+                    {% match show.tmdb_id %}
+                    {% when Some with (tid) %}<a class="meta-badge tmdb" href="https://www.themoviedb.org/tv/{{ tid }}" target="_blank" rel="nofollow noopener" title="Otevřít na TMDB">TMDB {{ "{:.1}"|format(r) }}{% match show.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }} hodnocení{% when None %}{% endmatch %}</a>
+                    {% when None %}<span class="meta-badge tmdb" title="TMDB hodnocení">TMDB {{ "{:.1}"|format(r) }}{% match show.tmdb_vote_count %}{% when Some with (vc) %} · {{ vc }} hodnocení{% when None %}{% endmatch %}</span>
+                    {% endmatch %}
                 {% when None %}{% endmatch %}
                 {% match show.imdb_rating %}
-                {% when Some with (r) %}<span class="meta-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}</span>
+                {% when Some with (r) %}
+                    {% match show.imdb_id %}
+                    {% when Some with (iid) %}<a class="meta-badge imdb" href="https://www.imdb.com/title/{{ iid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na IMDb">IMDb {{ "{:.1}"|format(r) }}{% match show.imdb_votes %}{% when Some with (vc) %} · {{ vc }} hodnocení{% when None %}{% endmatch %}</a>
+                    {% when None %}<span class="meta-badge imdb" title="IMDb hodnocení">IMDb {{ "{:.1}"|format(r) }}{% match show.imdb_votes %}{% when Some with (vc) %} · {{ vc }} hodnocení{% when None %}{% endmatch %}</span>
+                    {% endmatch %}
                 {% when None %}{% endmatch %}
-                {# ČSFD chip (#764) — link to csfd.cz when csfd_id is set; hide
-                   when fewer than 5 users rated. #}
+                {# ČSFD chip (#764) — hide when fewer than 5 users rated. #}
                 {% match show.csfd_rating %}
                 {% when Some with (r) %}
                     {% if show.csfd_rating_count.unwrap_or(0) >= 5 %}
                         {% match show.csfd_id %}
-                        {% when Some with (cid) %}<a class="meta-badge csfd" href="https://www.csfd.cz/film/{{ cid }}/" target="_blank" rel="noopener" title="Otevřít na ČSFD">ČSFD {{ r }}% · {{ show.csfd_rating_count.unwrap_or(0) }} hodnocení</a>
+                        {% when Some with (cid) %}<a class="meta-badge csfd" href="https://www.csfd.cz/film/{{ cid }}/" target="_blank" rel="nofollow noopener" title="Otevřít na ČSFD">ČSFD {{ r }}% · {{ show.csfd_rating_count.unwrap_or(0) }} hodnocení</a>
                         {% when None %}<span class="meta-badge csfd" title="ČSFD hodnocení">ČSFD {{ r }}% · {{ show.csfd_rating_count.unwrap_or(0) }} hodnocení</span>
                         {% endmatch %}
                     {% endif %}
@@ -150,11 +163,12 @@
 .film-meta .year { color: #888; font-weight: 400; }
 .original-title { color: #888; font-style: italic; margin: 0 0 0.6rem; font-size: 0.9rem; }
 .meta-row { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
-.meta-badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.meta-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.82rem; font-weight: 600; text-decoration: none; }
 .meta-badge.tmdb { background: #01b4e4; color: #fff; }
 .meta-badge.imdb { background: #f5c518; color: #000; }
 .meta-badge.csfd { background: #ba0305; color: #fff; }
 .meta-badge.none { background: #eef2f7; color: #6b7785; font-style: italic; }
+a.meta-badge:hover { filter: brightness(1.1); }
 .film-description { line-height: 1.6; color: #333; }
 
 .seasons-header { display: flex; justify-content: space-between; align-items: center; margin: 1rem 0 0.8rem; }
