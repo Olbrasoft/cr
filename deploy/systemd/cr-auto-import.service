@@ -15,7 +15,10 @@ StartLimitIntervalSec=300
 # tick — see #779 (Dhurandhar: The Revenge, 2026-05-22).
 #
 # OnSuccess (systemd 249+) is preferred over ExecStartPost calling systemctl:
-#   * fires only on a clean successful exit, not on Restart=on-failure paths,
+#   * fires only after the unit reaches a successful end state. Restart=
+#     on-failure doesn't prevent the hook — it just delays it: a failed
+#     attempt restarts, and OnSuccess waits until one of those attempts
+#     succeeds (and never fires for the failed ones).
 #   * runs as a fully independent unit transaction (no PID-1 reentrancy),
 #   * no /bin/systemctl path baked into the unit (some distros only have
 #     /usr/bin/systemctl, and Copilot review on #778 flagged the hardcoded
