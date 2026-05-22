@@ -321,12 +321,16 @@ def _probe_real_media_host(upload_id: str, sess: requests.Session,
             return None
 
     host = _attempt()
+    # Between attempts we sleep at least `sleep_after` to preserve the
+    # politeness floor (`~5 req/s` to stay below sledujteto's throttling
+    # threshold). `retry_delay` adds a longer back-off on top so the
+    # blip we're retrying past has actually cleared.
+    inter_attempt_sleep = max(retry_delay, sleep_after)
     for attempt_idx in range(retries):
         if host is not None:
             break
-        time.sleep(retry_delay)
-        log.debug("probe upload_id=%s retry %d/%d",
-                   upload_id, attempt_idx + 1, retries)
+        time.sleep(inter_attempt_sleep)
+        log.debug("probe upload_id=%s retry %d/%d", upload_id, attempt_idx + 1, retries)
         host = _attempt()
 
     # Only cache successful resolutions — transient failures must be
