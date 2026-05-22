@@ -258,7 +258,9 @@ def _split_compound(raw_title: str) -> list[str]:
 
 
 def _probe_real_media_host(upload_id: str, sess: requests.Session,
-                            *, sleep_after: float = 0.20) -> str | None:
+                            *, sleep_after: float = 0.20,
+                            retries: int = 1,
+                            retry_delay: float = 0.5) -> str | None:
     """POST sledujteto's public add-file-link; return the hostname of the
     resolved `video_url`, or None on any error.
 
@@ -275,9 +277,17 @@ def _probe_real_media_host(upload_id: str, sess: requests.Session,
     caching spares us N redundant POSTs for the same id. **Failures are
     NOT cached**: a transient network blip or upstream 5xx must not
     permanently mark an otherwise-playable upload as unplayable for the
-    rest of the run. Repeated genuine failures will re-probe on each
-    encounter, but uploads typically appear in 1–2 clusters max, so the
-    extra cost is negligible.
+    rest of the run.
+
+    On first failure (exception, non-200, missing `video_url`) we wait
+    `retry_delay` seconds and try again — `retries` extra attempts max
+    (default 1, so up to 2 total attempts per upload). This absorbs the
+    one-off blips that cluster-internal retries don't catch — single-
+    alias clusters (e.g. Valor #776) get probed exactly once per run,
+    so without an inline retry a single bad packet permanently drops
+    the upload. A run-wide ~30 % miss rate × 0.5s extra wait adds
+    ~15 % overhead in the worst case, but in practice probe success on
+    first try is near-100 % so the cost is small.
 
     Caller treats `None` as "not playable from our IPs" — that errs on
     the safe side (no bogus alive row) and never inserts something we
@@ -289,25 +299,40 @@ def _probe_real_media_host(upload_id: str, sess: requests.Session,
     """
     if upload_id in _PROBE_CACHE:
         return _PROBE_CACHE[upload_id]
-    host: str | None
-    try:
-        r = sess.post(
-            PROBE_URL,
-            json={"params": {"id": int(upload_id)}},
-            headers={
-                "Content-Type": "application/json;charset=UTF-8",
-                "Accept": "application/json, text/plain, */*",
-                "Requested-With-AngularJS": "true",
-            },
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        url = (data.get("video_url") or "").strip()
-        host = urlparse(url).hostname if url else None
-    except Exception as e:  # noqa: BLE001
-        log.debug("probe upload_id=%s failed: %s", upload_id, e)
-        host = None
+
+    def _attempt() -> str | None:
+        try:
+            r = sess.post(
+                PROBE_URL,
+                json={"params": {"id": int(upload_id)}},
+                headers={
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "Accept": "application/json, text/plain, */*",
+                    "Requested-With-AngularJS": "true",
+                },
+                timeout=10,
+            )
+            r.raise_for_status()
+            data = r.json()
+            url = (data.get("video_url") or "").strip()
+            return urlparse(url).hostname if url else None
+        except Exception as e:  # noqa: BLE001
+            log.debug("probe upload_id=%s failed: %s", upload_id, e)
+            return None
+
+    host = _attempt()
+    # Between attempts we sleep at least `sleep_after` to preserve the
+    # politeness floor (`~5 req/s` to stay below sledujteto's throttling
+    # threshold). `retry_delay` adds a longer back-off on top so the
+    # blip we're retrying past has actually cleared.
+    inter_attempt_sleep = max(retry_delay, sleep_after)
+    for attempt_idx in range(retries):
+        if host is not None:
+            break
+        time.sleep(inter_attempt_sleep)
+        log.debug("probe upload_id=%s retry %d/%d", upload_id, attempt_idx + 1, retries)
+        host = _attempt()
+
     # Only cache successful resolutions — transient failures must be
     # retryable on subsequent encounters (see docstring).
     if host is not None:
