@@ -7,6 +7,24 @@ Wants=network-online.target
 # StartLimit* belongs in [Unit] since systemd 230 — warning emitted when in [Service].
 StartLimitBurst=2
 StartLimitIntervalSec=300
+# After a successful import, kick the IMDb rating sync so freshly imported
+# films get imdb_rating / imdb_votes populated immediately instead of waiting
+# until the next daily cr-imdb-rating-sync.timer tick. The daily IMDb sync
+# timer is scheduled to fire BEFORE this auto-import timer, so newly inserted
+# rows would otherwise sit with NULL imdb_rating for ~24 h until tomorrow's
+# tick — see #779 (Dhurandhar: The Revenge, 2026-05-22).
+#
+# OnSuccess (systemd 249+) is preferred over ExecStartPost calling systemctl:
+#   * fires only on a clean successful exit, not on Restart=on-failure paths,
+#   * runs as a fully independent unit transaction (no PID-1 reentrancy),
+#   * no /bin/systemctl path baked into the unit (some distros only have
+#     /usr/bin/systemctl, and Copilot review on #778 flagged the hardcoded
+#     path as non-portable).
+# The triggered sync is itself a no-op when IMDb's TSV is unchanged since
+# the last run (cached Last-Modified → HTTP 304 → early exit before any
+# UPDATE), so firing this hook after every auto-import is cheap on days
+# when IMDb hasn't republished.
+OnSuccess=cr-imdb-rating-sync.service
 
 [Service]
 Type=oneshot
@@ -23,18 +41,6 @@ EnvironmentFile=/opt/cr/.env
 # successful run. A finite cap caused a permanent backlog when daily uploads
 # exceeded the cap. Postmortem: PR #629.
 ExecStart=/bin/bash -c 'DATABASE_URL=$${DATABASE_URL//@db:/@127.0.0.1:} exec /usr/bin/python3 -u /opt/cr/scripts/auto-import.py --trigger cron --max-new 0'
-# After the import lands new rows, kick the IMDb rating sync so freshly
-# imported films get their imdb_rating / imdb_votes immediately instead
-# of waiting ~24 h for the next daily timer. The daily cr-imdb-rating-sync
-# timer runs at 04:36 UTC; this auto-import service starts at 05:04 UTC
-# and was the reason new rows had a one-day lag on imdb_rating (see #779
-# postmortem: Dhurandhar: The Revenge 2026-05-22).
-# --no-block: don't wait for sync-imdb-ratings.py to finish. Leading
-# dash on the path: ignore errors (the sync exiting non-zero must not
-# flip cr-auto-import.service to failed — the daily timer will retry
-# tomorrow). The sync script is a no-op when the IMDb TSV is unchanged
-# since the previous run, so this is safe to fire after every import.
-ExecStartPost=-/bin/systemctl start --no-block cr-imdb-rating-sync.service
 StandardOutput=append:/var/log/cr-auto-import.log
 StandardError=append:/var/log/cr-auto-import.log
 # systemd tries 1 restart for transient failures (e.g. SK Torrent 502).
