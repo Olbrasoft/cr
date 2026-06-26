@@ -131,11 +131,19 @@ pub async fn download_video_with_progress(
         // Re-extract to obtain a fresh tokenized manifest URL from `info.formats[0].url`.
         let info = extractors::nova::nova_proxy_extract_info(client, url).await?;
         let m3u8 = &info.formats[0].url;
-        extractors::ytdlp::ytdlp_download(m3u8, "best", container, output_path, progress.clone())
-            .await?;
+        extractors::ytdlp::ytdlp_download(
+            m3u8,
+            format_id,
+            "best",
+            container,
+            output_path,
+            progress.clone(),
+        )
+        .await?;
     } else {
         extractors::ytdlp::ytdlp_download(
             url,
+            format_id,
             resolution,
             container,
             output_path,
