@@ -6,6 +6,7 @@ use super::super::{VideoFormat, VideoInfo};
 /// yt-dlp JSON output structure (subset of fields we need).
 #[derive(Deserialize)]
 struct YtDlpInfo {
+    id: Option<String>,
     title: Option<String>,
     thumbnail: Option<String>,
     duration: Option<f64>,
@@ -27,6 +28,14 @@ struct YtDlpFormat {
     #[serde(default)]
     vcodec: Option<String>,
 }
+
+struct SelectedYtDlpInfo {
+    info: YtDlpInfo,
+    playlist_item_id: Option<String>,
+    playlist_item_index: Option<usize>,
+}
+
+const X_ITEM_FORMAT_PREFIX: &str = "x-item:";
 
 /// Build yt-dlp command with optional proxy from YTDLP_PROXY env var.
 pub(crate) fn ytdlp_command() -> tokio::process::Command {
@@ -77,8 +86,10 @@ pub(crate) async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let raw: YtDlpInfo =
-        serde_json::from_str(&stdout).context("Failed to parse yt-dlp JSON output")?;
+    let selected = parse_ytdlp_info_stdout(&stdout, url)?;
+    let raw = selected.info;
+    let playlist_item_id = selected.playlist_item_id.as_deref();
+    let playlist_item_index = selected.playlist_item_index;
 
     let formats = if let Some(fmts) = &raw.formats {
         let all_fmts: Vec<_> = fmts
@@ -94,8 +105,13 @@ pub(crate) async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
                 } else {
                     f.format_id.clone().unwrap_or_else(|| "unknown".to_string())
                 };
+                let format_id = f.format_id.clone().unwrap_or_default();
                 VideoFormat {
-                    format_id: f.format_id.clone().unwrap_or_default(),
+                    format_id: mark_playlist_format_id(
+                        format_id,
+                        playlist_item_index,
+                        playlist_item_id,
+                    ),
                     resolution,
                     ext: f.ext.clone().unwrap_or_else(|| "mp4".to_string()),
                     url: f.url.clone().unwrap_or_default(),
@@ -115,7 +131,11 @@ pub(crate) async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
         seen.into_values().collect()
     } else if let Some(url) = &raw.url {
         vec![VideoFormat {
-            format_id: "default".to_string(),
+            format_id: mark_playlist_format_id(
+                "default".to_string(),
+                playlist_item_index,
+                playlist_item_id,
+            ),
             resolution: raw
                 .height
                 .map(|h| format!("{h}p"))
@@ -138,6 +158,120 @@ pub(crate) async fn ytdlp_extract_info(url: &str) -> Result<VideoInfo> {
         duration: raw.duration,
         uploader: raw.uploader,
         formats,
+    })
+}
+
+fn parse_ytdlp_info_stdout(stdout: &str, source_url: &str) -> Result<SelectedYtDlpInfo> {
+    if let Ok(info) = serde_json::from_str::<YtDlpInfo>(stdout) {
+        return Ok(SelectedYtDlpInfo {
+            info,
+            playlist_item_id: None,
+            playlist_item_index: None,
+        });
+    }
+
+    if !is_x_url(source_url) {
+        let Err(err) = serde_json::from_str::<YtDlpInfo>(stdout) else {
+            unreachable!("single-object parse already failed");
+        };
+        return Err(err).context("Failed to parse yt-dlp JSON output");
+    }
+
+    let mut items = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let item: YtDlpInfo =
+            serde_json::from_str(line).context("Failed to parse yt-dlp JSONL item")?;
+        items.push(item);
+    }
+
+    if items.is_empty() {
+        anyhow::bail!("Failed to parse yt-dlp JSON output: empty output");
+    }
+
+    let selected_index = select_x_playlist_item(&items, source_url);
+    let info = items.swap_remove(selected_index);
+    let playlist_item_id = info.id.clone();
+    tracing::info!(
+        "yt-dlp returned multiple X/Twitter videos for {source_url}; selected item {}",
+        playlist_item_id.as_deref().unwrap_or("unknown")
+    );
+
+    Ok(SelectedYtDlpInfo {
+        info,
+        playlist_item_id,
+        playlist_item_index: Some(selected_index + 1),
+    })
+}
+
+fn select_x_playlist_item(items: &[YtDlpInfo], source_url: &str) -> usize {
+    if let Some(status_id) = x_status_id(source_url)
+        && let Some((idx, _)) = items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.id.as_deref() == Some(status_id.as_str()))
+    {
+        return idx;
+    }
+
+    items
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, item)| {
+            item.id
+                .as_deref()
+                .and_then(|id| id.parse::<u64>().ok())
+                .unwrap_or(0)
+        })
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn mark_playlist_format_id(
+    format_id: String,
+    playlist_item_index: Option<usize>,
+    playlist_item_id: Option<&str>,
+) -> String {
+    match (playlist_item_index, playlist_item_id) {
+        (Some(item_index), Some(item_id)) if item_index > 0 && !item_id.is_empty() => {
+            format!("{X_ITEM_FORMAT_PREFIX}{item_index}:{item_id}:{format_id}")
+        }
+        _ => format_id,
+    }
+}
+
+fn selected_playlist_item_from_format_id(format_id: &str) -> Option<usize> {
+    format_id
+        .strip_prefix(X_ITEM_FORMAT_PREFIX)
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(item_index, _)| item_index.parse::<usize>().ok())
+        .filter(|item_index| *item_index > 0)
+}
+
+fn is_x_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .map(|host| {
+            host == "x.com"
+                || host.ends_with(".x.com")
+                || host == "twitter.com"
+                || host.ends_with(".twitter.com")
+        })
+        .unwrap_or(false)
+}
+
+fn x_status_id(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if !is_x_url(url) {
+        return None;
+    }
+
+    let segments: Vec<_> = parsed.path_segments()?.collect();
+    segments.windows(2).find_map(|pair| match pair {
+        ["status", id] | ["statuses", id] if id.bytes().all(|b| b.is_ascii_digit()) => {
+            Some((*id).to_string())
+        }
+        _ => None,
     })
 }
 
@@ -191,6 +325,7 @@ fn build_format_selector(height: &str, container: &str) -> String {
 /// stable filename regardless of the real on-disk container.
 pub(crate) async fn ytdlp_download(
     url: &str,
+    format_id: &str,
     resolution: &str,
     container: &str,
     output_path: &std::path::Path,
@@ -221,16 +356,21 @@ pub(crate) async fn ytdlp_download(
     //   bestvideo[height<=720]+bestaudio/best[height<=720]/best
     let format_selector = build_format_selector(&height, container);
 
-    let mut child = ytdlp_command()
-        .args([
-            "-f",
-            &format_selector,
-            "--newline",
-            "-o",
-            output_template_str,
-            "--no-warnings",
-            url,
-        ])
+    let mut cmd = ytdlp_command();
+    cmd.args([
+        "-f",
+        &format_selector,
+        "--newline",
+        "-o",
+        output_template_str,
+        "--no-warnings",
+    ]);
+    if let Some(item_index) = selected_playlist_item_from_format_id(format_id) {
+        cmd.arg("--playlist-items").arg(item_index.to_string());
+    }
+    cmd.arg(url);
+
+    let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -339,4 +479,82 @@ pub(crate) fn parse_ytdlp_progress(line: &str) -> Option<u8> {
         return Some(pct.min(99.0) as u8);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(id: &str) -> YtDlpInfo {
+        YtDlpInfo {
+            id: Some(id.to_string()),
+            title: None,
+            thumbnail: None,
+            duration: None,
+            uploader: None,
+            formats: None,
+            url: Some(format!("https://video.twimg.com/{id}.mp4")),
+            ext: Some("mp4".to_string()),
+            height: Some(720),
+        }
+    }
+
+    #[test]
+    fn x_playlist_prefers_status_id_from_url_when_present() {
+        let items = vec![item("2070490666686193664"), item("2070497305506304440")];
+
+        let idx =
+            select_x_playlist_item(&items, "https://x.com/nexta_tv/status/2070497305506304440");
+
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn x_playlist_falls_back_to_newest_numeric_item_id() {
+        let items = vec![item("2070186382052515840"), item("2070490666686193664")];
+
+        let idx =
+            select_x_playlist_item(&items, "https://x.com/nexta_tv/status/2070497305506304440");
+
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn x_jsonl_parse_marks_formats_with_selected_item_id() {
+        let stdout = concat!(
+            "{\"id\":\"2070186382052515840\",\"formats\":[{\"format_id\":\"http-640\",\"url\":\"https://cdn.example/old.mp4\",\"height\":640,\"vcodec\":\"avc1\"}]}\n",
+            "{\"id\":\"2070490666686193664\",\"formats\":[{\"format_id\":\"http-720\",\"url\":\"https://cdn.example/new.mp4\",\"height\":720,\"vcodec\":\"avc1\"}]}\n"
+        );
+
+        let selected =
+            parse_ytdlp_info_stdout(stdout, "https://x.com/nexta_tv/status/2070497305506304440")
+                .expect("jsonl should parse");
+
+        assert_eq!(
+            selected.playlist_item_id.as_deref(),
+            Some("2070490666686193664")
+        );
+        assert_eq!(selected.playlist_item_index, Some(2));
+        let format_id = mark_playlist_format_id(
+            "http-720".to_string(),
+            selected.playlist_item_index,
+            selected.playlist_item_id.as_deref(),
+        );
+        assert_eq!(format_id, "x-item:2:2070490666686193664:http-720");
+    }
+
+    #[test]
+    fn selected_playlist_item_reads_x_format_prefix() {
+        let item_index =
+            selected_playlist_item_from_format_id("x-item:1:2070490666686193664:http-720");
+
+        assert_eq!(item_index, Some(1));
+    }
+
+    #[test]
+    fn selected_playlist_item_ignores_plain_format_ids() {
+        let item_index = selected_playlist_item_from_format_id("http-720");
+
+        assert_eq!(item_index, None);
+    }
 }
