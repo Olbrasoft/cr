@@ -21,6 +21,7 @@ mod csfd_watchlist;
 mod download_video;
 mod films;
 mod filmy_serialy;
+mod games;
 mod geojson;
 mod landmarks;
 pub mod movies_api;
@@ -43,6 +44,7 @@ pub use films::{
     SktorrentSource, films_detail, films_list, films_person_image, films_search, sktorrent_resolve,
 };
 pub use filmy_serialy::filmy_serialy;
+pub use games::tetris;
 pub use geojson::{geojson_municipality, geojson_orp};
 pub use landmarks::{api_landmarks, landmarks_by_url, landmarks_index};
 pub use pools::{pools_by_category, pools_hub};
