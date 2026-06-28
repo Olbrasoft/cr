@@ -15,6 +15,7 @@ pub mod admin_dashboard;
 pub mod admin_import;
 pub mod admin_prehrajto;
 mod admin_test_sledujteto;
+mod arkanoid;
 mod audiobooks;
 pub mod cover_proxy;
 mod csfd_watchlist;
@@ -36,6 +37,7 @@ mod voices;
 
 // Re-export all public handlers so main.rs doesn't need changes
 pub use admin_test_sledujteto::admin_test_sledujteto;
+pub use arkanoid::arkanoid;
 pub use audiobooks::audiobooks;
 pub use csfd_watchlist::csfd_watchlist;
 pub use download_video::download_video;

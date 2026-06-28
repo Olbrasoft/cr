@@ -483,6 +483,8 @@ async fn main() -> Result<()> {
             "/prirodni-koupaliste/",
             axum::routing::get(handlers::pools_by_category),
         )
+        .route("/hry/arkanoid", axum::routing::get(handlers::arkanoid))
+        .route("/hry/arkanoid/", axum::routing::get(handlers::arkanoid))
         .route("/img/{*path}", axum::routing::get(img_proxy::img_proxy))
         .nest_service("/static", ServeDir::new(&state.config.static_dir))
         .fallback(axum::routing::get(handlers::resolve_path));
