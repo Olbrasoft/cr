@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}{{ person_name }} — filmy online{% endblock %}
+
+{% block meta_description %}Filmy s {{ person_name }} ke zhlédnutí online zdarma na ceskarepublika.wiki.{% endblock %}
+
+{% block og_title %}{{ person_name }} — filmy online{% endblock %}
+{% block og_description %}Filmy s {{ person_name }} ke zhlédnutí online zdarma na ceskarepublika.wiki.{% endblock %}
+{% block og_type %}profile{% endblock %}
+{% block og_image %}{% match profile_filename %}{% when Some with (f) %}https://ceskarepublika.wiki/filmy-online/person/{{ f }}{% when None %}https://ceskarepublika.wiki/static/img/og-filmy-a-serialy-v6.png{% endmatch %}{% endblock %}
+
+{% block leaflet %}{% endblock %}
+
+{% block head %}
+<link rel="icon" type="image/svg+xml" href="/static/img/logo-filmy-a-serialy.svg?v=6">
+<meta property="og:url" content="https://ceskarepublika.wiki/filmy-online/osoba/">
+{% endblock %}
+
+{% block header_left %}
+<div class="logo-group" style="display:flex;align-items:center;gap:0.5rem;">
+    <a href="/filmy-online/" style="display:flex;align-items:center;text-decoration:none;">
+        <img src="/static/img/logo-filmy-a-serialy.svg?v=6"
+            alt="Logo Filmy online" title="Filmy online" class="header-emblem">
+    </a>
+    <h1>{{ person_name }}</h1>
+</div>
+{% endblock %}
+
+{% block header_search %}
+<div class="search-container" id="header-search-box">
+    <input type="text" id="film-search" class="search-input" placeholder="Hledat film..." autocomplete="off">
+    <button class="search-btn" onclick="doSearch()">Hledat</button>
+    <div id="search-results" class="search-dropdown"></div>
+</div>
+{% endblock %}
+
+{% block header_right %}<div class="context-emblem"></div>{% endblock %}
+
+{% block content %}
+<main class="person-page">
+    <nav class="breadcrumb">
+        <a href="/">Česká republika</a>
+        <span>›</span> <a href="/filmy-online/">Filmy online</a>
+        <span>›</span> <span>{{ person_name }}</span>
+    </nav>
+
+    <header class="person-header">
+        {% match profile_filename %}
+        {% when Some with (f) %}
+        <img class="person-header-photo" src="/filmy-online/person/{{ f }}?v=2" alt="{{ person_name }}" width="120" height="180" loading="lazy">
+        {% when None %}
+        <div class="person-header-photo placeholder">{{ person_name }}</div>
+        {% endmatch %}
+        <div class="person-header-info">
+            <h2>{{ person_name }}</h2>
+        </div>
+    </header>
+
+    {% if !acting_films.is_empty() %}
+    <section class="person-section">
+        <h3>Herec / herečka</h3>
+        <div class="films-grid">
+            {% for f in acting_films %}
+            <a href="/filmy-online/{{ f.slug }}/" class="film-card">
+                <div class="film-poster">
+                    <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy" width="200" height="300">
+                    <div class="rating-badges">
+                        {% match f.tmdb_rating %}{% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                        {% match f.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                        {% match f.csfd_rating %}{% when Some with (r) %}{% if f.csfd_rating_count.unwrap_or(0) >= 5 %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% endif %}{% when None %}{% endmatch %}
+                    </div>
+                    {% match f.runtime_min %}{% when Some with (m) %}<span class="runtime-badge" title="Délka filmu">{{ m }} min</span>{% when None %}{% endmatch %}
+                </div>
+                <div class="film-info">
+                    <span class="film-title">{{ f.title }}</span>
+                    {% match f.year %}{% when Some with (y) %}<span class="film-year">{{ y }}</span>{% when None %}{% endmatch %}
+                    {% match f.character_name %}{% when Some with (c) %}<span class="film-role" title="{{ c }}">{{ c }}</span>{% when None %}{% endmatch %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if !directing_films.is_empty() %}
+    <section class="person-section">
+        <h3>Režie</h3>
+        <div class="films-grid">
+            {% for f in directing_films %}
+            <a href="/filmy-online/{{ f.slug }}/" class="film-card">
+                <div class="film-poster">
+                    <img src="/filmy-online/{{ f.slug }}.webp" alt="{{ f.title }}" loading="lazy" width="200" height="300">
+                    <div class="rating-badges">
+                        {% match f.tmdb_rating %}{% when Some with (r) %}<span class="rating-badge tmdb" title="TMDB hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                        {% match f.imdb_rating %}{% when Some with (r) %}<span class="rating-badge imdb" title="IMDb hodnocení">{{ "{:.1}"|format(r) }}</span>{% when None %}{% endmatch %}
+                        {% match f.csfd_rating %}{% when Some with (r) %}{% if f.csfd_rating_count.unwrap_or(0) >= 5 %}<span class="rating-badge csfd" title="ČSFD hodnocení">{{ r }}%</span>{% endif %}{% when None %}{% endmatch %}
+                    </div>
+                    {% match f.runtime_min %}{% when Some with (m) %}<span class="runtime-badge" title="Délka filmu">{{ m }} min</span>{% when None %}{% endmatch %}
+                </div>
+                <div class="film-info">
+                    <span class="film-title">{{ f.title }}</span>
+                    {% match f.year %}{% when Some with (y) %}<span class="film-year">{{ y }}</span>{% when None %}{% endmatch %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+</main>
+
+<style>
+.person-page { max-width: 960px; margin: 0 auto; padding: 1rem; }
+
+.breadcrumb { font-size: 0.85rem; color: #888; margin-bottom: 1.2rem; }
+.breadcrumb a { color: #11457E; text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+
+.person-header { display: flex; align-items: center; gap: 1.2rem; margin-bottom: 1.6rem; }
+.person-header-photo { width: 120px; height: 180px; object-fit: cover; border-radius: 10px; background: #eee; flex-shrink: 0; }
+.person-header-photo.placeholder { display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.5rem; color: #666; font-size: 0.85rem; }
+.person-header-info h2 { margin: 0; font-size: 1.6rem; }
+
+.person-section { margin-bottom: 2rem; }
+.person-section h3 { font-size: 1.15rem; margin: 0 0 0.9rem; }
+
+.films-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.7rem; }
+@media (min-width: 520px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; } }
+@media (min-width: 768px) { .films-grid { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); } }
+@media (max-width: 360px) {
+    .films-grid { grid-template-columns: 1fr; gap: 0.6rem; }
+    .films-grid > .film-card { max-width: 240px; margin-left: auto; margin-right: auto; width: 100%; }
+}
+
+.film-card { text-decoration: none; color: inherit; border-radius: 8px; overflow: hidden; transition: transform 0.15s, box-shadow 0.15s; }
+.film-card:hover { transform: translateY(-3px); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+
+.film-poster { position: relative; aspect-ratio: 2/3; background: #1a1a1a; border-radius: 8px; overflow: hidden; }
+.film-poster img { width: 100%; height: 100%; object-fit: cover; }
+
+.rating-badges { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: row; gap: 3px; }
+.rating-badge { font-weight: 700; font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; text-align: center; line-height: 1.3; }
+.rating-badge.tmdb { background: #01b4e4; color: #fff; }
+.rating-badge.imdb { background: #f5c518; color: #000; }
+.rating-badge.csfd { background: #ba0305; color: #fff; }
+.runtime-badge { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,0.75); color: #fff; font-weight: 600; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; line-height: 1.2; }
+
+.film-info { padding: 0.35rem 0; }
+.film-title { display: block; font-size: 0.88rem; font-weight: 500; line-height: 1.3; }
+.film-year { display: block; font-size: 0.78rem; color: #888; }
+.film-role { display: block; font-size: 0.76rem; color: #aaa; font-style: italic; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* Header search — redirect into the film listing search (no live dropdown
+   here; that CSS lives only on the detail/listing pages). */
+function doSearch() {
+    var q = document.getElementById('film-search').value.trim();
+    if (q.length >= 2) window.location = '/filmy-online/?q=' + encodeURIComponent(q);
+}
+(function() {
+    var input = document.getElementById('film-search');
+    if (!input) return;
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+    });
+})();
+</script>
+{% endblock %}
