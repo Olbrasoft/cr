@@ -278,7 +278,7 @@
         <h3>Tvůrci</h3>
         <div class="people-row">
             {% for p in creators %}
-            <div class="person-card">
+            <a class="person-card person-card-link" href="/filmy-online/osoba/{{ p.id }}/">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
                 <img class="person-photo" src="/filmy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
@@ -286,7 +286,7 @@
                 <div class="person-photo placeholder">{{ p.name }}</div>
                 {% endmatch %}
                 <span class="person-name">{{ p.name }}</span>
-            </div>
+            </a>
             {% endfor %}
         </div>
     </section>
@@ -297,7 +297,7 @@
         <h3>Herci</h3>
         <div class="people-row">
             {% for p in actors %}
-            <div class="person-card">
+            <a class="person-card person-card-link" href="/filmy-online/osoba/{{ p.id }}/">
                 {% match p.profile_filename %}
                 {% when Some with (f) %}
                 <img class="person-photo" src="/filmy-online/person/{{ f }}?v=2" alt="{{ p.name }}" title="{{ p.name }}" loading="lazy">
@@ -306,7 +306,7 @@
                 {% endmatch %}
                 <span class="person-name" title="{{ p.name }}">{{ p.name }}</span>
                 {% match p.character_name %}{% when Some with (c) %}<span class="person-char" title="{{ c }}">{{ c }}</span>{% when None %}{% endmatch %}
-            </div>
+            </a>
             {% endfor %}
         </div>
     </section>

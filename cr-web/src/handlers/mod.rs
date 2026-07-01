@@ -40,7 +40,8 @@ pub use audiobooks::audiobooks;
 pub use csfd_watchlist::csfd_watchlist;
 pub use download_video::download_video;
 pub use films::{
-    SktorrentSource, films_detail, films_list, films_person_image, films_search, sktorrent_resolve,
+    SktorrentSource, films_detail, films_list, films_person, films_person_image, films_search,
+    sktorrent_resolve,
 };
 pub use filmy_serialy::filmy_serialy;
 pub use geojson::{geojson_municipality, geojson_orp};

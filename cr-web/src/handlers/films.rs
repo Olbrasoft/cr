@@ -1110,6 +1110,116 @@ pub async fn films_person_image(
     Ok(super::cover_proxy::fetch_person_image(&state, &filename).await)
 }
 
+// --- Person filmography page (#actor-links) ---
+
+/// One film card on a person's filmography page. Deliberately a slim subset
+/// of `FilmRow` — the filmography grid only needs poster + title + year +
+/// ratings, so we skip the provider/source columns that `FILM_COLUMNS`
+/// carries. `character_name` is populated for acting credits (the role the
+/// person played) and NULL for directing credits.
+#[derive(sqlx::FromRow)]
+struct PersonFilmRow {
+    #[allow(dead_code)] // Selected for DISTINCT/ordering; not rendered directly.
+    id: i32,
+    title: String,
+    slug: String,
+    year: Option<i16>,
+    tmdb_rating: Option<f32>,
+    imdb_rating: Option<f32>,
+    csfd_rating: Option<i16>,
+    csfd_rating_count: Option<i32>,
+    runtime_min: Option<i16>,
+    character_name: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "person_films.html")]
+struct PersonFilmsTemplate {
+    /// Image base URL — used by `base.html`'s shared footer (`{{ img }}`).
+    img: String,
+    person_name: String,
+    profile_filename: Option<String>,
+    /// Films where this person is credited as an actor (with the role name).
+    acting_films: Vec<PersonFilmRow>,
+    /// Films where this person is credited as a director.
+    directing_films: Vec<PersonFilmRow>,
+}
+
+/// Columns shared by both filmography queries. A slim projection — the
+/// filmography card only needs identity + ratings, so we avoid the heavy
+/// provider subqueries in `FILM_COLUMNS`.
+const PERSON_FILM_COLUMNS: &str = "f.id, f.title, f.slug, f.year, \
+    f.tmdb_rating, f.imdb_rating, f.csfd_rating, f.csfd_rating_count, \
+    NULLIF(f.runtime_min, 0) AS runtime_min";
+
+/// GET /filmy-online/osoba/{id}/ — filmography page for one person: every
+/// film in the catalog where they are credited as actor or director. Reuses
+/// the same card markup as the film listing. The reverse lookup rides the
+/// `idx_film_actors_person` / `idx_film_directors_person` indexes so it stays
+/// cheap even for prolific actors.
+pub async fn films_person(
+    State(state): State<AppState>,
+    axum::extract::Path(person_id): axum::extract::Path<i32>,
+) -> WebResult<Response> {
+    // Person identity first — a bad/stale id should 404, not render an
+    // empty page that looks like "this actor has no films".
+    let person = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT name, profile_filename FROM people WHERE id = $1",
+    )
+    .bind(person_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let (person_name, profile_filename) = match person {
+        Some(p) => p,
+        None => return Ok(super::not_found(&state.image_base_url).into_response()),
+    };
+
+    let acting_films = sqlx::query_as::<_, PersonFilmRow>(&format!(
+        "SELECT {PERSON_FILM_COLUMNS}, fa.character_name \
+         FROM films f JOIN film_actors fa ON fa.film_id = f.id \
+         WHERE fa.person_id = $1 \
+         ORDER BY f.year DESC NULLS LAST, f.title"
+    ))
+    .bind(person_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(person_id, error = ?e, "person acting films query failed");
+        Vec::new()
+    });
+
+    let directing_films = sqlx::query_as::<_, PersonFilmRow>(&format!(
+        "SELECT {PERSON_FILM_COLUMNS}, NULL::varchar AS character_name \
+         FROM films f JOIN film_directors fd ON fd.film_id = f.id \
+         WHERE fd.person_id = $1 \
+         ORDER BY f.year DESC NULLS LAST, f.title"
+    ))
+    .bind(person_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(person_id, error = ?e, "person directing films query failed");
+        Vec::new()
+    });
+
+    // Nothing to show at all → treat as not found rather than rendering an
+    // empty shell. A valid person with zero linked films is almost always a
+    // credits-backfill gap, and a 404 keeps such URLs out of the index.
+    if acting_films.is_empty() && directing_films.is_empty() {
+        return Ok(super::not_found(&state.image_base_url).into_response());
+    }
+
+    let tmpl = PersonFilmsTemplate {
+        img: state.image_base_url.clone(),
+        person_name,
+        profile_filename,
+        acting_films,
+        directing_films,
+    };
+    Ok(Html(tmpl.render()?).into_response())
+}
+
 /// Genre sub-listing: /filmy-online/{genre-slug}/
 async fn films_by_genre(
     state: AppState,
