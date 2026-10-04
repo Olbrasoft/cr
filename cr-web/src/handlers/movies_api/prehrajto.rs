@@ -486,7 +486,7 @@ async fn next_best_upload(
         .flatten()
 }
 
-async fn resolve_with_fallback(state: &AppState, initial: String) -> Result<String, Response> {
+async fn resolve_with_fallback(state: &AppState, initial: String) -> Result<String, Box<Response>> {
     let mut tried: HashSet<String> = HashSet::new();
     let mut current = initial;
 
@@ -499,13 +499,13 @@ async fn resolve_with_fallback(state: &AppState, initial: String) -> Result<Stri
             TryResolveOutcome::DeadUpload { film_id } => {
                 match next_best_upload(state, film_id, &tried).await {
                     Some(next) => current = next,
-                    None => return Err(no_sources_response()),
+                    None => return Err(Box::new(no_sources_response())),
                 }
             }
-            TryResolveOutcome::HardError(resp) => return Err(resp),
+            TryResolveOutcome::HardError(resp) => return Err(Box::new(resp)),
         }
     }
-    Err(no_sources_response())
+    Err(Box::new(no_sources_response()))
 }
 
 fn no_sources_response() -> Response {
@@ -525,7 +525,7 @@ pub async fn prehrajto_stream_upload(
 
     match resolve_with_fallback(&state, upload_id).await {
         Ok(url) => Redirect::temporary(&url).into_response(),
-        Err(resp) => resp,
+        Err(resp) => *resp,
     }
 }
 

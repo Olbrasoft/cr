@@ -323,7 +323,7 @@ pub(crate) async fn fetch_photos(
                 // Pools: /img/{r2_key}
                 format!("{}/img/{}", state.image_base_url, r.r2_key)
             };
-            let thumb_url = format!("{}?w=360", &url);
+            let thumb_url = format!("{url}?w=360");
             PhotoInfo {
                 url,
                 thumb_url,
@@ -384,7 +384,7 @@ async fn fetch_landmark_additional_photos(
             } else {
                 format!("/{}/{}.webp", landmark_slug, r.slug)
             };
-            let thumb_url = format!("{}?w=360", &url);
+            let thumb_url = format!("{url}?w=360");
             PhotoInfo {
                 url,
                 thumb_url,
@@ -501,7 +501,7 @@ pub(crate) async fn fetch_municipality_photo(
     } else {
         format!("/{}/{}/{}.webp", orp_slug, municipality_slug, row.slug)
     };
-    let thumb_url = format!("{}?w=360", &url);
+    let thumb_url = format!("{url}?w=360");
     let description = row.description.or(row.object_name).unwrap_or_default();
 
     Some(MunicipalityPhotoInfo {
@@ -537,7 +537,7 @@ pub(crate) async fn fetch_municipality_gallery(
             } else {
                 format!("/{}/{}/{}.webp", orp_slug, municipality_slug, row.slug)
             };
-            let thumb_url = format!("{}?w=360", &url);
+            let thumb_url = format!("{url}?w=360");
             let description = row.description.or(row.object_name).unwrap_or_default();
             MunicipalityPhotoInfo {
                 url,
