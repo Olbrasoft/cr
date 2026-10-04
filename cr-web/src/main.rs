@@ -21,6 +21,7 @@ mod config;
 mod error;
 mod handlers;
 mod img_proxy;
+mod server;
 mod state;
 
 use state::{AppState, GeoJsonIndex};
@@ -496,9 +497,7 @@ async fn main() -> Result<()> {
     tracing::info!("Listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    server::serve(listener, app, shutdown_signal()).await;
 
     Ok(())
 }
