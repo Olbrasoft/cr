@@ -19,6 +19,11 @@ services:
   web:
     build: .
     restart: unless-stopped
+    # Keep headroom above the default 1024 descriptors; idle sockets are also expired.
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 524288
     ports:
       - "80:3000"
     environment:
